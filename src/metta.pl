@@ -63,7 +63,7 @@ max(A,B,R)   :- arith(max, A, B, R).
 '<'(A,B,R)   :- cmp(<, A, B, R).
 '>'(A,B,R)   :- cmp(>, A, B, R).
 '=='(A,B,R)  :- (A==B -> R=true ; R=false).
-'='(A,B,R) :- A = B.
+'='(A,B,R) :- (A=B -> R=true ; R=false).
 
 :- ensure_loaded([parser, translator, filereader]).
 
