@@ -442,7 +442,7 @@
    (test (PLN.Query (kb)
                     (Inheritance Edward
                                  (IntSet cancerous)))
-       ((stv 0.6000000000000001 0.6556532945942679) (2 5 6 9 10))))
+       ((stv 0.6 0.6556532945942679) (2 5 6 9 10))))
 
 !(wu)
 

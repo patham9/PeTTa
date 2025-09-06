@@ -1,3 +1,70 @@
+:- use_module(library(clpfd)).
+:- use_module(library(clpr)).
+
+% --- Dispatchers ---
+arith(Op, A, B, R) :-
+    (   integer(A), integer(B)
+    ->  arith_fd(Op, A, B, R)
+    ;   arith_fr(Op, A, B, R)
+    ).
+
+cmp(Op, A, B, R) :-
+    (   integer(A), integer(B)
+    ->  cmp_fd(Op, A, B, R)
+    ;   cmp_fr(Op, A, B, R)
+    ).
+
+% --- CLPFD arithmetic ---
+arith_fd(+, A, B, R) :- R #= A + B.
+arith_fd(-, A, B, R) :- R #= A - B.
+arith_fd(*, A, B, R) :- R #= A * B.
+arith_fd(div, A, B, R) :- R #= A div B.
+arith_fd(mod, A, B, R) :- R #= A mod B.
+arith_fd(min, A, B, R) :- R #= min(A,B).
+arith_fd(max, A, B, R) :- R #= max(A,B).
+
+% --- CLPR arithmetic ---
+arith_fr(+, A, B, R) :- {R = A + B}.
+arith_fr(-, A, B, R) :- {R = A - B}.
+arith_fr(*, A, B, R) :- {R = A * B}.
+arith_fr(/, A, B, R) :- {R = A / B}.
+arith_fr(min, A, B, R) :- {R = min(A,B)}.
+arith_fr(max, A, B, R) :- {R = max(A,B)}.
+
+% --- CLPFD comparisons ---
+cmp_fd(<,  A, B, true)  :- A #<  B, !.
+cmp_fd(<,  _, _, false).
+cmp_fd(>,  A, B, true)  :- A #>  B, !.
+cmp_fd(>,  _, _, false).
+cmp_fd(=,  A, B, true)  :- A #=  B, !.
+cmp_fd(=,  _, _, false).
+cmp_fd(\=, A, B, true)  :- A #\= B, !.
+cmp_fd(\=, _, _, false).
+
+% --- CLPR comparisons ---
+cmp_fr(<,  A, B, true)  :- {A <  B}, !.
+cmp_fr(<,  _, _, false).
+cmp_fr(>,  A, B, true)  :- {A >  B}, !.
+cmp_fr(>,  _, _, false).
+cmp_fr(=,  A, B, true)  :- {A =  B}, !.
+cmp_fr(=,  _, _, false).
+cmp_fr(\=, A, B, true)  :- {A =\= B}, !.
+cmp_fr(\=, _, _, false).
+
+% --- Convenience wrappers ---
+'+'(A,B,R)   :- arith(+, A, B, R).
+'-'(A,B,R)   :- arith(-, A, B, R).
+'*'(A,B,R)   :- arith(*, A, B, R).
+'/'(A,B,R)   :- arith(/, A, B, R).
+'%'(A,B,R)   :- arith(mod, A, B, R).
+min(A,B,R)   :- arith(min, A, B, R).
+max(A,B,R)   :- arith(max, A, B, R).
+
+'<'(A,B,R)   :- cmp(<, A, B, R).
+'>'(A,B,R)   :- cmp(>, A, B, R).
+'=='(A,B,R)  :- (A==B -> R=true ; R=false).
+'='(A,B,R) :- A = B.
+
 :- ensure_loaded([parser, translator, filereader]).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
@@ -6,18 +73,6 @@
 'let*'([], B, B).
 'let*'([[V,Val]|Rs], B, Out) :- V = Val, 'let*'(Rs, B, Out).
 let(V,Val,In,Out) :- 'let*'([[V,Val]], In, Out).
-
-%Arithmetic & Comparison:
-'+'(A,B,R)  :- R is A+B.
-'-'(A,B,R)  :- R is A-B.
-'*'(A,B,R)  :- R is A*B.
-'/'(A,B,R)  :- R is A/B.
-'%'(A,B,R)  :- R is A mod B.
-'<'(A,B,R)  :- (A<B -> R=true ; R=false).
-'>'(A,B,R)  :- (A>B -> R=true ; R=false).
-'=='(A,B,R) :- (A==B -> R=true ; R=false).
-min(A,B,R)  :- R is min(A,B).
-max(A,B,R)  :- R is max(A,B).
 
 %Boolean Logic:
 and(true,  X, X).
@@ -49,5 +104,5 @@ test(A,B,R) :- (A==B -> E='✅' ; E='❌'),
 register_fun(N)   :- (fun(N)->true ; assertz(fun(N))).
 unregister_fun(N) :- retractall(fun(N)).
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
-                          '<','>','==', and, or, not, 'car-atom', 'cdr-atom', 'trace!', test,
+                          '<','>','==', '=', and, or, not, 'car-atom', 'cdr-atom', 'trace!', test,
                           append, length, sort, msort, memberfast, excludefast, list_to_set]).
