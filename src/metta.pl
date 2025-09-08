@@ -46,29 +46,38 @@ test(A,B,R) :- (A==B -> E='✅' ; E='❌'),
 
 %%% Spaces %%%
 
-:- use_module(library(trie)).
-
 % one trie per Space / Arity
 :- dynamic space_trie/3.  % space_trie(Space, Arity, Trie)
 
-ensure_trie(Space, Arity, T) :- ( space_trie(Space,Arity,T)
-                                  -> true ; trie_new(T), assertz(space_trie(Space,Arity,T)) ).
+ensure_trie(Space, Arity, T) :- ( space_trie(Space, Arity, T)
+                                  -> true
+                                   ; trie_new(T),
+                                     assertz(space_trie(Space, Arity, T)) ).
 
-'add-atom'(Space, [Rel|Args], true) :- length(Args,N), Arity is N+2,
-                                        ensure_trie(Space,Arity,T),
-                                        Key =.. [Space,Rel|Args],
-                                        trie_insert(T, Key, true, _).
+'add-atom'(Space, [Rel|Args], true) :- length(Args, N),
+                                       Arity is N+2,
+                                       ensure_trie(Space, Arity, T),
+                                       Key =.. [Space, Rel|Args],
+                                       trie_insert(T, Key).
 
-'remove-atom'(Space, [Rel|Args], Result) :- length(Args,N), Arity is N+2,
-                                            ensure_trie(Space,Arity,T),
-                                            Key =.. [Space,Rel|Args],
-                                            ( trie_delete(T, Key) -> Result=true ; Result=false ).
+'remove-atom'(Space, [Rel|Args], Result) :- length(Args, N),
+                                            Arity is N+2,
+                                            ensure_trie(Space, Arity, T),
+                                            Key =.. [Space, Rel|Args],
+                                            ( trie_delete(T, Key)
+                                              -> Result = true
+                                               ; Result = false ).
 
-% exact match (fast); prefix patterns via variables also work
-match(Space, [Rel|PatArgs], Out, Result) :- length(PatArgs,N), Arity is N+2,
-                                            space_trie(Space,Arity,T),
-                                            Key =.. [Space,Rel|PatArgs],
-                                            ( trie_lookup(T, Key, _) -> Result=Out ).
+%Function evaluation matches, where the unification returned true, so it unified:
+match('&self', true, Arg2, Result) :- Result=Arg2.
+
+% exact and prefix matches
+match(Space, [Rel|PatArgs], Out, Result) :- length(PatArgs, N),
+                                            Arity is N+2,
+                                            space_trie(Space, Arity, T),
+                                            Key =.. [Space, Rel|PatArgs],
+                                            trie_gen(T, Key, _),
+                                            Result = Out.
 
 %Registration:
 :- dynamic fun/1.
