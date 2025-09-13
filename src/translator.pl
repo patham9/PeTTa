@@ -22,6 +22,24 @@ maybe_call(F, Args, Out) :- ( nonvar(F), atom(F), fun(F) -> append(Args, [Out], 
                                                             call(Goal)
                                                           ; Out = [F|Args] ).
 
+
+%Iterator over binding expressions (adjust cases as your AST dictates)
+iter(range(A,B), V)   :- between(A,B,V).
+iter(superpose(L), V) :- member(V,L).
+iter(list(L), V) :- member(V,L).
+
+%Inline forall:
+quantify_forall([], Body, Body).
+quantify_forall([[V,Expr]|Rest], Body, Q) :- quantify_forall(Rest, Body, Inner),
+                                             Q = (\+ ( iter(Expr, V), \+ (Inner) )).
+%Translate for bindings:
+translate_for([], [], []).
+translate_for([[Var, [range, A, B]]|Rs], [], [[V, range(A,B)]|Bs]) :- translate_expr(Var, [], V),
+                                                                      translate_for(Rs, [], Bs).
+translate_for([[Var, ListLit]|Rs], [], [[V, list(L)]|Bs]) :- is_list(ListLit), translate_expr(Var, [], V),
+                                                             eval_data_term(ListLit, _, L),
+                                                             translate_for(Rs, [], Bs).
+
 %Turn MeTTa code S-expression into goals list
 translate_expr(X, [], X)          :- (var(X) ; atomic(X)), !.
 translate_expr([H|T], Goals, Out) :-
@@ -39,10 +57,10 @@ translate_expr([H|T], Goals, Out) :-
                                      ( ConE == true -> BE = (Out = Ev) ; BE = (ConE, Out = Ev) ),
                                      ( ConC == true -> append(GsH, [ (Cv == true -> BT ; BE) ], Goals)
                                                      ; append(GsH, [ (ConC, (Cv == true -> BT ; BE)) ], Goals))
-        ;  HV == case, T = [KeyExpr, PairsExpr] -> translate_expr(KeyExpr, Gk, Kv),
-                                                   translate_case(PairsExpr, Kv, Out, IfGoal),
-                                                   append(GsH, Gk, G0),
-                                                   append(G0, [IfGoal], Goals)
+        ; HV == case, T = [KeyExpr, PairsExpr] -> translate_expr(KeyExpr, Gk, Kv),
+                                                  translate_case(PairsExpr, Kv, Out, IfGoal),
+                                                  append(GsH, Gk, G0),
+                                                  append(G0, [IfGoal], Goals)
         ; HV == let, T = [Pat, Val, In] -> translate_expr(Pat, Gp, P),
                                            translate_expr(Val, Gv, V),
                                            translate_expr(In,  Gi, I),
@@ -54,6 +72,13 @@ translate_expr([H|T], Goals, Out) :-
                                              Goal = 'let*'(Bs, B, Out),
                                              append(GsH, Gb, A), append(A, Gd, Inner),
                                              Goals = [Goal | Inner]
+        ; HV == for, T = [Binds, Body] -> translate_for(Binds, _, Bs),
+                                          translate_expr(Body,  Gd,  BGoal),
+                                          goals_list_to_conj(Gd, GdConj),
+                                          ( GdConj == true -> BodyGoal = BGoal
+                                                            ; BodyGoal = (GdConj, BGoal) ),
+                                          quantify_forall(Bs, BodyGoal, Check),
+                                          append(GsH, [ (Check -> Out=true ; Out=false), ! ], Goals)
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
           ( atom(HV), fun(HV) -> Out = V,                        %Known function => direct call
