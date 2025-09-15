@@ -82,31 +82,12 @@ match(Space, [Rel|PatArgs], OutPattern, Result) :- Term =.. [Space, Rel | PatArg
                                Head =.. [Space | Pattern].
 
 
-%%% Python bindings: %%%
+:- use_module(library(janus)).
 
-python(SpecList, Result) :- python(SpecList, Result, []).
+'py-atom'(Path, ['py-atom', Path]).
+'py-dot'(Base, Attr, ['py-dot', Base, Attr]).
+'py-list'(In, Out) :- Out = In.    % Prolog list is fine for torch
 
-python([Spec|Args], Result, Opts) :- normalize_spec(Spec, Kind, Mod, Fun),
-                                     ( Kind == method
-                                       -> ( Args = [Obj|Rest]
-                                            -> build_fun_term(Fun, Rest, Meth),
-                                               py_call(Obj:Meth, Result, Opts)
-                                             ; domain_error(obj_for_method, Args))
-                                        ; % function
-                                          build_fun_term(Fun, Args, Call0),
-                                          ( var(Mod) -> Call = Call0 ; Call = Mod:Call0 ),
-                                          py_call(Call, Result, Opts)).
-
-normalize_spec(Spec, Kind, Mod, Fun) :- ( string(Spec) -> atom_string(A, Spec) ; A = Spec ),
-                                        must_be(atom, A),
-                                        ( sub_atom(A, 0, 1, _, '.')                         % ".method"
-                                          -> Kind = method, Mod = _, sub_atom(A, 1, _, 0, Fun)
-                                           ; atomic_list_concat([M,F], :, A)                % "mod:fun"
-                                             -> Kind = function, Mod = M, Fun = F
-                                              ; Kind = function, Mod = builtins, Fun = A ). % bare "fun"
-
-build_fun_term(Fun, Args, Term) :- ( Args == [] -> compound_name_arguments(Term, Fun, [])
-                                                 ; Term =.. [Fun|Args] ).
 
 %%% Registration: %%%
 :- dynamic fun/1.
@@ -115,4 +96,5 @@ unregister_fun(N) :- retractall(fun(N)).
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
                           '<','>','==', '=', '<=', '>=', and, or, not, 'car-atom', 'cdr-atom', 'trace!', test,
                           append, length, sort, msort, memberfast, excludefast, list_to_set,
-                          'add-atom', 'remove-atom', 'get-atoms', 'match', 'match-once', python]).
+                          'add-atom', 'remove-atom', 'get-atoms', 'match', 'match-once',
+                          'py-atom', 'py-dot', 'py-list']).

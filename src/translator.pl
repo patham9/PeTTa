@@ -14,11 +14,52 @@ goals_list_to_conj([G|Gs], (G,R)) :- goals_list_to_conj(Gs, R).
 arg_to_list([superpose|T], T) :- !.
 arg_to_list(A, [A]).
 
-% Runtime dispatcher: call F if it's a registered fun/1, else keep as list:
-maybe_call(F, Args, Out) :- ( nonvar(F), atom(F), fun(F) -> append(Args, [Out], CallArgs),
-                                                            Goal =.. [F|CallArgs],
-                                                            call(Goal)
-                                                          ; Out = [F|Args] ).
+maybe_call(F, Args, Out) :-
+    nonvar(F), atom(F), fun(F) ->
+        append(Args,[Out],CallArgs), Goal=..[F|CallArgs], call(Goal)
+    ;
+    ( F = ['py-atom', Spec] ->
+        resolve_base_last_(Spec, Base, Name),
+        build_pycall_term_(Base, Name, Args, Term),     % Base:Name(Args...)
+        py_call(Term, Out, [])
+
+    ; F = ['py-dot', Obj, Attr] ->
+        to_atomish_(Attr, A),
+        ( Args == [] ->
+            % ---- ZERO-ARG: execute getattr(obj, name)() via eval with locals ----
+            py_call(builtins:dict([]), G, []),                                  % {}
+            py_call(builtins:dict([['obj', Obj], ['name', A]]), L, []),         % {'obj': Obj, 'name': A}
+            py_call(builtins:eval('getattr(obj, name)()', G, L), Out, [])       % -> Out is the return value
+          ; % ---- NON-ZERO-ARG: Obj:Attr(Args...) ----
+            build_pycall_term_(Obj, A, Args, Term),
+            py_call(Term, Out, [])
+        )
+    ; Out = [F|Args]
+    ).
+
+% ---------- internals ----------
+build_pycall_term_(Base, Name, Args, Term) :-
+    Call =.. [Name|Args], Term =.. [(:), Base, Call].
+
+resolve_base_last_(Spec, Base, Name) :-
+    ( string(Spec)->atom_string(A,Spec) ; A=Spec ),
+    atomic_list_concat(Parts,'.',A),
+    Parts=[Root|Rest], Rest \= [],
+    py_call(builtins:'__import__'(Root), M0, []),
+    split_last_(Rest, Pref, Name),
+    walk_attrs_(M0, Pref, Base).
+
+split_last_([X], [], X).
+split_last_([H|T], [H|P], Last) :- split_last_(T, P, Last).
+
+walk_attrs_(Obj0, [], Obj0).
+walk_attrs_(Obj0, [Attr|Rest], Obj) :-
+    to_atomish_(Attr, A),
+    py_call(builtins:getattr(Obj0, A), Next, []),
+    walk_attrs_(Next, Rest, Obj).
+
+to_atomish_(X, A) :- ( atom(X)->A=X ; string(X)->atom_string(A,X) ).
+
 
 %Turn MeTTa code S-expression into goals list:
 translate_expr(X, [], X)          :- (var(X) ; atomic(X)), !.
