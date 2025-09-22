@@ -24,19 +24,43 @@ process_metta_string(S) :- split_string(S, "\n", "", L0),
 to_function_form(T, T) :- T = [=, [_|_], _], !.
 to_function_form(T, [=, [run], [['add-atom','&self', T], [empty]]]).
 
-%From a function string: parse, extract first atom as name, register, transform to relation, assert:
+%From a function string: parse, extract first atom as name, register, transform to relation, add to buffer:
+:- dynamic fun_buffer_file/1.
 assert_function(FormStr) :- sread(FormStr, Orig),
                             to_function_form(Orig, Term),
                             Term = [=, [FAtom|_], _BodyExpr],
                             atom(FAtom),
                             register_fun(FAtom),
+                            assertz(compiled(FAtom)),
                             translate_clause(Term, Clause),
-                            assertz(Clause),
+                            ( fun_buffer_file(_) -> true
+                                                  ; tmp_file(pl, File),
+                                                    open(File, write, Stream),
+                                                    asserta(fun_buffer_file(File)),
+                                                    nb_setval(fun_buffer_stream, Stream) ),
+                            nb_getval(fun_buffer_stream, Stream),
+                            portray_clause(Stream, Clause),
+                            flush_output(Stream),
                             ( current_prolog_flag(argv, Args) -> true ; Args = [] ),
-                            ( \+ ( member(Flag, Args), ( Flag == silent ; Flag == '--silent' ; Flag == '-s' ) )
-                              -> format("~w~n---->~n", [FormStr]),
-                                 listing(FAtom)
+                            ( \+ ( member(Flag, Args),
+                                   (Flag == silent ; Flag == '--silent' ; Flag == '-s') )
+                              -> format("~w~n----> staged for compilation~n", [FormStr])
                                ; true ).
+
+%"Assert" functions from buffer but via static code loading for higher performance:
+compile_metta_code :- fun_buffer_file(File),
+                      nb_getval(fun_buffer_stream, Stream),
+                      close(Stream),
+                      retractall(fun_buffer_file(_)),
+                      nb_delete(fun_buffer_stream),
+                      load_files(File, [silent(true), if(not_loaded)]),
+                      delete_file(File),
+                      ( current_prolog_flag(argv, Args) -> true ; Args = [] ),
+                      ( \+ ( member(Flag, Args),
+                             (Flag == silent ; Flag == '--silent' ; Flag == '-s') )
+                             -> forall(compiled(Name), ( format('~n--- ~w ---~n', [Name]), listing(Name)))
+                              ; true ).
+
 
 %Collect characters until all parentheses are balanced (depth 0), accumulating codes:
 grab_until_balanced(D,Acc,Cs) --> [C], { ( C=0'( -> D1 is D+1 ; C=0') -> D1 is D-1 ; D1=D ), Acc1=[C|Acc] },
