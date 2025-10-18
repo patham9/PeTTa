@@ -46,6 +46,7 @@ cons(H, T, [H|T]).
 memberfast(X, List, true) :- memberchk(X, List), !.
 memberfast(_, _, false).
 excludefast(A, L, R) :- exclude(==(A), L, R).
+unique(List, Unique) :- list_to_set(List, Unique).
 
 %%% Type system: %%%
 get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
@@ -197,7 +198,7 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
                           '<','>','==', '=', '=?', '<=', '>=', and, or, not, sqrt, exp, log, cos, sin,
                           'car-atom', 'cdr-atom', repr, 'println!', 'readln!', 'trace!', test, assertEqual,
-                          append, length, sort, msort, memberfast, excludefast, list_to_set, maplist,
+                          append, length, sort, msort, memberfast, excludefast, maplist, unique, list_to_set,
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
                           decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
                           unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', concat, sread, cons, reverse]).
