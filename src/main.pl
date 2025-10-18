@@ -8,8 +8,10 @@ prolog_interop_example :- register_fun(prologfunc),
                           mettafunc(30, R),
                           format("mettafunc(30) = ~w~n", [R]).
 
-main :- current_prolog_flag(argv, Args),
-        ( Args = [] -> prolog_interop_example
+main :- mork_init,
+        current_prolog_flag(argv, Args),
+        ( Args = [] -> prolog_interop_example,
+                       mork_test
                      ; Args = [File|_],
                        load_metta_file(File,default),
                        findall(R, run(default,R), Results),
