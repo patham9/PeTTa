@@ -30,14 +30,14 @@ assert_function(FormStr) :- sread(FormStr, Orig),
                             translate_clause(Term, Clause),
                             assertz(Clause, Ref),
                             ( current_prolog_flag(argv, Args) -> true ; Args = [] ),
-                            ( \+ ( member(Flag, Args),
-                                   (Flag == silent ; Flag == '--silent' ; Flag == '-s') )
-                                 -> format("~w~n---->~n", [FormStr]),
+                            ( \+ ( member(Flag, Args), (Flag == silent ; Flag == '--silent' ; Flag == '-s') )
+                                 -> format("\e[33m-->  metta S-exp  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
                                     clause(Head, Body, Ref),
                                     ( Body == true -> Show = Head ; Show = (Head :- Body) ),
                                     portray_clause(current_output, Show),
-                                    format("^^^^^~n")
+                                    format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m")
                                   ; true ).
+
 
 %Collect characters until all parentheses are balanced (depth 0), accumulating codes:
 grab_until_balanced(D,Acc,Cs) --> [C], { ( C=0'( -> D1 is D+1 ; C=0') -> D1 is D-1 ; D1=D ), Acc1=[C|Acc] },
