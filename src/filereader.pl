@@ -30,7 +30,7 @@ assert_function(FormStr) :- sread(FormStr, Orig),
                             translate_clause(Term, Clause),
                             assertz(Clause, Ref),
                             ( current_prolog_flag(argv, Args) -> true ; Args = [] ),
-                            ( \+ ( member(Flag, Args), (Flag == silent ; Flag == '--silent' ; Flag == '-s') )
+                            ( ( member(Flag, Args), (Flag == verbose ; Flag == '--verbose' ; Flag == '-v') )
                                  -> format("\e[33m-->  metta S-exp  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
                                     clause(Head, Body, Ref),
                                     ( Body == true -> Show = Head ; Show = (Head :- Body) ),

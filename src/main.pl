@@ -8,9 +8,15 @@ prolog_interop_example :- register_fun(prologfunc),
                           mettafunc(30, R),
                           format("mettafunc(30) = ~w~n", [R]).
 
+
+ends_with(Atom, Suffix) :- sub_atom(Atom, _, _, 0, Suffix).
+halt_gracefully(Msg, Code):- format("~w~n", [Msg]),
+                             halt(Code).
+
+
 main :- current_prolog_flag(argv, Args),
         ( Args = [] -> prolog_interop_example
-                     ; Args = [File|_],
+                     ; ((member(Arg, Args), ends_with(Arg, '.metta')) ->  File=Arg; halt_gracefully("No '.metta' file provided!", 1)),
                        file_directory_name(File, Dir),
                        assertz(working_dir(Dir)),
                        load_metta_file(File,default),
