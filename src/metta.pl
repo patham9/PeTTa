@@ -24,8 +24,52 @@ let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
 '>='(A,B,R) :- (A >= B -> R=true ; R=false).
 min(A,B,R)  :- R is min(A,B).
 max(A,B,R)  :- R is max(A,B).
-exp(Arg,R) :- R is exp(Arg).
+'exp-math'(Arg,R) :- R is exp(Arg).
 
+%Custom Maths function
+'cos-math'(Arg,R) :- R is cos(Arg).
+'sin-math'(Arg,R) :- R is sin(Arg).
+'tan-math'(Arg,R) :- R is tan(Arg).
+'acos-math'(Arg,R) :- R is acos(Arg).
+'asin-math'(Arg,R) :- R is asin(Arg).
+'atan-math'(Arg,R) :- R is atan(Arg).
+
+'sqrt-math'(Arg, R) :-
+    R is sqrt(Arg).
+
+'abs-math'(Arg, R) :-
+    ( Arg > 0 ->
+        R is Arg
+    ; Arg < 0 ->
+        R is -Arg
+    ;
+        R is 0
+    ).
+'log-math'(Arg, R) :-
+    R is log(Arg).
+
+'trunc-math'(A, R) :-
+    R is truncate(A).
+
+'ceil-math'(Arg, R) :-
+    R is ceiling(Arg).
+
+'floor-math'(Arg, R) :-
+    R is floor(Arg).
+
+'round-math'(Arg, R) :-
+    R is round(Arg).
+
+'isnan-math'(X, true) :- X \= X, !.
+'isnan-math'(_, false).
+
+'isinf-math'(X, true) :- (X =:= 1.0Inf ; X =:= -1.0Inf), !.
+'isinf-math'(_, false).
+'random-int'(Min, Max, R) :- random_between(Min, Max, R).
+
+'random-float'(Min, Max, R) :- 
+      random(X), 
+      R is X * (Max - Min) + Min.
 %%% Boolean Logic: %%%
 and(true,  X, X).
 and(false, _, false).
@@ -34,15 +78,17 @@ or( true,  _, true).
 not(true,  false).
 not(false, true).
 
+
 %%% Nondeterminism: %%%
 superpose(L,X) :- member(X,L).
 empty(_) :- fail.
+
 
 %%% Lists / Tuples: %%%
 'car-atom'([H|_], H).
 'cdr-atom'([_|T], T).
 'decons'([H|T], [H|[T]]).
-cons(H, T, [H|T]).
+'cons-atom'(H, T, [H|T]).
 memberfast(X, List, true) :- memberchk(X, List), !.
 memberfast(_, _, false).
 excludefast(A, L, R) :- exclude(==(A), L, R).
@@ -73,7 +119,7 @@ get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
 %Commonly used predicates:
 'is-var'(A,R) :- (var(A) -> R=true ; R=false).
 'is-expr'(A,R) :- (is_list(A) -> R=true ; R=false).
-concat(List1, List2, Result) :- append(List1, List2, Result).
+'union-atom'(List1, List2, Result) :- append(List1, List2, Result).
 
 %Helper functions
 member_with_pred(Element, [Head|_], Pred) :- call(Pred, Element, Head, true).
@@ -97,20 +143,34 @@ union_helper(Pred, List1, [Head2|Tail2], [Head2|Output]) :- \+ member_with_pred(
                                                                union_helper(Pred, List1, Tail2, Output).
 union_helper(Pred, List1, [Head2|Tail2], Output) :- member_with_pred(Head2, List1, Pred),
                                                     union_helper(Pred, List1, Tail2, Output).
+%length function 
+
+'size-atom'(List, Size) :-
+   length(List, Size).
 
 %List based Intersection
+
 intersection(_Pred, [], _, []) :- !.
 intersection(_Pred, _, [], []) :- !.
 intersection(Pred, [Head1|Tail1], List2, [Head1|Output]) :- member_with_pred(Head1, List2, Pred),
                                                             intersection(Pred, Tail1, List2, Output).
 intersection(Pred, [Head1|Tail1], List2, Output) :- \+ member_with_pred(Head1, List2, Pred),
                                                     intersection(Pred, Tail1, List2, Output).
+% Wrapper for 2-argument call
+'intersection-atom'(List1, List2, Result) :-
+    intersection( '=@=',List1, List2, Result).
 
 %List based Subtraction
-subtract(_Pred, [], _, []).
-subtract(Pred, [E|T], D, R) :- ( member_with_pred(E, D, Pred) -> subtract(Pred, T, D, R)
-                                                               ; R = [E|R1],
-                                                                 subtract(Pred, T, D, R1) ).
+% Core subtraction with predicate (kept internal)
+subtract([], _, _, []).
+subtract([E|T], D, Pred, R) :-
+    ( member_with_pred(E, D, Pred) -> subtract(T, D, Pred, R)   % skip E
+       ; R = [E|R1],
+         subtract(T, D, Pred, R1) ).
+
+% Wrapper for 2-argument call
+'subtraction-atom'(List1, List2, Result) :-
+    subtract(List1, List2, '=@=', Result).
 
 %%% Higher-order predicates: %%%
 'fold-flat'([], Acc, _Combiner, Acc).
@@ -200,9 +260,12 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                            abolish(N, Arity).
 
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
-                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, sqrt, exp, log, cos, sin,
+                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, 'sqrt-math', 'exp-math', 'log-math', 'cos-math', 'sin-math', 'tan-math',
                           'car-atom', 'cdr-atom', repr, 'println!', 'readln!', 'trace!', test, assertEqual,
-                          append, length, sort, msort, memberfast, excludefast, list_to_set, maplist, 'import!',
+                          append, 'size-atom', sort, msort, memberfast, excludefast, list_to_set, maplist, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
-                          decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
-                          unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', concat, sread, cons, reverse]).
+                          decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, 'intersection-atom', 'subtraction-atom',
+                          unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', 'union-atom', sread, 'cons-atom', reverse 
+                          , 'abs-math', 'trunc-math', 'ceil-math', 'floor-math' , 'round-math' , 'asin-math', 'acos-math', 'atan-math'
+                          ,'isnan-math', 'isinf-math','random-float','random-int',
+                          ]).
