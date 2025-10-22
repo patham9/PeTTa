@@ -25,16 +25,44 @@ goals_list_to_conj([G], G)        :- !.
 goals_list_to_conj([G|Gs], (G,R)) :- goals_list_to_conj(Gs, R).
 
 % Runtime dispatcher: call F if it's a registered fun/1, else keep as list:
-reduce([F|Args], Out) :- ( nonvar(F), atom(F), fun(F) -> append(Args, [Out], CallArgs),
-                                                         Goal =.. [F|CallArgs],
-                                                         call(Goal)
-                                                       ; Out = [F|Args],
-                                                         \+ cyclic_term(Out) ).
+
+reduce([F|Args], Out) :-
+    ( % --- Case 2: callable predicate ---
+      nonvar(F),
+      atom(F),
+      fun(F)
+    -> length(Args, N),
+       Arity is N + 1,
+       functor(Goal, F, Arity),
+       ( current_predicate(F/Arity) ->
+             append(Args, [Out], CallArgs),
+             Goal =.. [F|CallArgs],
+             ( call(Goal)
+             -> true
+             ;  Out = partial(F, Args)
+             )
+       ; Out = partial(F, Args)
+       )
+
+    % --- Case 1: partial closure ---
+    ; compound(F),
+      F = partial(Base, Bound)
+    -> append(Bound, Args, NewArgs),
+       reduce([Base|NewArgs], Out)
+
+    % --- Case 3: fallback symbolic ---
+    ; Out = [F|Args],
+      \+ cyclic_term(Out)
+    ).
+
+
+
 
 %Combined expr translation to goals list
 translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),
                                             goals_list_to_conj(Goals, Conj).
-
+:- dynamic arity/2.
+arity(dummy,0).
 %Turn MeTTa code S-expression into goals list:
 translate_expr(X, [], X)          :- (var(X) ; atomic(X)), !.
 translate_expr([H|T], Goals, Out) :-
@@ -97,9 +125,17 @@ translate_expr([H|T], Goals, Out) :-
                                                      append(G2, GsB, Goals)
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
-          ( atom(HV), fun(HV) -> append(AVs, [Out], ArgsV),        %Known function => direct call
-                                 Goal =.. [HV|ArgsV],
-                                 append(Inner, [Goal], Goals)
+          ( atom(HV), fun(HV), is_list(AVs) ->
+              length(AVs, N),
+              Arity is N + 1,
+              ( arity(HV,Arity) -> %TODO WHAT ABOUT RECURSION (ARITY NOT KNOWN BEFORE REGISTER CALL)
+                  % --- exact arity match: make direct call
+                  append(AVs, [Out], ArgsV),
+                  Goal =.. [HV|ArgsV],
+                  append(Inner, [Goal], Goals)
+              ; % --- otherwise: build a reduce(...) call
+                  append(Inner, [reduce([HV|AVs], Out)], Goals)
+              )
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs], %Literals (numbers, strings, etc.),
                                                                   Goals = Inner   %Known non-function atom => data
           ; append(Inner, [reduce([HV|AVs], Out)], Goals) )).      %Unknown head (var/compound) => runtime dispatch

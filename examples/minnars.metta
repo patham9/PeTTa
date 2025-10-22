@@ -348,6 +348,7 @@
             (LimitSize (Without $L $lowestPriorityItem) $size))))
 
 ;;Priority-queue based task ranking deriver with belief buffer
+(= (PLN.Derive $Tasks $Beliefs $steps $maxsteps $taskqueuesize $beliefqueuesize) (empty))
 (= (PLN.Derive $Tasks $Beliefs $steps $maxsteps $taskqueuesize $beliefqueuesize)
    (if (or (> $steps $maxsteps) (== $Tasks ()))
        ($Tasks $Beliefs)

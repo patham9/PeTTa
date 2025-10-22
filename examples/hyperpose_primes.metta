@@ -1,3 +1,4 @@
+(= (find-divisor $n $test-divisor) (empty)); forward definition for now, TODO
 (= (find-divisor $n $test-divisor)
    (if (> (* $test-divisor $test-divisor) $n)
        $n

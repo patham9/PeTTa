@@ -34,6 +34,8 @@ assert_function(FormStr) :- ( sread(FormStr, Orig)
                                ; add_sexp('&self', Term),
                                  atom(FAtom),
                                  register_fun(FAtom),
+                                 length(W, NN),
+                                 assertz(arity(FAtom,NN)), %TODO also add-atom should do it
                                  translate_clause(Term, Clause),
                                  assertz(Clause, Ref),
                                  ( current_prolog_flag(argv, Args) -> true ; Args = [] ),

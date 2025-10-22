@@ -15,6 +15,7 @@
                     (($t (add-atom-no-duplicate &self (num (C $t))))))))))
 
 ;Apply expand K times:
+(= (expandK $n) (empty)) ; forward def, TODO
 (= (expandK $n)
    (if (== $n 0)
        done

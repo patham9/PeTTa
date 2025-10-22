@@ -15,6 +15,7 @@
                     (($t (add-atom-no-duplicate &self (num (C $t))))))))))
 
 ;Apply expand and mate K times:
+(= (rewriteK $n) (empty)) ; forward def, TODO
 (= (rewriteK $n)
    (if (== $n 0)
        done
