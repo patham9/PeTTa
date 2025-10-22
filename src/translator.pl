@@ -25,11 +25,41 @@ goals_list_to_conj([G], G)        :- !.
 goals_list_to_conj([G|Gs], (G,R)) :- goals_list_to_conj(Gs, R).
 
 % Runtime dispatcher: call F if it's a registered fun/1, else keep as list:
-reduce(F, Args, Out) :- ( nonvar(F), atom(F), fun(F) -> append(Args, [Out], CallArgs),
-                                                        Goal =.. [F|CallArgs],
-                                                        call(Goal)
-                                                      ; Out = [F|Args],
-                                                        \+ cyclic_term(Out) ).
+% --- Dynamic function reducer with currying support ---
+
+% --- Universal reducer with currying, no arity tracking ---
+
+reduce(F, Args, Out) :-
+    ( % --- Case 1: applying a partial closure ---
+      F = partial(Base, Bound)
+    -> append(Bound, Args, NewArgs),
+       reduce(Base, NewArgs, Out)
+
+    % --- Case 2: normal callable predicate registered via fun(F) ---
+    ; nonvar(F),
+      atom(F),
+      fun(F)
+    -> length(Args, N),
+       % Try calling F/ (N+1)
+       Arity is N + 1,
+       functor(Goal, F, Arity),
+       ( current_predicate(F/Arity) ->
+             append(Args, [Out], CallArgs),
+             Goal =.. [F|CallArgs],
+             ( call(Goal)
+             -> true
+             ;  Out = partial(F, Args)  % fallback if not callable yet
+             )
+       ; % No such predicate yet -> return partial
+         Out = partial(F, Args)
+       )
+
+    % --- Case 3: fallback to symbolic list representation ---
+    ; Out = [F|Args],
+      \+ cyclic_term(Out)
+    ).
+
+
 
 %Combined expr translation to goals list
 translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),
@@ -91,9 +121,23 @@ translate_expr([H|T], Goals, Out) :-
                                                      append(G2, GsB, Goals)
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
-          ( atom(HV), fun(HV) -> append(AVs, [Out], ArgsV),        %Known function => direct call
-                                 Goal =.. [HV|ArgsV],
-                                 append(Inner, [Goal], Goals)
+          %THAT WORKED:
+          %( atom(HV), fun(HV) -> append(AVs, [Out], ArgsV),        %Known function => direct call
+          %                       Goal =.. [HV|ArgsV],
+          %                       append(Inner, [Goal], Goals)
+          %WHILE YOUR CODE NOW LEADS TO:
+          ( atom(HV), fun(HV) ->
+              length(AVs, N),
+              Arity is N + 1,
+              ( current_predicate(HV/Arity) ->
+                  % --- exact arity match: make direct call
+                  append(AVs, [Out], ArgsV),
+                  Goal =.. [HV|ArgsV],
+                  append(Inner, [Goal], Goals)
+              ; % --- otherwise: build a reduce(...) call
+                  append(Inner, [reduce(HV, AVs, Out)], Goals)
+              )
+          %YOUR CODE END (LEADS TO FOLLOWS)
           ; ( number(HV) ; string(HV) ; HV == true ; HV == false ) %Value head, process all tail args
             -> translate_args(AVs, GsTail, AVs1),
                append(Inner, GsTail, Inner1),
@@ -102,6 +146,7 @@ translate_expr([H|T], Goals, Out) :-
           ; is_list(HV) -> eval_data_term(HV, Gd, HV1),            %Plain data list: evaluate inner fun-sublists
                            append(Inner, Gd, Goals),
                            Out = [HV1|AVs]
+          %LEADS TO GENERATING reduce(F, [[42, G]], B) (while on most occasions the reduce calls seem to be correct and were with my code)
           ; append(Inner, [reduce(HV, AVs, Out)], Goals) )).       %Unknown head (var/compound) => runtime dispatch
 
 %Handle data list:
