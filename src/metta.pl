@@ -59,10 +59,21 @@ empty(_) :- fail.
 .(A, B, R) :- R=[A|B].
 'car-atom'([H|_], H).
 'cdr-atom'([_|T], T).
-'decons'([H|T], [H|[T]]).
-cons(H, T, [H|T]).
-memberfast(X, List, true) :- member(X, List).
-memberfast(X, List, false) :- \+ member(X, List).
+'decons-atom'([H|T], [H|[T]]).
+'cons-atom'(H, T, [H|T]).
+'size-atom'(List, R) :- is_list(List),
+                        length(List, R), !.
+'size-atom'(_, 1) :- !.  % Default to 1 for any non-list atom (e.g., a symbol or number)
+
+'index-atom'(List, Index, R) :-
+    integer(Index),  % Check that the index is a number
+    Index >= 0,      % Ensure it's non-negative (zero-based index)
+    is_list(List),   % Ensure the first argument is a list/expression
+    nth0(Index, List, R), % Prolog built-in: nth0(Index, List, Element)
+    !.
+'index-atom'(_, _, 'Error: Invalid index or atom') :- !. % Fallback for error handling
+memberfast(X, List, true) :- memberchk(X, List), !.
+memberfast(_, _, false).
 excludefast(A, L, R) :- exclude(==(A), L, R).
 
 %%% Type system: %%%
@@ -206,14 +217,19 @@ assertEqual(A,B,true) :- A \== B,
                                                    ; Call0 =.. [A|Args] ),
                                                 py_call(builtins:Call0, Result, Opts) ).
 
-%%% Eval: %%%
-eval(C, Out) :- translate_expr(C, Goals, Out),
-                call_goals(Goals).
+%%% Universal (Nested) Map Implementation %%%
+'map-atom'(List, Pattern, Body, R) :-
+    % This function always uses the nested mapping logic
+    Mapper = 'map-atom-callback'(Pattern, Body),
+    'map-nested'(List, Mapper, R). % <-- Calls the existing recursive primitive!
 
-call_goals([]).
-call_goals([G|Gs]) :- call(G), 
-                      call_goals(Gs).
-
+% Re-use the robust callback (Crucial for correct variable binding and full reduction)
+'map-atom-callback'(Pattern, Body, Element, Result) :-
+    copy_term((Pattern, Body), (PatternCopy, BodyCopy)),
+    PatternCopy = Element,
+    % Force full evaluation of the Body expression
+    translate_expr_to_conj(BodyCopy, Conj, Result),
+    call(Conj).
 %%% Registration: %%%
 'import!'('&self', File, true) :- atom_string(File, SFile),
                                   working_dir(Base),
@@ -230,6 +246,5 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           ., 'car-atom', 'cdr-atom', repr, 'println!', 'readln!', 'trace!', test, assertEqual,
                           append, length, sort, msort, memberfast, excludefast, list_to_set, maplist, eval, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
-                          decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
-                          unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', concat, sread, cons, reverse,
-                          '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=']).
+                          'decons-atom', 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
+                          unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', concat, sread, 'cons-atom', reverse, 'size-atom', 'index-atom', 'map-atom']).

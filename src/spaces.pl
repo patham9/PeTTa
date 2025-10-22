@@ -48,10 +48,34 @@ match(Space, PatternVar, OutPattern, Result) :- var(PatternVar), !,
                                                 \+ cyclic_term(OutPattern),
                                                 Result = OutPattern.
 
+<<<<<<< HEAD
 %Match for pattern:
 match(Space, [Rel|PatArgs], OutPattern, Result) :- Term =.. [Space, Rel | PatArgs],
                                                    Term, \+ cyclic_term(OutPattern),
                                                    Result = OutPattern.
+=======
+% %Match for pattern:
+% match(Space, [Rel|PatArgs], OutPattern, Result) :- Term =.. [Space, Rel | PatArgs],
+%                                                    Term, \+ cyclic_term(OutPattern),
+%                                                    copy_term(OutPattern, Result).
+
+% 1. FIX: Universal Match for a single uninstantiated variable (like $x)
+%    Avoids the arity error by redirecting to get-atoms, and uses call/3 for robustness.
+
+match(Space, Pattern, Pattern, Result) :-
+    var(Pattern), % Check if the pattern is an unbound variable (like $x)
+    !,
+    % Use findall and call/3 to execute the quoted predicate 'get-atoms'
+    findall(Atom, call('get-atoms', Space, Atom), AllAtoms),
+    Result = AllAtoms. 
+
+
+% 2. Match for pattern (Handles non-variable/structured patterns like (Parent Tinsae $X))
+match(Space, [Rel|PatArgs], OutPattern, Result) :- 
+    Term =.. [Space, Rel | PatArgs],
+    Term, \+ cyclic_term(OutPattern),
+    copy_term(OutPattern, Result).
+>>>>>>> 5130cbe (-fix standard name issue)
 
 %Get all atoms in space, irregard of arity:
 'get-atoms'(Space, Pattern) :- current_predicate(Space/Arity),
