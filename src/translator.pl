@@ -85,10 +85,27 @@ translate_expr([H|T], Goals, Out) :-
         ; ( HV == 'add-atom' ; HV == 'remove-atom' ) -> append(T, [Out], RawArgs),
                                                         Goal =.. [HV|RawArgs],
                                                         append(GsH, [Goal], Goals)
+<<<<<<< HEAD
         ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
+=======
+        ; ( HV == 'add-atom' ; HV == 'remove-atom' ) -> append(T, [Out], RawArgs),
+                                                        Goal =.. [HV|RawArgs],
+                                                        append(GsH, [Goal], Goals)
+        ; ( HV == 'map-atom' ) ->
+            T = [List, Pattern, Body],
+            translate_expr(List, GsList, VList), % Translate the List argument
+            append(GsH, GsList, GsInner),
+            Goal = 'map-atom'(VList, Pattern, Body, Out), % Keep Pattern and Body as-is
+            append(GsInner, [Goal], Goals)
+        
+        
+      
+
+
+>>>>>>> 5130cbe (-fix standard name issue)
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
           ( atom(HV), fun(HV) -> append(AVs, [Out], ArgsV),        %Known function => direct call
