@@ -1,11 +1,13 @@
 :- ensure_loaded([parser, translator, filereader, spaces]).
-
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
 %%% Let bindings: %%%
 'let*'([], B, B).
 'let*'([[V,Val]|Rs], B, Out) :- V = Val, 'let*'(Rs, B, Out).
 let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
+
+%%% Chain: evaluate first arg, bind to variable (second), then evaluate third
+chain(Eval, Var, After, Out) :- let(Var, Eval, After, Out).
 
 %%% Arithmetic & Comparison: %%%
 '+'(A,B,R)  :- R is A + B.
@@ -24,7 +26,24 @@ let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
 '>='(A,B,R) :- (A >= B -> R=true ; R=false).
 min(A,B,R)  :- R is min(A,B).
 max(A,B,R)  :- R is max(A,B).
-'exp-math'(Arg,R) :- R is exp(Arg).
+exp(Arg,R) :- R is exp(Arg).
+:- use_module(library(clpfd)).
+'#+'(A, B, R) :- R #= A + B.
+'#-'(A, B, R) :- R #= A - B.
+'#*'(A, B, R) :- R #= A * B.
+'#div'(A, B, R) :- R #= A div B.
+'#//'(A, B, R) :- R #= A // B.
+'#mod'(A, B, R) :- R #= A mod B.
+'#min'(A, B, R) :- R #= min(A,B).
+'#max'(A, B, R) :- R #= max(A,B).
+'#<'(A, B, true)  :- A #< B, !.
+'#<'(_, _, false).
+'#>'(A, B, true)  :- A #> B, !.
+'#>'(_, _, false).
+'#='(A, B, true)  :- A #= B, !.
+'#='(_, _, false).
+'#\\='(A, B, true)  :- A #\= B, !.
+'#\\='(_, _, false).
 
 %Custom Maths function
 'cos-math'(Arg,R) :- R is cos(Arg).
@@ -205,7 +224,8 @@ subtract([E|T], D, Pred, R) :-
                                                         'map-nested'(Tail, Mapper, NewTail).
 
 %%% Diagnostics / Testing: %%%
-repr(Term,R) :- swrite(Term, R).
+repr(Term, R) :- swrite(Term, R).
+repra(Term, R) :- term_to_atom(Term, R).
 
 'println!'(Arg, true) :- swrite(Arg, RArg),
                          format('~w~n', [RArg]).
@@ -216,7 +236,7 @@ repr(Term,R) :- swrite(Term, R).
 'trace!'(In, Content, Content) :- swrite(In,R),
                                   format('~w~n', [R]).
 
-test(A,B,true) :- (A == B -> E = '✅' ; E = '❌'),
+test(A,B,true) :- (A =@= B -> E = '✅' ; E = '❌'),
                   swrite(A, RA),
                   swrite(B, RB),
                   format("is ~w, should ~w. ~w ~n", [RA, RB, E]).
@@ -247,6 +267,14 @@ assertEqual(A,B,true) :- A \== B,
                                                   -> compound_name_arguments(Call0, A, [])
                                                    ; Call0 =.. [A|Args] ),
                                                 py_call(builtins:Call0, Result, Opts) ).
+
+%%% Eval: %%%
+eval(C, Out) :- translate_expr(C, Goals, Out),
+                call_goals(Goals).
+
+call_goals([]).
+call_goals([G|Gs]) :- call(G), 
+                      call_goals(Gs).
 
 %%% Registration: %%%
 'import!'('&self', File, true) :- atom_string(File, SFile),

@@ -13,10 +13,7 @@ main :- current_prolog_flag(argv, Args),
                      ; Args = [File|_],
                        file_directory_name(File, Dir),
                        assertz(working_dir(Dir)),
-                       load_metta_file(File,default),
-                       findall(R, run(default,R), Results),
-                       maplist(swrite, Results, Strings),
-                       format("~w~n", [Strings]) ),
+                       load_metta_file(File,default) ),
         halt.
 
 :- initialization(main, main).
