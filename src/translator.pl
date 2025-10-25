@@ -100,27 +100,43 @@ translate_expr([H|T], Goals, Out) :-
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
         %--- Manual dispatch options: ---
-        %Force a predicate call to be generated on translation:
-        ; HV == call, T = [CallExpr] -> CallExpr = [F|Args],
-                                        append(GsH, [], Inner),
-                                        append(Args, [Out], CallArgs),
-                                        Goal =.. [F|CallArgs],
-                                        append(Inner, [Goal], Goals)
-        %Force arg to remain data/list on translation:
+        %Generate a predicate call on compilation, translating Args for nesting:
+        ; HV == call,  T = [Expr] -> Expr = [F|Args],
+                                     translate_args(Args, GsArgs, ArgsOut),
+                                     append(GsH, GsArgs, Inner),
+                                     append(ArgsOut, [Out], CallArgs),
+                                     Goal =.. [F|CallArgs],
+                                     append(Inner, [Goal], Goals)
+        %Produce a dynamic dispatch, translating Args for nesting:
+        ; HV == reduce, T = [Expr] -> Expr = [F|Args],
+                                      translate_args(Args, GsArgs, ArgsOut),
+                                      append(GsH, GsArgs, Inner),
+                                      ExprOut = [F|ArgsOut],
+                                      Goal = reduce(ExprOut, Out),
+                                      append(Inner, [Goal], Goals)
+        %Invoke translator to evaluate MeTTa code as data/list:
+        ; HV == eval, T = [Arg] -> append(GsH, [], Inner),
+                                   Goal = eval(Arg, Out),
+                                   append(Inner, [Goal], Goals)
+        %Force arg to remain data/list:
         ; HV == quote, T = [Expr] -> append(GsH, [], Inner),
                                      Out = Expr,
                                      Goals = Inner
-        %--- Automatic 'smart' dispatch, translator deciding when to create a predicate call, data list, or dynamic dispatch:
+        %--- Automatic 'smart' dispatch, translator deciding when to create a predicate call, data list, or dynamic dispatch: ---
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
-          %Known function => direct call
+          %Known function => direct call:
           ( atom(HV), fun(HV) -> append(AVs, [Out], ArgsV),
                                  Goal =.. [HV|ArgsV],
                                  append(Inner, [Goal], Goals)
           %Literals (numbers, strings, etc.), known non-function atom => data:
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
-          %Unknown head (var/compound) => runtime dispatch
+          %Plain data list: evaluate inner fun-sublists
+          ; is_list(HV) -> eval_data_term(HV, Gd, HV1),
+                           append(Inner, Gd, Goals),
+                           Out = [HV1|AVs]
+          %Unknown head (var/compound) => runtime dispatch:
           ; append(Inner, [reduce([HV|AVs], Out)], Goals) )).
 
 %Handle data list:

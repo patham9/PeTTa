@@ -1,4 +1,6 @@
-:- ensure_loaded([parser, translator, filereader, spaces]).
+:- current_prolog_flag(argv, Argv),
+   ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
+                         ; ensure_loaded([parser, translator, filereader, spaces])).
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
 %%% Let bindings: %%%
@@ -287,10 +289,10 @@ register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
 unregister_fun(N/Arity) :- retractall(fun(N)),
                            abolish(N, Arity).
 
-:- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
-                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, 'sqrt-math', 'exp-math', 'log-math', 'cos-math', 'sin-math', 'tan-math',
-                          'car-atom', 'cdr-atom', repr, 'println!', 'readln!', 'trace!', test, assertEqual,
-                          append, 'size-atom', sort, msort, memberfast, excludefast, list_to_set, maplist, 'import!',
+:- maplist(register_fun, [superpose, empty, let, 'let*', chain, '+','-','*','/', '%', min, max,
+                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, sqrt, exp, log, cos, sin,
+                          'car-atom', 'cdr-atom', repr, repra, 'println!', 'readln!', 'trace!', test, assertEqual, 'mm2-exec',
+                          foldl, append, length, sort, msort, memberfast, excludefast, list_to_set, maplist, eval, reduce, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
                           decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, 'intersection-atom', 'subtraction-atom',
                           unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', 'union-atom', sread, 'cons-atom', reverse 
