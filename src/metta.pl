@@ -21,50 +21,91 @@ chain(Eval, Var, After, Out) :- let(Var, Eval, After, Out).
 '>'(A,B,R)  :- (A>B -> R=true ; R=false).
 '=='(A,B,R) :- (eq_comprehensive(A,B) -> R=true ; R=false).
 
-% Comprehensive equality checking for == operator
+% Optimized comprehensive equality checking for == operator
 % Handles int/float equality, atoms, lists, and nested structures
+% Performance optimizations: identity check, fast paths, normalized numeric comparison
+
 eq_comprehensive(A, B) :- 
-    % Handle numeric equality (int and float with equal magnitude)
+    % Fast path: identical objects
+    A == B, !.
+
+eq_comprehensive(A, B) :- 
+    % Handle numeric equality (normalized comparison)
     (number(A), number(B)) -> 
-        (A =:= B ; (float(A), integer(B), A =:= float(B)) ; (integer(A), float(B), float(A) =:= B)) ;
-    % Handle atom equality
-    (atom(A), atom(B)) -> 
-        A == B ;
-    % Handle string equality
-    (string(A), string(B)) -> 
-        A == B ;
-    % Handle boolean equality
-    (A == true, B == true) -> true ;
-    (A == false, B == false) -> true ;
-    % Handle list equality (recursive)
+        eq_numeric(A, B) ;
+    % Handle list equality (with length pre-check)
     (is_list(A), is_list(B)) -> 
-        length(A, LenA), length(B, LenB), LenA == LenB,
-        eq_lists(A, B) ;
+        eq_lists_optimized(A, B) ;
     % Handle compound term equality
     (compound(A), compound(B)) -> 
-        functor(A, F, Arity), functor(B, F, Arity),
-        eq_args(0, Arity, A, B) ;
+        eq_compound_optimized(A, B) ;
+    % Handle atom equality
+    (atom(A), atom(B)) -> 
+        A == B, ! ;
+    % Handle string equality
+    (string(A), string(B)) -> 
+        A == B, ! ;
+    % Handle boolean equality
+    (A == true, B == true) -> true, ! ;
+    (A == false, B == false) -> true, ! ;
     % Handle variable equality
     (var(A), var(B)) -> 
         A == B ;
-    % Default case: exact equality
+    % Default: exact equality
     A == B.
 
-% Helper predicate for list equality checking
-eq_lists([], []).
-eq_lists([H1|T1], [H2|T2]) :- 
-    eq_comprehensive(H1, H2),
-    eq_lists(T1, T2).
+% Optimized numeric equality with normalization
+eq_numeric(A, B) :-
+    % Same type and value
+    A =:= B, !.
+eq_numeric(A, B) :-
+    % Mixed int/float comparison
+    (integer(A), float(B)) -> float(A) =:= B ;
+    (float(A), integer(B)) -> A =:= float(B).
 
-% Helper predicate for compound term argument equality checking
-eq_args(N, N, _, _) :- !.
-eq_args(I, Arity, A, B) :- 
-    I < Arity,
-    I1 is I + 1,
-    arg(I1, A, ArgA),
-    arg(I1, B, ArgB),
-    eq_comprehensive(ArgA, ArgB),
-    eq_args(I1, Arity, A, B).
+% Optimized list equality with early termination and tail recursion
+eq_lists_optimized([], []) :- !.
+eq_lists_optimized([], _) :- !, fail.
+eq_lists_optimized(_, []) :- !, fail.
+eq_lists_optimized([H1|T1], [H2|T2]) :- 
+    eq_comprehensive_simple(H1, H2),
+    !,
+    eq_lists_optimized(T1, T2).
+
+% Simplified equality for inner elements (avoids double identity check)
+eq_comprehensive_simple(A, B) :-
+    % Fast path: identical objects
+    A == B, !.
+eq_comprehensive_simple(A, B) :-
+    % Numeric with normalized comparison
+    (number(A), number(B)) -> 
+        eq_numeric(A, B) ;
+    % List (nested)
+    (is_list(A), is_list(B)) -> 
+        eq_lists_optimized(A, B) ;
+    % Compound term
+    (compound(A), compound(B)) -> 
+        eq_compound_optimized(A, B) ;
+    % Default
+    A == B.
+
+% Optimized compound term equality
+eq_compound_optimized(A, B) :-
+    functor(A, F, Arity),
+    functor(B, F, Arity),
+    !,
+    eq_args_optimized(1, Arity, A, B).
+
+% Optimized argument comparison with early termination
+eq_args_optimized(N, Arity, _, _) :- 
+    N > Arity, !.
+eq_args_optimized(N, Arity, A, B) :- 
+    arg(N, A, ArgA),
+    arg(N, B, ArgB),
+    eq_comprehensive_simple(ArgA, ArgB),
+    !,
+    N1 is N + 1,
+    eq_args_optimized(N1, Arity, A, B).
 '='(A,B,R) :-  (A=B -> R=true ; R=false).
 '=?'(A,B,R) :- (\+ \+ A=B -> R=true ; R=false).
 '=alpha'(A,B,R) :- (A =@= B -> R=true ; R=false).
