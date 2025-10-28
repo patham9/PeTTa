@@ -272,6 +272,10 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec',
                           foldl, append, length, sort, msort, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
-                          decons, 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
-                          unify, 'py-call', 'get-type', 'get-metatype', '=alpha','=@=', concat, sread, cons, reverse,
-                          '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=']).
+                          decons, 'decons-atom', 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
+                          'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
+                          '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=',
+                          'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
+                          'pow-math', 'sqrt-math', 'abs-math', 'log-math', 'trunc-math', 'ceil-math',
+                          'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
+                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom', 'size-atom']).
