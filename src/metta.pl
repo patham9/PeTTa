@@ -4,6 +4,17 @@
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
+%%% Error Handling: %%%
+'Error'(Atom, Message, ['Error', Atom, Message]).
+
+% Helper to check if something is an error
+'is-error'(Term, Result) :- 
+    ( Term = ['Error', _, _] -> Result = true ; Result = false ).
+
+% Extract components from error
+'error-atom'(['Error', Atom, _], Atom).
+'error-message'(['Error', _, Message], Message).
+
 %%% Let bindings: %%%
 'let*'([], B, B).
 'let*'([[V,Val]|Rs], B, Out) :- V = Val, 'let*'(Rs, B, Out).
@@ -224,5 +235,5 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
-                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
+                          'acos-math', 'atan-math', 'Error', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
                           'foldl-atom', 'map-atom', 'filter-atom']).
