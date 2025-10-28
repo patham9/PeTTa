@@ -1,7 +1,10 @@
 #!/bin/sh
 for f in ./examples/*; do
-    # Skip repl.metta
-    ([ "$(basename "$f")" = "repl.metta" ] || [ "$(basename "$f")" = "gpt.metta" ] || [ "$(basename "$f")" = "mm2.metta" ]) && continue
+    base=$(basename "$f")
+    case "$base" in
+        repl.metta|gpt.metta|mm2.metta|lib_*.metta)
+            continue ;;
+    esac
     echo "Running $f"
     output=$(sh run.sh "$f" | grep "is ")
     if ! echo "$output" | grep -q "✅" || echo "$output" | grep -q "❌"; then
@@ -11,4 +14,5 @@ for f in ./examples/*; do
         echo "$output"
     fi
 done
+
 exit 0

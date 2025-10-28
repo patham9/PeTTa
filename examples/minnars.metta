@@ -38,7 +38,7 @@
 
 ;;Exclude item from tuple
 (= (Without $Tuple $a)
-   (excludefast $a $Tuple))
+   (exclude-item $a $Tuple))
 ;   (collapse (let $x (superpose $Tuple)
 ;                  (if (== $x $a)
 ;                      (empty)
@@ -46,7 +46,7 @@
 
 ;;Whether a is an element of the tuple
 (= (ElementOf $a $Tuple)
-   (memberfast $a $Tuple))
+   (is-member $a $Tuple))
 ;   (not (== (collapse (let $x (superpose $Tuple)
 ;                           (if (== $x $a)
 ;                               True

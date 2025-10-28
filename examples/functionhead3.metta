@@ -2,7 +2,7 @@
 (= (qualify $x True) $x)
 
 (= (in $x $L)
-   (qualify $x (memberfast $x $L)))
+   (qualify $x (is-member $x $L)))
 
 (= (myplus (in $X (1 2 3)) 
            (in $Y (2 3)))

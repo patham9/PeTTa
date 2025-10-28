@@ -218,7 +218,7 @@
    (if (< (length $L) $size)
        $L
        (let $lowestPriorityItem (BestCandidate PriorityRankNeg () $L)
-            (LimitSize (excludefast $lowestPriorityItem $L) $size))))
+            (LimitSize (exclude-item $lowestPriorityItem $L) $size))))
 
 ;;Priority-queue based task ranking deriver with belief buffer
 (= (PLN.Derive $Tasks $Beliefs $steps $maxsteps $taskqueuesize $beliefqueuesize)
@@ -235,7 +235,7 @@
                                                  (empty)))
                                        (case (|- $x) ((($T3 $TV3) (Sentence ($T3 $TV3) $Ev1)))))))
                  (let $temp (trace! (SELECTED $steps (Sentence $x $Ev1)) 42)
-                            (PLN.Derive (LimitSize (excludefast (Sentence $x $Ev1) (list_to_set (append $Tasks $derivations))) $taskqueuesize)
+                            (PLN.Derive (LimitSize (exclude-item (Sentence $x $Ev1) (list_to_set (append $Tasks $derivations))) $taskqueuesize)
                                         (LimitSize (list_to_set (append $Beliefs $derivations)) $beliefqueuesize)
                                         (+ $steps 1)
                                         $maxsteps

@@ -13,6 +13,4 @@
 !(test (get-type 42) Number)
 !(test (get-type "42") String)
 
-
-
 !(test (collapse (get-type x)) (Letter Buchstabe))

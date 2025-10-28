@@ -384,12 +384,12 @@
 ;; Warning: this take over a minute to run on the hyperon experimental
 ;; backend.
 !(add-atom &kbm (: ⟨t⟩ ⟨term⟩))
-!(test (memberfast (: (a1 (⟨+⟩ ⟨t⟩ ⟨0⟩)
-          ⟨t⟩
-          ⟨t⟩
-          (a2 ⟨t⟩)
-          (a2 ⟨t⟩))
-      (⟨=⟩ ⟨t⟩ ⟨t⟩))
+!(test (is-member (: (a1 (⟨+⟩ ⟨t⟩ ⟨0⟩)
+                         ⟨t⟩
+                         ⟨t⟩
+                         (a2 ⟨t⟩)
+                         (a2 ⟨t⟩))
+                     (⟨=⟩ ⟨t⟩ ⟨t⟩))
       (collapse (bc &kbm (fromNumber 3) (: $prf (⟨=⟩ ⟨t⟩ ⟨t⟩))))) true)
 
 ;;;;;;;;;;
