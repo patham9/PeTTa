@@ -10,13 +10,11 @@ prolog_interop_example :- register_fun(prologfunc),
 
 main :- current_prolog_flag(argv, Args),
         ( Args = [] -> prolog_interop_example
-                     ; Args = [File|_],
-                       file_directory_name(File, Dir),
-                       assertz(working_dir(Dir)),
-                       load_metta_file(File,default),
-                       findall(R, run(default,R), Results),
-                       maplist(swrite, Results, Strings),
-                       format("~w~n", [Strings]) ),
+        ; Args = [mork] -> prolog_interop_example,
+                           mork_test
+        ; Args = [File|_] -> file_directory_name(File, Dir),
+                             assertz(working_dir(Dir)),
+                             load_metta_file(File,default) ),
         halt.
 
 :- initialization(main, main).
