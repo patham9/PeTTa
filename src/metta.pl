@@ -78,6 +78,7 @@ not(false, true).
 
 %%% Expression size %%%
 'size-atom'(List, Size) :- length(List, Size).
+
 %%% Nondeterminism: %%%
 superpose(L,X) :- member(X,L).
 empty(_) :- fail.
@@ -156,12 +157,11 @@ union_helper(Pred, List1, [Head2|Tail2], Output) :- member_with_pred(Head2, List
                                                     union_helper(Pred, List1, Tail2, Output).
 
 %List based Intersection
-intersection(_Pred, [], _, []) :- !.
-intersection(_Pred, _, [], []) :- !.
-intersection(Pred, [Head1|Tail1], List2, [Head1|Output]) :- member_with_pred(Head1, List2, Pred),
-                                                            intersection(Pred, Tail1, List2, Output).
-intersection(Pred, [Head1|Tail1], List2, Output) :- \+ member_with_pred(Head1, List2, Pred),
-                                                    intersection(Pred, Tail1, List2, Output).
+intersection([], _, []).
+intersection(_, [], []).
+intersection([H|T1], L2, [H|Res]) :- select(H, L2, R2), !,       
+                                     intersection(T1, R2, Res).
+intersection([_|T1], L2, Res) :- intersection(T1, L2, Res).
 
 %List based Subtraction
 subtract(_Pred, [], _, []).
