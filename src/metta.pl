@@ -1,4 +1,6 @@
-:- ensure_loaded([parser, translator, filereader, spaces]).
+:- current_prolog_flag(argv, Argv),
+   ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
+                         ; ensure_loaded([parser, translator, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -6,6 +8,11 @@
 'let*'([], B, B).
 'let*'([[V,Val]|Rs], B, Out) :- V = Val, 'let*'(Rs, B, Out).
 let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
+
+%% Representation conversion: %%
+id(X, X).
+repr(Term, R) :- swrite(Term, R).
+repra(Term, R) :- term_to_atom(Term, R).
 
 %%% Arithmetic & Comparison: %%%
 '+'(A,B,R)  :- R is A + B.
@@ -24,52 +31,43 @@ let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
 '>='(A,B,R) :- (A >= B -> R=true ; R=false).
 min(A,B,R)  :- R is min(A,B).
 max(A,B,R)  :- R is max(A,B).
-'exp-math'(Arg,R) :- R is exp(Arg).
+exp(Arg,R) :- R is exp(Arg).
+:- use_module(library(clpfd)).
+'#+'(A, B, R) :- R #= A + B.
+'#-'(A, B, R) :- R #= A - B.
+'#*'(A, B, R) :- R #= A * B.
+'#div'(A, B, R) :- R #= A div B.
+'#//'(A, B, R) :- R #= A // B.
+'#mod'(A, B, R) :- R #= A mod B.
+'#min'(A, B, R) :- R #= min(A,B).
+'#max'(A, B, R) :- R #= max(A,B).
+'#<'(A, B, true)  :- A #< B, !.
+'#<'(_, _, false).
+'#>'(A, B, true)  :- A #> B, !.
+'#>'(_, _, false).
+'#='(A, B, true)  :- A #= B, !.
+'#='(_, _, false).
+'#\\='(A, B, true)  :- A #\= B, !.
+'#\\='(_, _, false).
+'pow-math'(A, B, Out) :- Out is A ** B.
+'sqrt-math'(A, Out)   :- Out is sqrt(A).
+'abs-math'(A, Out)    :- Out is abs(A).
+'log-math'(Base, X, Out) :- Out is log(X) / log(Base).
+'trunc-math'(A, Out)  :- Out is truncate(A).
+'ceil-math'(A, Out)   :- Out is ceil(A).
+'floor-math'(A, Out)  :- Out is floor(A).
+'round-math'(A, Out)  :- Out is round(A).
+'sin-math'(A, Out)  :- Out is sin(A).
+'cos-math'(A, Out)  :- Out is cos(A).
+'tan-math'(A, Out)  :- Out is tan(A).
+'asin-math'(A, Out) :- Out is asin(A).
+'acos-math'(A, Out) :- Out is acos(A).
+'atan-math'(A, Out) :- Out is atan(A).
+'isnan-math'(A, Out) :- ( A =:= A -> Out = false ; Out = true ).
+'isinf-math'(A, Out) :- ( A =:= 1.0Inf ; A =:= -1.0Inf -> Out = true ; Out = false ).
+'min-atom'(List, Out) :- min_list(List, Out).
+'max-atom'(List, Out) :- max_list(List, Out).
 
-%Custom Maths function
-'cos-math'(Arg,R) :- R is cos(Arg).
-'sin-math'(Arg,R) :- R is sin(Arg).
-'tan-math'(Arg,R) :- R is tan(Arg).
-'acos-math'(Arg,R) :- R is acos(Arg).
-'asin-math'(Arg,R) :- R is asin(Arg).
-'atan-math'(Arg,R) :- R is atan(Arg).
-
-'sqrt-math'(Arg, R) :-
-    R is sqrt(Arg).
-
-'abs-math'(Arg, R) :-
-    ( Arg > 0 ->
-        R is Arg
-    ; Arg < 0 ->
-        R is -Arg
-    ;
-        R is 0
-    ).
-'log-math'(Arg, R) :-
-    R is log(Arg).
-
-'trunc-math'(A, R) :-
-    R is truncate(A).
-
-'ceil-math'(Arg, R) :-
-    R is ceiling(Arg).
-
-'floor-math'(Arg, R) :-
-    R is floor(Arg).
-
-'round-math'(Arg, R) :-
-    R is round(Arg).
-
-'isnan-math'(X, true) :- X \= X, !.
-'isnan-math'(_, false).
-
-'isinf-math'(X, true) :- (X =:= 1.0Inf ; X =:= -1.0Inf), !.
-'isinf-math'(_, false).
-'random-int'(Min, Max, R) :- random_between(Min, Max, R).
-
-'random-float'(Min, Max, R) :- 
-      random(X), 
-      R is X * (Max - Min) + Min.
 %%% Boolean Logic: %%%
 and(true,  X, X).
 and(false, _, false).
@@ -78,6 +76,8 @@ or( true,  _, true).
 not(true,  false).
 not(false, true).
 
+%%% Expression size %%%
+'size-atom'(List, Size) :- length(List, Size).
 %%% Nondeterminism: %%%
 superpose(L,X) :- member(X,L).
 empty(_) :- fail.
@@ -129,10 +129,6 @@ get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
 'get-metatype'(X, 'Grounded') :- atom(X), fun(X), !.  % e.g., '+' is a registered fun/1
 'get-metatype'(X, 'Expression') :- is_list(X), !.     % e.g., (+ 1 2), (a b)
 'get-metatype'(X, 'Symbol') :- atom(X), !.            % e.g., a
-
-'is-function'([->, _, _], true) :- !.
-'is-function'(_, false).
-
 'is-var'(A,R) :- (var(A) -> R=true ; R=false).
 'is-expr'(A,R) :- (is_list(A) -> R=true ; R=false).
 
@@ -206,8 +202,6 @@ subtract(Pred, [E|T], D, R) :- ( member_with_pred(E, D, Pred) -> subtract(Pred, 
                                                         'map-nested'(Tail, Mapper, NewTail).
 
 %%% Diagnostics / Testing: %%%
-repr(Term,R) :- swrite(Term, R).
-
 'println!'(Arg, true) :- swrite(Arg, RArg),
                          format('~w~n', [RArg]).
 
@@ -248,6 +242,19 @@ assert(Goal, true) :- ( call(Goal) -> true
                                                    ; Call0 =.. [A|Args] ),
                                                 py_call(builtins:Call0, Result, Opts) ).
 
+%%% States: %%%
+'bind!'(A, ['new-state', B], C) :- 'change-state!'(A, B, C).
+'change-state!'(Var, Value, true) :- nb_setval(Var, Value).
+'get-state'(Var, Value) :- nb_getval(Var, Value).
+
+%%% Eval: %%%
+eval(C, Out) :- translate_expr(C, Goals, Out),
+                call_goals(Goals).
+
+call_goals([]).
+call_goals([G|Gs]) :- call(G), 
+                      call_goals(Gs).
+
 %%% Registration: %%%
 'import!'('&self', File, true) :- atom_string(File, SFile),
                                   working_dir(Base),
@@ -259,15 +266,16 @@ register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
 unregister_fun(N/Arity) :- retractall(fun(N)),
                            abolish(N, Arity).
 
-:- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max,
-                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, 'sqrt-math', 'exp-math', 'log-math', 'cos-math', 'sin-math', 'tan-math',
-                          'car-atom', 'cdr-atom', repr, 'println!', 'readln!', 'trace!', test, assertEqual,
-                          append, 'size-atom', sort, msort, memberfast, excludefast, list_to_set, maplist, 'import!',
+:- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
+                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, sqrt, exp, log, cos, sin,
+                          'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom',
+                          repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec',
+                          foldl, append, length, sort, msort, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
                           decons, 'decons-atom', 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
-                          'py-call', 'get-type', 'get-metatype', 'is-function', '=alpha', concat, sread, cons, reverse,
+                          'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=',
                           'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
                           'pow-math', 'sqrt-math', 'abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
-                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom']).
+                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom', 'size-atom']).
