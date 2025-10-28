@@ -152,7 +152,17 @@ assert(Goal, true) :- ( call(Goal) -> true
                                       format("Assertion failed: ~w~n", [RG]),
                                       halt(1) ).
 
-%%
+%%% Nondeterminism %%%
+union(X, Y, E) :- member(E, X);
+                  member(E, Y).
+
+unique(List, Elem) :- list_to_set(List, Set),
+                      member(Elem, Set).
+
+subtraction(X, Y, E) :- member(E, X),
+                        \+ member(E, Y).
+
+intersection(X, Y , Out) :- findall(E, (member(E, X), member(E, Y)), Out).
 
 %%% Python bindings: %%%
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
@@ -225,4 +235,4 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
-                          'foldl-atom', 'map-atom', 'filter-atom']).
+                          'foldl-atom', 'map-atom', 'filter-atom' , union , unique , subtraction, intersection]).
