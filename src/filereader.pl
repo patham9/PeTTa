@@ -10,13 +10,29 @@ process_metta_string(S, RunArg) :- split_string(S, "\n", "", L0),
                                    findall(C, (member(L,L0), split_string(L,";","",[C|_])), L1),
                                    atomic_list_concat(L1, '\n', CodeWithoutComment),
                                    atomic_list_concat(['(= (run ', RunArg, ') (collapse (\\1)))'], Replacement),
-                                   re_replace("(?m)^\\s*!\\s*\\(((?:[^()]|\\((?-1)\\))*)\\)"/g,
-                                              Replacement, CodeWithoutComment, FunctionizedCode),
+                                   % Process in chunks to avoid PCRE match_limit on large files
+                                   string_length(CodeWithoutComment, Len),
+                                   ChunkSize = 100000,  % 100KB chunks
+                                   ( Len > ChunkSize
+                                     -> process_in_chunks(CodeWithoutComment, Replacement, 0, ChunkSize, Len, FunctionizedCode)
+                                     ;  re_replace("(?m)^\\s*!\\s*\\(((?:[^()]|\\((?-1)\\))*)\\)"/g,
+                                                   Replacement, CodeWithoutComment, FunctionizedCode) ),
                                    string_codes(FunctionizedCode, Codes),
                                    ( phrase(top_forms(Forms), Codes)
                                      -> true ; format("Parse error: invalid or unbalanced top-level form(s).~n", []), halt(1) ),
                                    ( maplist(assert_function, Forms)
                                      -> true ; format("Parse error: failed to process one or more forms.~n", []), halt(1) ).
+
+% Process large file in chunks
+process_in_chunks(String, Replacement, Start, ChunkSize, TotalLen, Result) :-
+    ( Start >= TotalLen
+      -> Result = ""
+      ;  sub_string(String, Start, ChunkSize, _, Chunk),
+         re_replace("(?m)^\\s*!\\s*\\(((?:[^()]|\\((?-1)\\))*)\\)"/g,
+                    Replacement, Chunk, ProcessedChunk),
+         NextStart is Start + ChunkSize,
+         process_in_chunks(String, Replacement, NextStart, ChunkSize, TotalLen, RestResult),
+         string_concat(ProcessedChunk, RestResult, Result) ).
 
 %Functions stay functions and runaway S-expressions become add-atom calls with result omitted:
 to_function_form(T, T) :- T = [=, [_|_], _], !.
