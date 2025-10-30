@@ -67,6 +67,9 @@ exp(Arg,R) :- R is exp(Arg).
 'isinf-math'(A, Out) :- ( A =:= 1.0Inf ; A =:= -1.0Inf -> Out = true ; Out = false ).
 'min-atom'(List, Out) :- min_list(List, Out).
 'max-atom'(List, Out) :- max_list(List, Out).
+%%% Random Operations: %%%
+'random-int'(Min, Max, Result) :- random_between(Min, Max, Result).
+'random-float'(Result) :- random(Result).
 
 %%% Boolean Logic: %%%
 and(true,  X, X).
@@ -223,6 +226,6 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=',
                           'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
-                          'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
+                          'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
-                          'foldl-atom', 'map-atom', 'filter-atom']).
+                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time']).
