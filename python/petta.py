@@ -1,5 +1,4 @@
 import os
-import uuid
 import threading
 import janus_swi as janus
 
@@ -29,17 +28,10 @@ class PeTTa:
             metta_code = f.read()
         return self.process_metta_string(metta_code)
 
-    def process_metta_string(self, metta_code, run_arg=None):
+    def process_metta_string(self, metta_code):
         """Compile a string of MeTTa code to Prolog and return the results of the run."""
-        if run_arg is None:
-            run_arg = str(uuid.uuid4())
-        # Use parameterized query to call process_metta_string with the run_arg
-        janus.query_once(f"{self.cmd}('{metta_code}', 'A{run_arg}')")
-        # Now query for the run results for this specific run_arg
-        results = list(janus.query(f"crun('A{run_arg}',R)"))
-        return [result['R'] for result in results]
-
-    def run(self):
-        """Execute the run(R) predicates and return results."""
-        results = list(janus.query("crun(A,R)"))
-        return [result['R'] for result in results]
+        query = f"{self.cmd}('{metta_code}', Results)"
+        result = janus.query_once(query)
+        if result is None:
+            return []
+        return result.get('Results', [])

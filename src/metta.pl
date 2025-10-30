@@ -206,7 +206,7 @@ call_goals([G|Gs]) :- call(G),
 'import!'('&self', File, true) :- atom_string(File, SFile),
                                   working_dir(Base),
                                   atomic_list_concat([Base, '/', SFile, '.metta'], Path),
-                                  load_metta_file(Path, default).
+                                  load_metta_file(Path,_).
 
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
