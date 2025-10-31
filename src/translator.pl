@@ -73,7 +73,7 @@ translate_expr([H0|T0], Goals, Out) :-
         %--- Conditionals ---:
         ; HV == if, T = [Cond, Then, Else] -> ( translate_expr_to_conj(Cond, ConC, true),
                                                 translate_expr_to_conj(Then, ConT, Vt)
-                                                -> handle_if_condition(ConC, ConT, Cond, Then, Else, GsH, Goals, Vt, Out)
+                                                -> handle_if_condition(ConC, ConT, Else, GsH, Goals, Vt, Out)
                                                  ; translate_expr_to_conj(Else, ConE, Out),
                                                    ( ConE == true -> GsH = Goals ; append(GsH, [ConE], Goals) ))
         ; HV == case, T = [KeyExpr, PairsExpr] -> translate_expr(KeyExpr, Gk, Kv),
@@ -81,17 +81,13 @@ translate_expr([H0|T0], Goals, Out) :-
                                                   append(GsH, Gk, G0),
                                                   append(G0, [IfGoal], Goals)
         %--- Unification constructs ---:
-        ; HV == let, T = [Pat, Val, In] -> translate_expr(Pat, Gp, P),
+        ; HV == let, T = [Pat, Val, In] -> translate_expr(Pat, Gp, Pv),
+                                           constrain_args(Pv, P, Gc),
                                            translate_expr(Val, Gv, V),
-                                           translate_expr(In,  Gi, I),
-                                           Goal = let(P, V, I, Out),
-                                           append(GsH, Gp, A), append(A, Gv, B), append(B, Gi, Inner),
-                                           Goals = [Goal | Inner]
-        ; HV == 'let*', T = [Binds, Body] -> translate_bindings(Binds, Gb, Bs),
-                                             translate_expr(Body,  Gd, B),
-                                             Goal = 'let*'(Bs, B, Out),
-                                             append(GsH, Gb, A), append(A, Gd, Inner),
-                                             Goals = [Goal | Inner]
+                                           translate_expr(In,  Gi, Out),
+                                           append([GsH,[(P=V)],Gp,Gv,Gi,Gc], Goals)
+        ; HV == 'let*', T = [Binds, Body] -> letstar_to_rec_let(Binds,Body,RecLet),
+                                             translate_expr(RecLet,  Goals, Out)
         ; HV == chain, T = [Eval, Pat, After] -> translate_pattern(Pat, P),
                                                  translate_expr(Eval, Ge, Ev),
                                                  translate_expr(After, Ga, A),
@@ -219,12 +215,10 @@ eval_data_list([E|Es], Goals, [V|Vs]) :- ( is_list(E) -> eval_data_term(E, G1, V
                                          eval_data_list(Es, G2, Vs),
                                          append(G1, G2, Goals).
 
-%Translate bindings without invoking call:
-translate_bindings([], [], []).
-translate_bindings([[Pat, Val]|Rest], Goals, [[P,V]|Bs]) :- translate_pattern(Pat, P),  %Handle LHS as pure data
-                                                            translate_expr(Val, Gv, V), %RHS as normal expr
-                                                            translate_bindings(Rest, Gr, Bs),
-                                                            append(Gv, Gr, Goals).
+
+%Convert let* to recusrive let:
+letstar_to_rec_let([[Pat,Val]],Body,[let,Pat,Val,Body]).
+letstar_to_rec_let([[Pat,Val]|Rest],Body,[let,Pat,Val,Out]) :- letstar_to_rec_let(Rest,Body,Out).
 
 %Patterns: variables, atoms, numbers, lists:
 translate_pattern(X, X) :- var(X), !.
@@ -233,13 +227,13 @@ translate_pattern([H|T], [P|Ps]) :- !, translate_pattern(H, P),
                                        translate_pattern(T, Ps).
 
 % Handles cases where condition translation succeeded.
-handle_if_condition(true, ConT, _, _, _, GsH, Goals, Vt, Out) :- ( ConT == true -> GsH = Goals, Out = Vt
-                                                                                 ; append(GsH, [ConT], Goals) ), !.
-handle_if_condition(ConC, ConT, _Cond, _Then, Else, GsH, Goals, Vt, Out) :- translate_expr(Else, Ge, Ve),
-                                                                            goals_list_to_conj(Ge, ConE),
-                                                                            build_branch(ConT, Vt, Out, Bt),
-                                                                            build_branch(ConE, Ve, Out, Be),
-                                                                            append(GsH, [ConC -> Bt ; Be], Goals).
+handle_if_condition(true, true,  _, Goals, Goals, Out, Out) :- !.
+handle_if_condition(true, ConT,  _, GsH, Goals, Out, Out) :- append(GsH, [ConT], Goals), !.
+handle_if_condition(ConC, ConT, Else, GsH, Goals, Vt, Out) :- translate_expr(Else, Ge, Ve),
+                                                              goals_list_to_conj(Ge, ConE),
+                                                              build_branch(ConT, Vt, Out, Bt),
+                                                              build_branch(ConE, Ve, Out, Be),
+                                                              append(GsH, [ConC -> Bt ; Be], Goals).
 
 % Constructs the goal for a single branch of an if-then-else/case.
 build_branch(true, Val, Out, (Out = Val)) :- !.
