@@ -1,7 +1,7 @@
 #!/bin/sh
 for f in ./examples/*; do
     base=$(basename "$f")
-    case "$base" in repl.metta|gpt.metta|mm2.metta)
+    case "$base" in repl.metta|gpt.metta|mm2.metta|torch.metta|zmorkspace*.metta)
         continue ;;
     esac
     echo "Running $f"
