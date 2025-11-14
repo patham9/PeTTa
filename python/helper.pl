@@ -1,10 +1,19 @@
-crun(ARG,OUT) :-
-  current_predicate(run/2),
-  run(ARG,P),
-  repr(P,OUT).
+maybe_enable_silent(true) :- !.
+maybe_enable_silent(false) :-
+    ( current_prolog_flag(argv, Args0) -> true ; Args0 = [] ),
+    ( member('--silent', Args0) -> Args1 = Args0
+                                 ; append(Args0, ['--silent'], Args1)),
+    set_prolog_flag(argv, Args1).
 
-process_metta_string_silent(S, RunArg) :-
-    ( current_prolog_flag(argv, Args) -> true ; Args = [] ),
-    append(Args, ['--silent'], Args1),
-    set_prolog_flag(argv,Args1),
-    process_metta_string(S, RunArg).
+set_working_dir(load_metta_file, File) :-
+    file_directory_name(File, Dir),
+    retractall(working_dir(_)),
+    assertz(working_dir(Dir)),
+    !.
+set_working_dir(_, _).
+
+run_metta_helper(Verbose, Predicate, Arg, ResultsR) :-
+    maybe_enable_silent(Verbose),
+    set_working_dir(Predicate, Arg),
+    call(Predicate, Arg, Results),
+    maplist(swrite,Results,ResultsR).

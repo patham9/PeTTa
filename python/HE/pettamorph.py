@@ -29,7 +29,7 @@ def call_petta(*a):
     if EXPRESSION.startswith("\""): #unstring
         EXPRESSION = EXPRESSION[1:-1]
     if EXPRESSION.endswith(".metta"):
-        peTTa.load_metta_file(EXPRESSION)
+        peTTa.load_metta_file(file_path=orig_cwd + "/" + EXPRESSION)
         parser = SExprParser("True")
         return parser.parse(tokenizer)
     else:

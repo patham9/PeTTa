@@ -1,0 +1,6 @@
+.aider*
+mork_ffi/target
+python/__pycache__
+mork_ffi/morklib.so
+mork_ffi/Cargo.lock
+python/tests/__pycache__

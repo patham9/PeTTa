@@ -1,45 +1,46 @@
 import os
-import uuid
 import threading
-import janus_swi as janus
+import importlib
 
 CONSULTED = False
 CONSULT_LOCK = threading.Lock()
+janus = None
 
 class PeTTa:
-    def __init__(self, verbose=False, metta_src_path=None):
-        global CONSULTED
-        self.cmd = "process_metta_string" if verbose else "process_metta_string_silent"
-
+    def __init__(self, verbose=False, petta_path=None):
+        global CONSULTED, janus
+        self.verbose = "true" if verbose else "false"
         if not CONSULTED:
             with CONSULT_LOCK:
                 if not CONSULTED:
-                    if metta_src_path is None:
-                        # Assume the src directory is in the same directory as this file
-                        metta_src_path = os.path.join(os.path.dirname(__file__))
-                    main_path = os.path.join(metta_src_path, '..', 'src' , 'main.pl')
-                    helper_path = os.path.join(metta_src_path, 'helper.pl')
-                    janus.consult(main_path)
-                    janus.consult(helper_path)
+                    if petta_path is None:
+                        petta_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                    morklib_file = os.path.join(petta_path, "mork_ffi", "target", "release", "libmork_ffi.so")
+                    if os.path.exists(morklib_file):
+                        orig_dir = os.getcwd()
+                        os.chdir(petta_path)
+                        janus = importlib.import_module("janus_swi")
+                        os.chdir(orig_dir)
+                        janus.query_once("set_prolog_flag(argv, ['mork'])")
+                    else:
+                        janus = importlib.import_module("janus_swi")
+                    main_file = os.path.join(petta_path, "src", "main.pl")
+                    helper_file = os.path.join(petta_path, "python", "helper.pl")
+                    janus.consult(main_file)
+                    janus.consult(helper_file)
                     CONSULTED = True
 
-    def load_metta_file(self, file_path):
+    def _run_helper(self, helper_name, argument):
+        query = f"run_metta_helper({self.verbose},{helper_name},'{argument}', Results)"
+        result = janus.query_once(query)
+        if result is None:
+            return []
+        return result.get("Results", [])
+
+    def load_metta_file(self, file_path) -> str:
         """Compile a MeTTa file to Prolog and return the results of the run."""
-        with open(file_path, 'r') as f:
-            metta_code = f.read()
-        return self.process_metta_string(metta_code)
+        return self._run_helper("load_metta_file", file_path)
 
-    def process_metta_string(self, metta_code, run_arg=None):
+    def process_metta_string(self, metta_code) -> str:
         """Compile a string of MeTTa code to Prolog and return the results of the run."""
-        if run_arg is None:
-            run_arg = str(uuid.uuid4())
-        # Use parameterized query to call process_metta_string with the run_arg
-        janus.query_once(f"{self.cmd}('{metta_code}', 'A{run_arg}')")
-        # Now query for the run results for this specific run_arg
-        results = list(janus.query(f"crun('A{run_arg}',R)"))
-        return [result['R'] for result in results]
-
-    def run(self):
-        """Execute the run(R) predicates and return results."""
-        results = list(janus.query("crun(A,R)"))
-        return [result['R'] for result in results]
+        return self._run_helper("process_metta_string", metta_code)

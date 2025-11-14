@@ -1,8 +1,6 @@
 ;Check out functionhead2.metta!
-(= (qualify $x True) $x)
-
 (= (in $x $L)
-   (qualify $x (is-member $x $L)))
+   (let True (is-member $x $L) $x))
 
 (= (myplus (in $X (1 2 3)) 
            (in $Y (2 3)))
@@ -19,4 +17,4 @@
 ;what can be reached when adding $X to $Y:
 !(test (collapse (myplus $x $y)) (3 4 4 5 5))
 ;With which $x added to 2 can we reach values above 3 with myplus?
-!(test (collapse (qualify $x (> (myplus $x 2) 3))) (2 3))
+!(test (collapse (let True (> (myplus $x 2) 3) $x)) (2 3))

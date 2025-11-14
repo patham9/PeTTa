@@ -112,6 +112,17 @@
 
 ;; Truth functions
 
+;Forward declaration
+(= (STV $stv) (empty))
+
+(: Truth_c2w (-> Number Number))
+(= (Truth_c2w $c)
+   (/safe $c (- 1 $c)))
+
+(: Truth_w2c (-> Number Number))
+(= (Truth_w2c $w)
+   (/safe $w (+ $w 1)))
+
 ; Deduction formula: PLN book "1.4 Truth-value Formulas", page 15:
 ; borrowed from https://github.com/trueagi-io/hyperon-pln/blob/main/metta/pln/dependent-types/DeductionDTL.metta
 (= (Truth_Deduction (stv $Ps $Pc)
@@ -167,14 +178,6 @@
               (min (min $cAB $cnotAB) $cA))))
 
 ;Revision: PLN Book "5.10.2 A Heuristic Revision Rule for Simple Truth-values", page 116:
-(: Truth_c2w (-> Number Number))
-(= (Truth_c2w $c)
-   (/safe $c (- 1 $c)))
-
-(: Truth_w2c (-> Number Number))
-(= (Truth_w2c $w)
-   (/safe $w (+ $w 1)))
-
 (= (Truth_Revision (stv $f1 $c1) (stv $f2 $c2))
    (let* (($w1 (Truth_c2w $c1))
           ($w2 (Truth_c2w $c2))
@@ -460,53 +463,4 @@
 
 (= (PLN.Query $kb $term)
    (PLN.Query $kb $term (PLN.Config.MaxSteps))) ;default steps bound
-
-(= (STV (Concept Anna)) (stv 0.1667 0.9))
-(= (STV (Concept Bob)) (stv 0.1667 0.9))
-(= (STV (Concept Edward)) (stv 0.1667 0.9))
-(= (STV (Concept Frank)) (stv 0.1667 0.9))
-(= (STV (Concept Gary)) (stv 0.1667 0.9))
-(= (STV (Concept Helen)) (stv 0.1667 0.9))
-
-(= (kb)
-   ((Sentence ((Implication (Inheritance (Product $1 $2) friend)
-                            (Implication (Inheritance $1
-                                                      (IntSet smokes))
-                                         (Inheritance $2
-                                                      (IntSet smokes))))
-               (stv 0.4 0.9)) (1))
-    (Sentence ((Implication (Inheritance $1
-                                         (IntSet smokes))
-                            (Inheritance $1
-                                         (IntSet cancerous)))
-               (stv 0.6 0.9)) (2))
-    (Sentence ((Inheritance (Product Anna Bob)
-                            friend) 
-               (stv 1.0 0.9)) (3))
-    (Sentence ((Inheritance (Product Anna Edward)
-                            friend)
-               (stv 1.0 0.9)) (4))
-    (Sentence ((Inheritance (Product Anna Frank)
-                            friend)
-               (stv 1.0 0.9)) (5))
-    (Sentence ((Inheritance (Product Edward Frank)
-                            friend)
-               (stv 1.0 0.9)) (6))
-    (Sentence ((Inheritance (Product Gary Helen)
-                            friend)
-               (stv 1.0 0.9)) (7))
-    (Sentence ((Inheritance (Product Gary Frank)
-                            friend)
-               (stv 0.0 0.9)) (8))
-    (Sentence ((Inheritance Anna
-                            (IntSet smokes))
-               (stv 1.0 0.9)) (9))
-    (Sentence ((Inheritance Edward
-                            (IntSet smokes))
-               (stv 1.0 0.9)) (10))))
-
-!(test (PLN.Query (kb)
-                  (Inheritance Edward
-                               (IntSet cancerous)))
-       ((stv 0.5199204545454544 0.8290782204129108) (1 2 4 9 10)))
 

@@ -1,15 +1,23 @@
+%%%%%%%%%% Dependencies %%%%%%%%%%
+
+:- autoload(library(uuid)).
+:- use_module(library(random)).
+:- use_module(library(janus)).
+:- use_module(library(error)).
+:- use_module(library(listing)).
+:- use_module(library(aggregate)).
+:- use_module(library(thread)).
+:- use_module(library(lists)).
+:- use_module(library(yall), except([(/)/3])).
+:- use_module(library(apply)).
+:- use_module(library(apply_macros)).
 :- current_prolog_flag(argv, Argv),
    ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
                          ; ensure_loaded([parser, translator, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
-%%% Let bindings: %%%
-'let*'([], B, B).
-'let*'([[V,Val]|Rs], B, Out) :- V = Val, 'let*'(Rs, B, Out).
-let(V, Val, In, Out) :- 'let*'([[V,Val]], In, Out).
-
-%% Representation conversion: %%
+%%% Representation conversion: %%%
 id(X, X).
 repr(Term, R) :- swrite(Term, R).
 repra(Term, R) :- term_to_atom(Term, R).
@@ -68,6 +76,12 @@ exp(Arg,R) :- R is exp(Arg).
 'min-atom'(List, Out) :- min_list(List, Out).
 'max-atom'(List, Out) :- max_list(List, Out).
 
+%%% Random Generators: %%%
+'random-int'(Min, Max, Result) :- random_between(Min, Max, Result).
+'random-int'('&rng', Min, Max, Result) :- random_between(Min, Max, Result).
+'random-float'(Min, Max, Result) :- random(R), Result is Min + R * (Max - Min).
+'random-float'('&rng', Min, Max, Result) :- random(R), Result is Min + R * (Max - Min).
+
 %%% Boolean Logic: %%%
 and(true,  X, X).
 and(false, _, false).
@@ -75,6 +89,8 @@ or( false, X, X).
 or( true,  _, true).
 not(true,  false).
 not(false, true).
+xor(false, A, A).
+xor(true, A, B) :- not(A, B).
 
 %%% Nondeterminism: %%%
 superpose(L,X) :- member(X,L).
@@ -86,11 +102,14 @@ empty(_) :- fail.
 'first-from-pair'([A, _], A).
 'second-from-pair'([_, A], A).
 'unique-atom'(A, B) :- list_to_set(A, B).
+'sort-atom'(List, Sorted) :- msort(List, Sorted).
+'size-atom'(List, Size) :- length(List, Size).
 'car-atom'([H|_], H).
 'cdr-atom'([_|T], T).
 decons([H|T], [H|[T]]).
 cons(H, T, [H|T]).
 'index-atom'(List, Index, Elem) :- nth0(Index, List, Elem).
+member(X, L, _) :- member(X, L).
 'is-member'(X, List, true) :- member(X, List).
 'is-member'(X, List, false) :- \+ member(X, List).
 'exclude-item'(A, L, R) :- exclude(==(A), L, R).
@@ -127,77 +146,10 @@ get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
 'get-metatype'(X, 'Grounded') :- atom(X), fun(X), !.  % e.g., '+' is a registered fun/1
 'get-metatype'(X, 'Expression') :- is_list(X), !.     % e.g., (+ 1 2), (a b)
 'get-metatype'(X, 'Symbol') :- atom(X), !.            % e.g., a
-'is-var'(A,R) :- (var(A) -> R=true ; R=false).
-'is-expr'(A,R) :- (is_list(A) -> R=true ; R=false).
 
-%Helper functions
-member_with_pred(Element, [Head|_], Pred) :- call(Pred, Element, Head, true).
-member_with_pred(Element, [_|Tail], Pred) :- member_with_pred(Element, Tail, Pred).
-
-% Convert a list to a set using the given equality predicate
-list_to_set(Pred, List, Set) :- list_to_set_helper(Pred, List, [], Set).
-list_to_set_helper(_Pred, [], Acc, Acc).
-list_to_set_helper(Pred, [H|T], Acc, Set) :- ( member_with_pred(H, Acc, Pred)
-                                               -> list_to_set_helper(Pred, T, Acc, Set)
-                                                ; list_to_set_helper(Pred, T, [H|Acc], Set) ).
-
-%Set based Union
-union(Pred, List1, List2, Result) :- list_to_set(Pred, List1, Set1),
-                                     list_to_set(Pred, List2, Set2), !,
-                                     union_helper(Pred, Set1, Set2, Result).
-
-union_helper(_Pred, [], [], []) :- !.
-union_helper(_Pred, List1, [], List1) :- !.
-union_helper(Pred, List1, [Head2|Tail2], [Head2|Output]) :- \+ member_with_pred(Head2, List1, Pred),
-                                                               union_helper(Pred, List1, Tail2, Output).
-union_helper(Pred, List1, [Head2|Tail2], Output) :- member_with_pred(Head2, List1, Pred),
-                                                    union_helper(Pred, List1, Tail2, Output).
-
-%List based Intersection
-intersection(_Pred, [], _, []) :- !.
-intersection(_Pred, _, [], []) :- !.
-intersection(Pred, [Head1|Tail1], List2, [Head1|Output]) :- member_with_pred(Head1, List2, Pred),
-                                                            intersection(Pred, Tail1, List2, Output).
-intersection(Pred, [Head1|Tail1], List2, Output) :- \+ member_with_pred(Head1, List2, Pred),
-                                                    intersection(Pred, Tail1, List2, Output).
-
-%List based Subtraction
-subtract(_Pred, [], _, []).
-subtract(Pred, [E|T], D, R) :- ( member_with_pred(E, D, Pred) -> subtract(Pred, T, D, R)
-                                                               ; R = [E|R1],
-                                                                 subtract(Pred, T, D, R1) ).
-
-%%% Higher-order predicates: %%%
-'fold-flat'([], Acc, _Combiner, Acc).
-'fold-flat'([Head|Tail], Acc, Combiner, Result) :- call(Combiner, Acc, Head, NewAcc),  % Apply Combiner(Acc, Head, NewAcc)
-                                                   'fold-flat'(Tail, NewAcc, Combiner, Result).
-
-'fold-nested'([], Acc, _Combiner, Acc).
-'fold-nested'(A, Acc, Combiner, Result) :- atom(A),
-                                           call(Combiner, Acc, A, Result).
-
-'fold-nested'([Head|Tail], Acc, Combiner, Result) :- \+ is_list(Head),
-                                                     call(Combiner, Acc, Head, NewAcc),  % Apply Combiner(Acc, Head, NewAcc)
-                                                     'fold-nested'(Tail, NewAcc, Combiner, Result).
-
-'fold-nested'([Head|Tail], Acc, Combiner, Result) :- is_list(Head),
-                                                     'fold-nested'(Head, Acc, Combiner, NewAcc),
-                                                     'fold-nested'(Tail, NewAcc, Combiner, Result).
-
-'map-flat'([], _Mapper, []).
-'map-flat'([Head|Tail], Mapper, [NewHead|NewTail]) :- call(Mapper, Head, NewHead),
-                                                      'map-flat'(Tail, Mapper, NewTail).
-
-'map-nested'([], _Mapper, []).
-'map-nested'(Atom, Mapper, Result) :- atom(Atom),
-                                      call(Mapper, Atom, Result).
-'map-nested'([Head|Tail], Mapper, [NewHead|NewTail]) :- is_list(Head),
-                                                        'map-nested'(Head, Mapper, NewHead),
-                                                        'map-nested'(Tail, Mapper, NewTail).
-
-'map-nested'([Head|Tail], Mapper, [NewHead|NewTail]) :- \+ is_list(Head),
-                                                        call(Mapper, Head, NewHead),
-                                                        'map-nested'(Tail, Mapper, NewTail).
+'is-var'(A,R) :- var(A) -> R=true ; R=false.
+'is-expr'(A,R) :- is_list(A) -> R=true ; R=false.
+'is-space'(A,R) :- atom(A), atom_concat('&', _, A) -> R=true ; R=false.
 
 %%% Diagnostics / Testing: %%%
 'println!'(Arg, true) :- swrite(Arg, RArg),
@@ -218,6 +170,10 @@ assert(Goal, true) :- ( call(Goal) -> true
                                     ; swrite(Goal, RG),
                                       format("Assertion failed: ~w~n", [RG]),
                                       halt(1) ).
+
+%%% Time Retrieval: %%%
+'current-time'(Time) :- get_time(Time).
+'format-time'(Format, TimeString) :- get_time(Time), format_time(atom(TimeString), Format, Time).
 
 %%% Python bindings: %%%
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
@@ -253,11 +209,34 @@ call_goals([]).
 call_goals([G|Gs]) :- call(G), 
                       call_goals(Gs).
 
+%%% Higher-Order Functions: %%%
+'foldl-atom'([], Acc, _Func, Acc).
+'foldl-atom'([H|T], Acc0, Func, Out) :- reduce([Func,Acc0,H], Acc1),
+                                        'foldl-atom'(T, Acc1, Func, Out).
+
+'map-atom'([], _Func, []).
+'map-atom'([H|T], Func, [R|RT]) :- reduce([Func,H], R),
+                                   'map-atom'(T, Func, RT).
+
+'filter-atom'([], _Func, []).
+'filter-atom'([H|T], Func, Out) :- ( reduce([Func,H], true) -> Out = [H|RT]
+                                                             ; Out = RT ),
+                                   'filter-atom'(T, Func, RT).
+
+%%% Prolog interop: %%%
+import_prolog_function(N, true) :- register_fun(N).
+'Predicate'([F|Args], Term) :- Term =.. [F|Args].
+callPredicate(G, true) :- call(G).
+assertzPredicate(G, true) :- assertz(G).
+assertaPredicate(G, true) :- asserta(G).
+retractPredicate(G, true) :- retract(G), !.
+retractPredicate(_, false).
+
 %%% Registration: %%%
 'import!'('&self', File, true) :- atom_string(File, SFile),
                                   working_dir(Base),
                                   atomic_list_concat([Base, '/', SFile, '.metta'], Path),
-                                  load_metta_file(Path, default).
+                                  load_metta_file(Path,_).
 
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
@@ -265,15 +244,16 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                            abolish(N, Arity).
 
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
-                          '<','>','==', '=', '=?', '<=', '>=', and, or, not, sqrt, exp, log, cos, sin,
+                          '<','>','==', '=', '=?', '<=', '>=', and, or, xor, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom',
-                          repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec',
-                          foldl, append, length, sort, msort, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
-                          'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'get-mettatype',
-                          decons, 'decons-atom', 'fold-flat', 'fold-nested', 'map-flat', 'map-nested', union, intersection, subtract,
-                          'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
+                          repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec', atom_concat, atom_chars, copy_term, term_hash,
+                          foldl, append, length, 'size-atom', sort, msort, member, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
+                          'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'is-space', 'get-mettatype',
+                          decons, 'decons-atom', 'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=',
                           'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
-                          'pow-math', 'sqrt-math', 'abs-math', 'log-math', 'trunc-math', 'ceil-math',
-                          'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math',
-                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom']).
+                          'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
+                          'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
+                          'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
+                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time',
+                          import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate]).
