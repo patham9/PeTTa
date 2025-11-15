@@ -116,7 +116,6 @@ jobs:
   # 4) Always run tests on PRs using the resolved image
   test:
     needs: resolve-image
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.resolve-image.outputs.image }}

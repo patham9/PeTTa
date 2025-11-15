@@ -5,17 +5,22 @@ constrain_args([F|Args], Var, Goals) :- atom(F),
                                         fun(F), !,
                                         translate_expr([F|Args], GoalsExpr, Var),
                                         flatten(GoalsExpr, Goals).
-constrain_args([F|Args], [F|Args1], Goals) :- maplist(constrain_args, Args, Args1, NestedGoalsList),
-                                              flatten(NestedGoalsList, Goals), !.
+constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsList),
+                                  flatten(NestedGoalsList, Goals), !.
 
 %Flatten (= Head Body) MeTTa function into Prolog Clause:
 translate_clause(Input, (Head :- BodyConj)) :- Input = [=, [F|Args0], BodyExpr],
                                                maplist(constrain_args, Args0, Args1, GoalsA),
                                                append(GoalsA, GoalsPrefix),
-                                               append(Args1, [Out], Args),
-                                               compound_name_arguments(Head, F, Args),
-                                               translate_expr(BodyExpr, GoalsB, Out),
-                                               append(GoalsPrefix, GoalsB, Goals),
+                                               translate_expr(BodyExpr, GoalsBody, ExpOut),
+                                               (  nonvar(ExpOut) , ExpOut = partial(Base,Bound)
+                                               -> current_predicate(Base/Arity), length(Bound, N), M is (Arity - N) - 1,
+                                                  length(ExtraArgs, M), append([Bound,ExtraArgs,[Out]],CallArgs), Goal =.. [Base|CallArgs],
+                                                  append(GoalsBody,[Goal],FinalGoals), append(Args1,ExtraArgs,HeadArgs)
+                                               ; FinalGoals= GoalsBody , HeadArgs = Args1, Out = ExpOut ),
+                                               append(HeadArgs, [Out], FinalArgs),
+                                               Head =.. [F|FinalArgs],
+                                               append(GoalsPrefix, FinalGoals, Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
 %Conjunction builder, turning goals list to a flat conjunction:
@@ -226,24 +231,29 @@ translate_expr([H0|T0], Goals, Out) :-
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
           %Known function => direct call:
-          ( atom(HV), fun(HV), is_list(AVs),
-            length(AVs,N), Arity is N + 1 % Check for type definition [:,HV,TypeChain]
-            -> ( catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail)
+          ( is_list(AVs), 
+            ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
+            ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
+            ) % Check for type definition [:,HV,TypeChain]
+            -> ( catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail)
                  -> TypeChain = [->|Xs],
                     append(ArgTypes, [OutType], Xs),
-                    translate_args_by_type(T, ArgTypes, GsT2, AVsTmp),
+                    translate_args_by_type(T, ArgTypes, GsT2, AVsTmp0),
+                    (IsPartial -> append(Bound,AVsTmp0,AVsTmp) ; AVsTmp = AVsTmp0),
                     append(GsH, GsT2, InnerTmp),
                     ( OutType == '%Undefined%'
                       -> Extra = []
                        ; Extra = [('get-type'(Out, OutType) ; 'get-metatype'(Out, OutType))] )
-                  ; AVsTmp = AVs,
+                  ; AVsTmp = AllAVs,
                     InnerTmp = Inner,
                     Extra = [] ),
-               ( (((current_predicate(HV/Arity) ; catch(arity(HV, Arity),_,fail)), \+ (current_op(_, _, HV), Arity =< 2)))
+               length(AllAVs,N), Arity is N + 1,
+               ( (((current_predicate(Fun/Arity) ; catch(arity(Fun, Arity),_,fail)), \+ (current_op(_, _, Fun), Arity =< 2)))
                  -> append(AVsTmp, [Out], ArgsV),
-                    Goal =.. [HV|ArgsV],
+                    Goal =.. [Fun|ArgsV],
                     append(InnerTmp, [Goal|Extra], Goals)
-                  ; append(InnerTmp, [(Out = partial(HV,AVsTmp))|Extra], Goals) )
+                  ; Out = partial(Fun,AVsTmp),
+                    append(InnerTmp,Extra, Goals) )
           %Literals (numbers, strings, etc.), known non-function atom => data:
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
