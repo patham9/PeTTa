@@ -1,5 +1,3 @@
-!(import! &self ../lib/lib_metta4)
-
 ;nondeterministically returning integers withing range:
 (= (range $K $N)
    (if (< $K $N)
