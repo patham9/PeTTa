@@ -102,8 +102,6 @@
 ;   5) tuning and more sophisticated moves of all types
 ;
 
-!(import! &self ../lib/lib_metta4)                  ; needed for 'progn'
-
 ;*******************************************************
 ; Global type definitions
 ;*******************************************************

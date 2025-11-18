@@ -3,13 +3,10 @@
 ;Loading a Prolog builtin predicate that follows function form convention:
 !(import_prolog_function re_replace)
 
-;Loading a Prolog builtin that does not use the last arg as output variable, but the second one:
-!(import_prolog_function read_file_to_string)
-
-;and further expects the output to be some instantiated options list:
+;Using a Prolog builtin that has the last arg as an input argument (an instantiated options list):
 (= (read_file_to_string_functionized $filename $options)
-   (let $options (read_file_to_string $filename $text)
-        $text))
+   (progn (callPredicate (Predicate (read_file_to_string $filename $text $options)))
+          $text))
 
 ;which in most cases we can ignore:
 (= (read_file_to_string_functionized $filename)
@@ -73,7 +70,7 @@
 !(assertaPredicate (myAddPred))
 
 ;We can invoke it as a predicate:
-!(test (let $temp (callPredicate (Predicate (myAdd 140 $x))) $x) 142)
+!(test (progn (callPredicate (Predicate (myAdd 140 $x))) $x) 142)
 
 ;But let's suppose it is in function convention:
 !(import_prolog_function myAdd)

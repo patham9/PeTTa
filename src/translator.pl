@@ -84,9 +84,18 @@ translate_expr([H0|T0], Goals, Out) :-
                                Out = true
         ; HV == once, T = [X] -> translate_expr_to_conj(X, Conj, Out),
                                  append(GsH, [once(Conj)], Goals)
-        ; HV == hyperpose, T = [L],
-          build_hyperpose_branches(L, Branches),
-          append(GsH, [concurrent_and(member((Goal,Res), Branches), (call(Goal), Out = Res))], Goals)
+        ; HV == hyperpose, T = [L] -> build_hyperpose_branches(L, Branches),
+                                      append(GsH, [concurrent_and(member((Goal,Res), Branches), (call(Goal), Out = Res))], Goals)
+        %--- Sequential execution ---:
+        ; HV == progn, T = Exprs -> translate_args(Exprs, GsList, Outs),
+                                    append(GsH, GsList, Tmp),
+                                    last(Outs, Out),
+                                    Goals = Tmp
+        ; HV == prog1, T = Exprs -> Exprs = [First|Rest],
+                                    translate_expr(First, GsF, Out),
+                                    translate_args(Rest, GsRest, _),
+                                    append(GsH, GsF, Tmp1),
+                                    append(Tmp1, GsRest, Goals)
         %--- Conditionals ---:
         ; HV == if, T = [Cond, Then, Else] -> translate_expr_to_conj(Cond, ConC, Cv),
                                               translate_expr_to_conj(Then, ConT, Tv),
@@ -111,14 +120,14 @@ translate_expr([H0|T0], Goals, Out) :-
                                                        append([GsH, Gk, KeyGoal, [IfGoal]], Goals) )
         %--- Unification constructs ---:
         ; (HV == let ; HV == chain), T = [Pat, Val, In] -> translate_expr(Pat, Gp, Pv),
-                                           constrain_args(Pv, P, Gc),
-                                           translate_expr(Val, Gv, V),
-                                           translate_expr(In,  Gi, Out),
-                                           append([GsH,[(P=V)],Gp,Gv,Gi,Gc], Goals)
+                                                           constrain_args(Pv, P, Gc),
+                                                           translate_expr(Val, Gv, V),
+                                                           translate_expr(In,  Gi, Out),
+                                                           append([GsH,[(P=V)],Gp,Gv,Gi,Gc], Goals)
         ; HV == 'let*', T = [Binds, Body] -> letstar_to_rec_let(Binds,Body,RecLet),
                                              translate_expr(RecLet,  Goals, Out)
         ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Out),
-                                    Goals = [copy_term(Vars,Con,_,Ncon),Ncon]
+                                            Goals = [copy_term(Vars,Con,_,Ncon),Ncon]
         %--- Iterating over non-deterministic generators without reification ---:
         ; HV == 'forall', T = [GF, TF]
           -> ( is_list(GF) -> GF = [GFH|GFA],
@@ -147,7 +156,7 @@ translate_expr([H0|T0], Goals, Out) :-
              append(GsH, GsAF, Tmp1),
              append(Tmp1, GsGF, Tmp2),
              append(Tmp2, [ConjInit, foldall(agg_reduce(AFV, V), reduce(GenList, V), Init, Out)], Goals)
-        %--- Higher-order functions with pseudo-lambdas ---:
+        %--- Higher-order functions with pseudo-lambdas and lambdas ---:
         ; HV == 'foldl-atom', T = [List, Init, AccVar, XVar, Body]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Init, ConjInit, InitV),
@@ -188,9 +197,9 @@ translate_expr([H0|T0], Goals, Out) :-
                                            ( FreeVars == [] -> Out = F
                                                              ; Out = partial(F, FreeVars) )
         %--- Spaces ---:
-        ; ( HV == 'add-atom' ; HV == 'remove-atom' ) -> append(T, [Out], RawArgs),
-                                                        Goal =.. [HV|RawArgs],
-                                                        append(GsH, [Goal], Goals)
+        ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] -> append(T, [Out], RawArgs),
+                                                                   Goal =.. [HV|RawArgs],
+                                                                   append(GsH, [Goal], Goals)
         ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),

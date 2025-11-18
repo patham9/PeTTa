@@ -31,6 +31,7 @@ repra(Term, R) :- term_to_atom(Term, R).
 '<'(A,B,R)  :- (A<B -> R=true ; R=false).
 '>'(A,B,R)  :- (A>B -> R=true ; R=false).
 '=='(A,B,R) :- (A==B -> R=true ; R=false).
+'!='(A,B,R) :- (A==B -> R=false ; R=true).
 '='(A,B,R) :-  (A=B -> R=true ; R=false).
 '=?'(A,B,R) :- (\+ \+ A=B -> R=true ; R=false).
 '=alpha'(A,B,R) :- (A =@= B -> R=true ; R=false).
@@ -244,7 +245,7 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                            abolish(N, Arity).
 
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
-                          '<','>','==', '=', '=?', '<=', '>=', and, or, xor, not, sqrt, exp, log, cos, sin,
+                          '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom',
                           repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec', atom_concat, atom_chars, copy_term, term_hash,
                           foldl, append, length, 'size-atom', sort, msort, member, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
