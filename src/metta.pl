@@ -1,16 +1,84 @@
 %%%%%%%%%% Dependencies %%%%%%%%%%
 
-:- autoload(library(uuid)).
-:- use_module(library(random)).
-:- use_module(library(janus)).
-:- use_module(library(error)).
-:- use_module(library(listing)).
-:- use_module(library(aggregate)).
-:- use_module(library(thread)).
-:- use_module(library(lists)).
-:- use_module(library(yall), except([(/)/3])).
-:- use_module(library(apply)).
+:- module(metta, []).
+
+:- dynamic working_dir/1.
+:- dynamic arity/2.
+
+:- autoload(library(uuid), [uuid/1]).
+:- use_module(library(random), [random/1, random_between/3]).
+:- use_module(library(janus), [py_call/3]).
+:- use_module(library(error), [must_be/2]).
+:- use_module(library(listing), [portray_clause/2]).
+:- use_module(library(aggregate), [foldall/4]).
+:- use_module(library(thread), [concurrent_and/2]).
+:- use_module(library(lists),
+              [ append/3,
+                member/2,
+                select/3,
+                nth0/3,
+                list_to_set/2,
+                intersection/3,
+                reverse/2,
+                subtract/3,
+                min_list/2,
+                max_list/2,
+                flatten/2
+              ]).
+:- use_module(library(yall), []).
+:- use_module(library(apply),
+              [ include/3,
+                exclude/3,
+                foldl/4, foldl/5, foldl/6, foldl/7,
+                maplist/2, maplist/3, maplist/4, maplist/5
+              ]).
 :- use_module(library(apply_macros)).
+
+ensure_fun_arity(F, Arity) :-
+    ( arity(F, Arity) -> true ; assertz(arity(F, Arity)) ).
+
+require_fun_arity(F, Arity) :-
+    arity(F, Arity).
+
+% Predicate dispatch helpers shared across the runtime.
+fun_goal(F, Args, Goal) :-
+    length(Args, Arity),
+    require_fun_arity(F, Arity),
+    Goal =.. [F|Args].
+
+call_fun(F, Args) :-
+    fun_goal(F, Args, Goal),
+    call(Goal).
+
+call_in_namespace(Goal) :-
+    Goal =.. [F|Args],
+    call_fun(F, Args).
+
+maybe_load_module(Module) :-
+    ( Module == metta ; Module == user ) -> true
+    ; current_module(Module) -> true
+    ; catch(use_module(library(Module)), _, fail) -> true
+    ; catch(use_module(Module), _, fail) -> true
+    ; true.
+
+wrap_module_fun(Module, F, Arity) :-
+    ( current_predicate(metta:F/Arity)
+    -> ensure_fun_arity(F, Arity)
+     ; functor(Head, F, Arity),
+       Head =.. [F|Args],
+       Goal =.. [F|Args],
+       assertz((Head :- Module:Goal)),
+       ensure_fun_arity(F, Arity) ).
+
+import_from_namespace(Module, F) :-
+    maybe_load_module(Module),
+    setof(Arity, current_predicate(Module:F/Arity), Arities),
+    forall(member(Arity, Arities), wrap_module_fun(Module, F, Arity)), !.
+
+import_user_fun(F) :- import_from_namespace(user, F), !.
+import_user_fun(_).
+
+
 :- current_prolog_flag(argv, Argv),
    ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
                          ; ensure_loaded([parser, translator, filereader, spaces])).
@@ -82,6 +150,32 @@ exp(Arg,R) :- R is exp(Arg).
 'random-int'('&rng', Min, Max, Result) :- random_between(Min, Max, Result).
 'random-float'(Min, Max, Result) :- random(R), Result is Min + R * (Max - Min).
 'random-float'('&rng', Min, Max, Result) :- random(R), Result is Min + R * (Max - Min).
+
+normalize_module_term(Spec, Term) :-
+    ( string(Spec)
+    -> atom_string(Atom, Spec),
+       ( sub_atom(Atom, 0, _, _, 'library/')
+       -> sub_atom(Atom, 8, _, 0, LibAtom),
+          Term =.. [library, LibAtom]
+        ; Term = Atom )
+    ; is_list(Spec), Spec = [Functor|Args]
+    -> Term =.. [Functor|Args]
+    ; Term = Spec ),
+    ( atom(Term) ; compound(Term) ).
+
+use_module(Spec, true) :-
+    normalize_module_term(Spec, Term),
+    system:use_module(metta:Term).
+
+wrap_module_fun(Module, F/Arity) :-
+    maybe_load_module(Module),
+    ( current_predicate(metta:F/Arity)
+    -> true
+     ; functor(Head, F, Arity),
+       Head =.. [F|Args],
+       Goal =.. [F|Args],
+       assertz((Head :- Module:Goal)) ),
+    ensure_fun_arity(F, Arity).
 
 %%% Boolean Logic: %%%
 and(true,  X, X).
@@ -228,9 +322,35 @@ call_goals([G|Gs]) :- call(G),
                                    'filter-atom'(T, Func, RT).
 
 %%% Prolog interop: %%%
-import_prolog_function(N, true) :- register_fun(N).
+normalize_fun_spec(Spec0, ModuleSpec, Fun) :-
+    ( string(Spec0) -> atom_string(Spec, Spec0)
+    ; Spec = Spec0 ),
+    ( Spec = ModuleAtom:FunAtom
+    -> ModuleSpec = ModuleAtom, Fun = FunAtom
+    ; Spec = [ModuleAtom, FunAtom]
+    -> ModuleSpec = ModuleAtom, Fun = FunAtom
+    ; ModuleSpec = auto, Fun = Spec ),
+    must_be(atom, Fun).
+
+candidate_modules(auto, Candidates) :-
+    setof(M, current_module(M), Modules),
+    subtract(Modules, [metta, user, system], Others),
+    Candidates = [metta, user, system | Others].
+candidate_modules(Module, [Module]).
+
+import_prolog_function(Spec, true) :-
+    normalize_fun_spec(Spec, ModuleSpec, Fun),
+    candidate_modules(ModuleSpec, Candidates),
+    member(Module, Candidates),
+    maybe_load_module(Module),
+    ( import_from_namespace(Module, Fun) -> true ),
+    !,
+    register_fun(Fun).
+import_prolog_function(Spec, true) :-
+    normalize_fun_spec(Spec, _, Fun),
+    throw(error(existence_error(procedure, Fun), _)).
 'Predicate'([F|Args], Term) :- Term =.. [F|Args].
-callPredicate(G, true) :- call(G).
+callPredicate(G, true) :- call_in_namespace(G).
 assertzPredicate(G, true) :- assertz(G).
 assertaPredicate(G, true) :- asserta(G).
 retractPredicate(G, true) :- retract(G), !.
@@ -245,9 +365,19 @@ retractPredicate(_, false).
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
 unregister_fun(N/Arity) :- retractall(fun(N)),
+                           retractall(arity(N, _)),
                            abolish(N, Arity).
 
-:- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
+ensure_local_arities(F) :-
+    forall(current_predicate(metta:F/Arity),
+           ensure_fun_arity(F, Arity)).
+
+register_builtin_fun(F) :-
+    import_user_fun(F),
+    register_fun(F),
+    ensure_local_arities(F).
+
+:- maplist(register_builtin_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
                           '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom',
                           repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec', atom_concat, atom_chars, copy_term, term_hash,
@@ -255,9 +385,11 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'is-space', 'get-mettatype',
                           decons, 'decons-atom', 'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=',
-                          'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
+                          'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id, use_module,
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
                           'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time',
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate]).
+
+:- maplist(wrap_module_fun(system), [sort/2, msort/2, length/2]).

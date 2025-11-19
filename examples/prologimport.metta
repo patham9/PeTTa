@@ -1,5 +1,9 @@
 ;%%% FILE LOADING, REGEX MANIPULATION, PROCESS METTA STRING %%%
 
+;Before importing concrete predicates, expose the modules that define them:
+!(use_module "library/pcre")
+!(use_module "library/readutil")
+
 ;Loading a Prolog builtin predicate that follows function form convention:
 !(import_prolog_function re_replace)
 
