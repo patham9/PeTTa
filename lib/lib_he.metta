@@ -39,7 +39,7 @@
 
 ;Error Handling
 (= (if-error $X $A $B)
-   (if (== (car-atom $X) Error) 
+   (if (= $X (cons Error $_)) 
        $A $B))
 
 (= (return-on-error $result $B)
@@ -58,7 +58,8 @@
 ;Quoting
 (: unquote (-> Expression %Undefined%))
 (= (unquote (quote $A))
-   (eval $A))
+   (let $cut (cut) (eval $A)))
+(= (unquote $A) (quote (unquote $A)))
 
 (: noreduce-eq (-> Expression Expression Bool))
 (= (noreduce-eq $A $B)

@@ -33,10 +33,11 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                          -> % --- Case 1: callable predicate ---
                             length(Args, N),
                             Arity is N + 1,
-                            ( current_predicate(F/Arity) -> append(Args,[Out],CallArgs),
-                                                            Goal =.. [F|CallArgs],
-                                                            catch(call(Goal),_,fail)
-                                                          ; Out = partial(F,Args) )
+                            ( current_predicate(F/Arity) , \+ (current_op(_, _, F), Arity =< 2)
+                              -> append(Args,[Out],CallArgs),
+                                 Goal =.. [F|CallArgs],
+                                 catch(call(Goal),_,fail)
+                               ; Out = partial(F,Args) )
                           ; % --- Case 2: partial closure ---
                             compound(F), F = partial(Base, Bound) -> append(Bound, Args, NewArgs),
                                                                      reduce([Base|NewArgs], Out)
@@ -82,6 +83,14 @@ translate_expr([H0|T0], Goals, Out) :-
                                      append(GsH, [findall(EV, Conj, Out)], Goals)
         ; HV == cut, T = [] -> append(GsH, [(!)], Goals),
                                Out = true
+        ; HV == test, T = [Expr, Expected] -> translate_expr_to_conj(Expr, Conj, Val),
+                                              translate_expr(Expected, GsE, ExpVal),
+                                              Goal1 = ( findall(Val, Conj, Results),
+                                                        (Results = [Actual] -> true
+                                                                             ; Actual = Results ) ),
+                                              append(GsH, [Goal1], G1),
+                                              append(G1, GsE, G2),
+                                              append(G2, [test(Actual, ExpVal, Out)], Goals)
         ; HV == once, T = [X] -> translate_expr_to_conj(X, Conj, Out),
                                  append(GsH, [once(Conj)], Goals)
         ; HV == hyperpose, T = [L] -> build_hyperpose_branches(L, Branches),
@@ -176,7 +185,7 @@ translate_expr([H0|T0], Goals, Out) :-
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [include([XVar]>>(CondConj, CondGoal), L, Out)], Goals)
-        ; HV == '|->', T = [Args, Body] -> uuid(F),
+        ; HV == '|->', T = [Args, Body] -> next_lambda_name(F),
                                            % find free (non-argument) variables in Body
                                            term_variables(Body, AllVars),
                                            exclude({Args}/[V]>>memberchk_eq(V, Args), AllVars, FreeVars),
@@ -250,13 +259,13 @@ translate_expr([H0|T0], Goals, Out) :-
                     translate_args_by_type(T, ArgTypes, GsT2, AVsTmp0),
                     (IsPartial -> append(Bound,AVsTmp0,AVsTmp) ; AVsTmp = AVsTmp0),
                     append(GsH, GsT2, InnerTmp),
-                    ( OutType == '%Undefined%'
-                      -> Extra = []
-                       ; Extra = [('get-type'(Out, OutType) ; 'get-metatype'(Out, OutType))] )
+                    ( (OutType == '%Undefined%' ; OutType == 'Atom')
+                      -> Extra = [] ; Extra = [('get-type'(Out, OutType) *-> true ; 'get-metatype'(Out, OutType))] )
                   ; AVsTmp = AllAVs,
                     InnerTmp = Inner,
                     Extra = [] ),
-               length(AllAVs,N), Arity is N + 1,
+               length(AVsTmp, N),
+               Arity is N + 1,
                ( (((current_predicate(Fun/Arity) ; catch(arity(Fun, Arity),_,fail)), \+ (current_op(_, _, Fun), Arity =< 2)))
                  -> append(AVsTmp, [Out], ArgsV),
                     Goal =.. [Fun|ArgsV],
@@ -278,9 +287,9 @@ translate_args_by_type([], _, [], []) :- !.
 translate_args_by_type([A|As], [T|Ts], GsOut, [AV|AVs]) :-
                       ( T == 'Expression' -> AV = A, GsA = []
                                            ; translate_expr(A, GsA1, AV),
-                                             ( T == '%Undefined%'
+                                             ( (T == '%Undefined%' ; T == 'Atom')
                                                -> GsA = GsA1
-                                                ; append(GsA1, [('get-type'(AV, T) ; 'get-metatype'(AV, T))], GsA))),
+                                                ; append(GsA1, [('get-type'(AV, T) *-> true ; 'get-metatype'(AV, T))], GsA))),
                                              translate_args_by_type(As, Ts, GsRest, AVs),
                                              append(GsA, GsRest, GsOut).
 
@@ -344,3 +353,9 @@ build_hyperpose_branches([E|Es], [(Goal, Res)|Bs]) :- translate_expr_to_conj(E, 
 %Like membercheck but with direct equality rather than unification
 memberchk_eq(V, [H|_]) :- V == H, !.
 memberchk_eq(V, [_|T]) :- memberchk_eq(V, T).
+
+%Generate readable lambda name:
+next_lambda_name(Name) :- ( catch(nb_getval(lambda_counter, Prev), _, Prev = 0) ),
+                          N is Prev + 1,
+                          nb_setval(lambda_counter, N),
+                          format(atom(Name), 'lambda_~d', [N]).

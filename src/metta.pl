@@ -124,20 +124,22 @@ member(X, L, _) :- member(X, L).
 'intersection-atom'(A, B, Out) :- intersection(A, B, Out).
 
 %%% Type system: %%%
-get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
-                                 'get-type'(Arg, A),
-                                 T = B.
+get_function_type([F|Args], T) :- nonvar(F), match('&self', [':',F,[->|Ts]], _, _),
+                                 append(As,[T],Ts),
+                                 maplist('get-type',Args,As).
 
-'get-type'(X, 'Number')   :- number(X), !.
-'get-type'(X, 'Variable') :- var(X), !.
-'get-type'(X, 'String')   :- string(X), !.
-'get-type'(true, 'Bool')  :- !.
-'get-type'(false, 'Bool') :- !.
-'get-type'(X, T) :- get_function_type(X,T).
-'get-type'(X, T) :- \+ get_function_type(X, _),
-                    is_list(X),
-                    maplist('get-type', X, T).
-'get-type'(X, T) :- match('&self', [':',X,T], T, _).
+'get-type'(X, T) :- (get_type_candidate(X, T) *-> true ; T = '%Undefined%' ).
+
+get_type_candidate(X, 'Number')   :- number(X), !.
+get_type_candidate(X, '%Undefined%') :- var(X), !.
+get_type_candidate(X, 'String')   :- string(X), !.
+get_type_candidate(true, 'Bool')  :- !.
+get_type_candidate(false, 'Bool') :- !.
+get_type_candidate(X, T) :- get_function_type(X,T).
+get_type_candidate(X, T) :- \+ get_function_type(X, _),
+                            is_list(X),
+                            maplist('get-type', X, T).
+get_type_candidate(X, T) :- match('&self', [':',X,T], T, _).
 
 'get-metatype'(X, 'Variable') :- var(X), !.
 'get-metatype'(X, 'Grounded') :- number(X), !.
@@ -165,7 +167,8 @@ get_function_type([F,Arg], T) :- match('&self', [':',F,['->',A,B]], _, _),
 test(A,B,true) :- (A =@= B -> E = '✅' ; E = '❌'),
                   swrite(A, RA),
                   swrite(B, RB),
-                  format("is ~w, should ~w. ~w ~n", [RA, RB, E]).
+                  format("is ~w, should ~w. ~w ~n", [RA, RB, E]),
+                  (A =@= B -> true ; halt(1)).
 
 assert(Goal, true) :- ( call(Goal) -> true
                                     ; swrite(Goal, RG),
