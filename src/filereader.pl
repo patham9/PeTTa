@@ -30,11 +30,9 @@ process_form(parsed(bang, FormStr, Term), Result) :- translate_expr([collapse, T
                                                      call_goals(Goals).
 process_form(parsed(function, FormStr, Term), []) :- add_sexp('&self', Term),
                                                      translate_clause(Term, Clause),
-                                                     assertz(Clause, Ref),
+                                                     assertz(Clause),
                                                      ( silent(true) -> true ; format("\e[33m-->  metta func   -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
-                                                                              clause(Head, Body, Ref),
-                                                                              ( Body == true -> Show = Head; Show = (Head :- Body) ),
-                                                                              portray_clause(current_output, Show),
+                                                                              portray_clause(current_output, Clause),
                                                                               format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
 process_form(In, _) :- format('Failed to process form: ~w~n', [In]), halt(1).
 
