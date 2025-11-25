@@ -4,18 +4,26 @@
                                       -> assertz(silent(true)) ; assertz(silent(false)) ).
 
 %Read Filename into string S and process it (S holds MeTTa code):
-load_metta_file(Filename, Results) :- load_metta_file(Filename, Results, '&self').
-load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []),
-                                             process_metta_string(S, Results, Space).
+% Backward compatibility: default to '&self' space and CWD
+load_metta_file(Filename, Results) :- working_directory(CWD, CWD),
+                                      load_metta_file(Filename, Results, '&self', CWD).
+load_metta_file(Filename, Results, Space) :- working_directory(CWD, CWD),
+                                              load_metta_file(Filename, Results, Space, CWD).
+load_metta_file(Filename, Results, Space, CurrentDir) :- read_file_to_string(Filename, S, []),
+                                                          process_metta_string(S, Results, Space, CurrentDir).
 
 %Extract function definitions, call invocations, and S-expressions part of &self space:
-process_metta_string(S, Results) :- process_metta_string(S, Results, '&self').
-process_metta_string(S, Results, Space) :- re_replace("(;[^\n]*)"/g, "", S, Clean),
-                                           string_codes(Clean, Codes),
-                                           phrase(top_forms(Forms, 1), Codes),
-                                           maplist(parse_form, Forms, ParsedForms),
-                                           maplist(process_form(Space), ParsedForms, ResultsList), !,
-                                           append(ResultsList, Results).
+% Backward compatibility: default to '&self' space and CWD
+process_metta_string(S, Results) :- working_directory(CWD, CWD),
+                                     process_metta_string(S, Results, '&self', CWD).
+process_metta_string(S, Results, Space) :- working_directory(CWD, CWD),
+                                           process_metta_string(S, Results, Space, CWD).
+process_metta_string(S, Results, Space, CurrentDir) :- re_replace("(;[^\n]*)"/g, "", S, Clean),
+                                                       string_codes(Clean, Codes),
+                                                       phrase(top_forms(Forms, 1), Codes),
+                                                       maplist(parse_form, Forms, ParsedForms),
+                                                       maplist(process_form(Space, CurrentDir), ParsedForms, ResultsList), !,
+                                                       append(ResultsList, Results).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:
 parse_form(form(S), parsed(T, S, Term)) :- sread(S, Term),
@@ -24,14 +32,14 @@ parse_form(form(S), parsed(T, S, Term)) :- sread(S, Term),
 parse_form(bang(S), parsed(bang, S, Term)) :- sread(S, Term).
 
 %Second pass to compile / run / add the Terms:
-process_form(Space, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true).
-process_form(_, parsed(bang, FormStr, Term), Result) :- translate_expr([collapse, Term], Goals, Result),
+process_form(Space, _, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true).
+process_form(_, CurrentDir, parsed(bang, FormStr, Term), Result) :- translate_expr([collapse, Term], CurrentDir, Goals, Result),
                                                         ( silent(true) -> true ; format("\e[33m-->   metta bang  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
                                                                                  forall(member(G, Goals), portray_clause((:- G))),
                                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ),
                                                         call_goals(Goals).
-process_form(Space, parsed(function, FormStr, Term), []) :- add_sexp(Space, Term),
-                                                            translate_clause(Term, Clause),
+process_form(Space, CurrentDir, parsed(function, FormStr, Term), []) :- add_sexp(Space, Term),
+                                                            translate_clause(Term, CurrentDir, Clause),
                                                             assertz(Clause, Ref),
                                                             ( silent(true) -> true ; format("\e[33m-->  metta func   -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
                                                                                      clause(Head, Body, Ref),
