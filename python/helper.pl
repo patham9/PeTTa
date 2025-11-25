@@ -1,9 +1,5 @@
 maybe_enable_silent(true) :- !.
-maybe_enable_silent(false) :-
-    ( current_prolog_flag(argv, Args0) -> true ; Args0 = [] ),
-    ( member('--silent', Args0) -> Args1 = Args0
-                                 ; append(Args0, ['--silent'], Args1)),
-    set_prolog_flag(argv, Args1).
+maybe_enable_silent(false) :- assertz(silent(true)).
 
 set_working_dir(load_metta_file, File) :-
     file_directory_name(File, Dir),

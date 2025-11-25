@@ -237,10 +237,10 @@ retractPredicate(G, true) :- retract(G), !.
 retractPredicate(_, false).
 
 %%% Registration: %%%
-'import!'('&self', File, true) :- atom_string(File, SFile),
-                                  working_dir(Base),
-                                  atomic_list_concat([Base, '/', SFile, '.metta'], Path),
-                                  load_metta_file(Path,_).
+'import!'(Space, File, true) :- atom_string(File, SFile),
+                                working_dir(Base),
+                                atomic_list_concat([Base, '/', SFile, '.metta'], Path),
+                                load_metta_file(Path, _, Space).
 
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
