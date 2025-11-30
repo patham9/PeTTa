@@ -9,19 +9,41 @@ constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsLi
                                   flatten(NestedGoalsList, Goals), !.
 
 %Flatten (= Head Body) MeTTa function into Prolog Clause:
-translate_clause(Input, (Head :- BodyConj)) :- Input = [=, [F|Args0], BodyExpr],
-                                               maplist(constrain_args, Args0, Args1, GoalsA),
-                                               append(GoalsA, GoalsPrefix),
-                                               translate_expr(BodyExpr, GoalsBody, ExpOut),
-                                               (  nonvar(ExpOut) , ExpOut = partial(Base,Bound)
-                                               -> current_predicate(Base/Arity), length(Bound, N), M is (Arity - N) - 1,
-                                                  length(ExtraArgs, M), append([Bound,ExtraArgs,[Out]],CallArgs), Goal =.. [Base|CallArgs],
-                                                  append(GoalsBody,[Goal],FinalGoals), append(Args1,ExtraArgs,HeadArgs)
-                                               ; FinalGoals= GoalsBody , HeadArgs = Args1, Out = ExpOut ),
-                                               append(HeadArgs, [Out], FinalArgs),
-                                               Head =.. [F|FinalArgs],
-                                               append(GoalsPrefix, FinalGoals, Goals),
-                                               goals_list_to_conj(Goals, BodyConj).
+translate_clause(Input, (Head :- BodyConj)) :- translate_clause_(Input, (Head :- BodyConj), true).
+translate_clause_(Input, (Head :- BodyConj), ConstrainArgs) :-
+    Input = [=, [F|Args0], BodyExpr],
+    setup_call_cleanup( nb_setval(current, F),
+                        ( ( ConstrainArgs -> maplist(constrain_args, Args0, Args1, GoalsA),
+                                             flatten(GoalsA,GoalsPrefix)
+                                           ; Args1 = Args0, GoalsPrefix = [] ),
+                          catch(nb_getval(F, Prev), _, Prev = []),
+                          nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
+                          translate_expr(BodyExpr, GoalsBody, ExpOut),
+                          ( nonvar(ExpOut), ExpOut = partial(Base,Bound)
+                            -> current_predicate(Base/Arity),
+                               length(Bound, N),
+                               M is (Arity - N) - 1,
+                               format("M ~w~n", [M]),
+                               length(ExtraArgs, M),
+                               append([Bound,ExtraArgs,[Out]],CallArgs),
+                               Goal =.. [Base|CallArgs],
+                               append(GoalsBody,[Goal],GoalsBody1),
+                               append(Args1,ExtraArgs,HeadArgs),
+                               format("HeadArgs ~w~n", [HeadArgs])
+                             ; GoalsBody1 = GoalsBody , HeadArgs = Args1, Out = ExpOut ),
+                          append(HeadArgs, [Out], FinalArgs),
+                          Head =.. [F|FinalArgs],
+                          append(GoalsPrefix, GoalsBody1, Goals),
+                          goals_list_to_conj(Goals, BodyConj) ),
+                        nb_delete(current)).
+
+%Print compiled clause:
+maybe_print_compiled_clause(_, _, _) :- silent(true), !.
+maybe_print_compiled_clause(Label, FormTerm, Clause) :-
+    swrite(FormTerm, FormStr),
+    format("\e[33m-->  ~w  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [Label, FormStr]),
+    portray_clause(current_output, Clause),
+    format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m").
 
 %Conjunction builder, turning goals list to a flat conjunction:
 goals_list_to_conj([], true)      :- !.
@@ -45,7 +67,7 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                             Out = [F|Args],
                             \+ cyclic_term(Out).
 
-% Calling reduce from aggregate function foldall needs this argument wrapping
+%Calling reduce from aggregate function foldall needs this argument wrapping
 agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
 
 %Combined expr translation to goals list
@@ -71,7 +93,7 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
                                                                           ; Out = In).
 
 %Turn MeTTa code S-expression into goals list:
-translate_expr(X, [], X)          :- (var(X) ; atomic(X)), !.
+translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
 translate_expr([H0|T0], Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
         translate_expr(H, GsH, HV),
@@ -135,8 +157,8 @@ translate_expr([H0|T0], Goals, Out) :-
                                                            append([GsH,[(P=V)],Gp,Gv,Gi,Gc], Goals)
         ; HV == 'let*', T = [Binds, Body] -> letstar_to_rec_let(Binds,Body,RecLet),
                                              translate_expr(RecLet,  Goals, Out)
-        ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Out),
-                                            Goals = [copy_term(Vars,Con,_,Ncon),Ncon]
+        ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Val),
+                                            Goals = [copy_term(Vars,[Con,Val],_,[Ncon,Out]),Ncon]
         %--- Iterating over non-deterministic generators without reification ---:
         ; HV == 'forall', T = [GF, TF]
           -> ( is_list(GF) -> GF = [GFH|GFA],
@@ -193,13 +215,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                            append(FreeVars, Args, FullArgs),
                                            % compile clause with all bound + free vars
                                            translate_clause([=, [F|FullArgs], Body], Clause),
-                                           ( silent(true) -> true ; format("\e[33m--> lambda clause -->~n\e[32m", []),
-                                                                    Clause = (CHead :- CBody),
-                                                                    ( CBody == true -> Show = CHead; Show = (CHead :- CBody) ),
-                                                                    portray_clause(current_output, Show),
-                                                                    format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ),
                                            register_fun(F),
                                            assertz(Clause),
+                                           format(atom(Label), "metta lambda (~w)", [F]),
+                                           maybe_print_compiled_clause(Label, ['|->', Args, Body], Clause),
                                            length(FullArgs, N),
                                            Arity is N + 1,
                                            assertz(arity(F, Arity)),
@@ -249,16 +268,11 @@ translate_expr([H0|T0], Goals, Out) :-
         %--- Automatic 'smart' dispatch, translator deciding when to create a predicate call, data list, or dynamic dispatch: ---
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
-          %Known function => direct call:
-          ( is_list(AVs), 
-            ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
-            ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
-            ) % Check for type definition [:,HV,TypeChain]
-            -> ( catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail)
-                 -> TypeChain = [->|Xs],
-                    append(ArgTypes, [OutType], Xs),
-                    translate_args_by_type(T, ArgTypes, GsT2, AVsTmp0),
-                    (IsPartial -> append(Bound,AVsTmp0,AVsTmp) ; AVsTmp = AVsTmp0),
+          %Known function => constrain typedef and generate direct call:
+          ( is_list(AVs), ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs) )
+            -> ( catch(match('&self', [':', Fun, TypeChain], TypeChain, [->|Xs]), _, fail),
+                 append(ArgTypes, [OutType], Xs)
+                 -> translate_args_by_type(T, ArgTypes, GsT2, AVsTmp),
                     append(GsH, GsT2, InnerTmp),
                     ( (OutType == '%Undefined%' ; OutType == 'Atom')
                       -> Extra = [] ; Extra = [('get-type'(Out, OutType) *-> true ; 'get-metatype'(Out, OutType))] )
@@ -267,12 +281,14 @@ translate_expr([H0|T0], Goals, Out) :-
                     Extra = [] ),
                length(AVsTmp, N),
                Arity is N + 1,
-               ( (((current_predicate(Fun/Arity) ; catch(arity(Fun, Arity),_,fail)), \+ (current_op(_, _, Fun), Arity =< 2)))
-                 -> append(AVsTmp, [Out], ArgsV),
-                    Goal =.. [Fun|ArgsV],
-                    append(InnerTmp, [Goal|Extra], Goals)
-                  ; Out = partial(Fun,AVsTmp),
-                    append(InnerTmp,Extra, Goals) )
+               ( maybe_specialize_call(Fun, AVsTmp, Out, Goal)
+                 -> append(InnerTmp, [Goal|Extra], Goals)
+                  ; ( ((current_predicate(Fun/Arity) ; catch(arity(Fun, Arity),_,fail)) , \+ (current_op(_, _, Fun), Arity =< 2))
+                      -> append(AVsTmp, [Out], CallAVsTmp),
+                         Goal =.. [Fun|CallAVsTmp],
+                         append(InnerTmp, [Goal|Extra], Goals)
+                       ; Out = partial(Fun, AVsTmp),
+                         append(InnerTmp,Extra,Goals) ))
           %Literals (numbers, strings, etc.), known non-function atom => data:
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
