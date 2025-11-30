@@ -8,6 +8,10 @@ prolog_interop_example :- register_fun(prologfunc),
                           mettafunc(30, R),
                           format("mettafunc(30) = ~w~n", [R]).
 
+:- prolog_load_context(directory, Source),
+   string_concat(Source, "/../lib", LibPath),
+   asserta(library_path(LibPath)).
+
 main :- current_prolog_flag(argv, Args),
         ( Args = [] -> prolog_interop_example
         ; Args = [mork] -> prolog_interop_example,

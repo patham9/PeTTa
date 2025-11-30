@@ -11,6 +11,8 @@
 :- use_module(library(yall), except([(/)/3])).
 :- use_module(library(apply)).
 :- use_module(library(apply_macros)).
+:- use_module(library(process)).
+:- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
    ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
                          ; ensure_loaded([parser, translator, filereader, spaces])).
@@ -236,11 +238,61 @@ assertaPredicate(G, true) :- asserta(G).
 retractPredicate(G, true) :- retract(G), !.
 retractPredicate(_, false).
 
-%%% Registration: %%%
-'import!'(Space, File, true) :- atom_string(File, SFile),
-                                working_dir(Base),
-                                atomic_list_concat([Base, '/', SFile, '.metta'], Path),
-                                load_metta_file(Path, _, Space).
+%%% Library / Import: %%%
+library(X, Path) :- library_path(Base),
+                    atomic_list_concat([Base, '/', X, '.metta'], Path).
+
+'import!'(Space, RelPath, true) :- atom_string(RelPath, SRelPath),
+                                   working_dir(Base),
+                                   atomic_list_concat([Base, '/', SRelPath, '.metta'], Path),
+                                   access_file(Path, read), !,
+                                   load_metta_file(Path, _, Space).
+
+'import!'(Space, AbsPath, true) :- atom_string(AbsPath, SAbsPath),
+                                   access_file(SAbsPath, read), !,
+                                   load_metta_file(SAbsPath, _, Space).
+
+%%% Git Import: %%%
+'import_git!'(GitPath, true) :- 'import_git!'(GitPath, './repos', '', true).
+
+'import_git!'(GitPath, BaseDir, true) :- 'import_git!'(GitPath, BaseDir, '', true).
+
+'import_git!'(GitPath, BaseDir, BuildCmd, true) :- ( exists_directory(BaseDir) -> true
+                                                                                 ; make_directory_path(BaseDir) ),
+                                                   repo_name_from_git(GitPath, Name),
+                                                   directory_file_path(BaseDir, Name, LocalDir),
+                                                   ( exists_directory(LocalDir) -> true
+                                                                                 ; clone_repo(GitPath, LocalDir),
+                                                                                   run_build_step(LocalDir, BuildCmd) ),
+                                                   asserta(library_path(LocalDir)).
+
+%Extract "repo" from ".../repo.git" or "...:repo.git":
+repo_name_from_git(GitPath, Name) :- atom_string(GitPath, S),
+                                     split_string(S, "/:", "/:", Parts),
+                                     last(Parts, Last0),
+                                     ( sub_string(Last0, _, 4, 0, ".git")
+                                       -> sub_string(Last0, 0, _, 4, Last)
+                                        ; Last = Last0 ),
+                                     atom_string(Name, Last).
+
+clone_repo(GitPath, LocalDir) :- format("Cloning ~w into ~w~n", [GitPath, LocalDir]),
+                                 process_create(path(git),
+                                                ['clone', '--depth', '1', GitPath, LocalDir],
+                                                [stdout(pipe(Out)), stderr(pipe(Err))]),
+                                 read_string(Out, _, _),
+                                 read_string(Err, _, _),
+                                 close(Out), close(Err).
+
+run_build_step(_, BuildCmd) :- (BuildCmd = '' ; BuildCmd = ""), !.
+run_build_step(LocalDir, BuildCmd) :- format("Running build: ~w in ~w~n", [BuildCmd, LocalDir]),
+                                      atom_string(BuildAtom, BuildCmd),
+                                      process_create(path(sh),
+                                                     ['-c', BuildAtom],
+                                                     [cwd(LocalDir),
+                                                      stdout(pipe(Out)), stderr(pipe(Err))]),
+                                      read_string(Out, _, _),
+                                      read_string(Err, _, _),
+                                      close(Out), close(Err).
 
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
@@ -259,5 +311,5 @@ unregister_fun(N/Arity) :- retractall(fun(N)),
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
-                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time',
+                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, 'import_git!',
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate]).
