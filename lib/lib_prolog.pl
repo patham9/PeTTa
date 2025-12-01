@@ -1,7 +1,11 @@
 %Translate a MeTTa S-expression file (no code, no bangs) to prolog predicates to load:
 metta_file_to_prolog(Input, Space, Output) :- setup_call_cleanup( open(Input, read, In),
                                                                   setup_call_cleanup( open(Output, write, Out),
-                                                                                      convert_stream(In, Out, Space),
+                                                                                      (
+                                                                                          format(Out, ":- multifile '~w'/3.~n", [Space]),
+                                                                                          format(Out, ":- discontiguous '~w'/3.~n~n", [Space]),
+                                                                                          convert_stream(In, Out, Space)
+                                                                                      ),
                                                                                       close(Out) ),
                                                                   close(In) ).
 

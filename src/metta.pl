@@ -239,8 +239,14 @@ retractPredicate(_, false).
 %%% Registration: %%%
 'import!'(Space, File, true) :- atom_string(File, SFile),
                                 working_dir(Base),
-                                atomic_list_concat([Base, '/', SFile, '.metta'], Path),
-                                load_metta_file(Path, _, Space).
+                                ( file_name_extension(ModPath, 'py', SFile)
+                                  -> absolute_file_name(SFile, Path, [relative_to(Base)]),
+                                     file_directory_name(Path, Dir),
+                                     file_base_name(ModPath, ModuleName),
+                                     py_call(sys:path:append(Dir), _),
+                                     py_call(builtins:'__import__'(ModuleName), _)
+                                   ; atomic_list_concat([Base, '/', SFile, '.metta'], Path),
+                                     load_metta_file(Path, _, Space) ).
 
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
