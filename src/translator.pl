@@ -188,7 +188,8 @@ translate_expr([H0|T0], Goals, Out) :-
         ; HV == '|->', T = [Args, Body] -> next_lambda_name(F),
                                            % find free (non-argument) variables in Body
                                            term_variables(Body, AllVars),
-                                           exclude({Args}/[V]>>memberchk_eq(V, Args), AllVars, FreeVars),
+                                           term_variables(Args, ArgVars),
+                                           exclude({ArgVars}/[V]>>memberchk_eq(V, ArgVars), AllVars, FreeVars),
                                            append(FreeVars, Args, FullArgs),
                                            % compile clause with all bound + free vars
                                            translate_clause([=, [F|FullArgs], Body], Clause),
