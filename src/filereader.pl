@@ -4,9 +4,20 @@
                                       -> assertz(silent(true)) ; assertz(silent(false)) ).
 
 %Read Filename into string S and process it (S holds MeTTa code):
+% Thread-local metta_current_dir tracks the directory for relative imports
 load_metta_file(Filename, Results) :- load_metta_file(Filename, Results, '&self').
-load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []),
-                                             process_metta_string(S, Results, Space).
+load_metta_file(Filename, Results, Space) :-
+    absolute_file_name(Filename, AbsPath),
+    file_directory_name(AbsPath, Dir),
+    % Save old directory context and restore it when done (handles nested imports)
+    (nb_current(metta_current_dir, OldDir) -> true ; OldDir = []),
+    setup_call_cleanup(
+        nb_setval(metta_current_dir, Dir),
+        ( read_file_to_string(AbsPath, S, []),
+          process_metta_string(S, Results, Space) ),
+        % Restore parent directory context
+        (OldDir == [] -> nb_delete(metta_current_dir) ; nb_setval(metta_current_dir, OldDir))
+    ).
 
 %Extract function definitions, call invocations, and S-expressions part of &self space:
 process_metta_string(S, Results) :- process_metta_string(S, Results, '&self').
