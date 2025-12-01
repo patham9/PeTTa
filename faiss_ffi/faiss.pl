@@ -6,7 +6,9 @@ module(faiss,
     ]).
 
 :- initialization(faiss_init).
-faiss_init :- use_foreign_library('/home/nartech/PeTTa/faiss_ffi/faisslib.so').
+faiss_init :- working_dir(Base),
+              atomic_list_concat([Base, '/faisslib.so'], Path),
+              use_foreign_library(Path).
 
 :- dynamic faiss_next_id/2.      % faiss_next_id(Index, NextIntId)
 :- dynamic faiss_atom_id/3.      % faiss_atom_id(Index, Atom, IntId)
