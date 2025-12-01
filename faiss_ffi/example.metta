@@ -1,4 +1,4 @@
-!(import! &self ../lib/lib_faiss)
+!(import! &self lib_faiss)
 
 ;providing our own embeddings:
 !(new-atom-vectorspace &avs 4)
