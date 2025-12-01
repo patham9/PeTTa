@@ -46,7 +46,9 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                             \+ cyclic_term(Out).
 
 % Calling reduce from aggregate function foldall needs this argument wrapping
-agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
+% Note: parameter order is (Function, Value, Accumulator, NewAccumulator)
+% because the translator creates agg_reduce(AFV, V) where V is the generated value
+agg_reduce(AF, Val, Acc, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
 
 %Combined expr translation to goals list
 translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),

@@ -227,6 +227,18 @@ call_goals([G|Gs]) :- call(G),
                                                              ; Out = RT ),
                                    'filter-atom'(T, Func, RT).
 
+% foldall/4: Aggregate over all solutions of a goal using an accumulator function
+% foldall(AggFunc, Goal, InitialValue, Result)
+% AggFunc is typically agg_reduce(F, V) where V is shared with Goal
+% The aggregation happens incrementally over all solutions of Goal
+foldall(AggFunc, Goal, Init, Result) :-
+    State = state(Init),
+    forall(Goal,
+           (arg(1, State, Acc),
+            call(AggFunc, Acc, NewAcc),
+            nb_setarg(1, State, NewAcc))),
+    arg(1, State, Result).
+
 %%% Prolog interop: %%%
 import_prolog_function(N, true) :- register_fun(N).
 'Predicate'([F|Args], Term) :- Term =.. [F|Args].
