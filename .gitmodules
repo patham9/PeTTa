@@ -1,0 +1,3 @@
+[submodule "mork_ffi"]
+	path = mork_ffi
+	url = https://github.com/zariuq/mork_ffi
