@@ -15,7 +15,7 @@ run_test() {
 pids=""
 for f in ./examples/*.metta; do
     base=$(basename "$f")
-    case "$base" in repl.metta|gpt.metta|torch.metta|greedy_chess.metta|zmorkspace*.metta)
+    case "$base" in repl.metta|gpt.metta|torch.metta|greedy_chess.metta)
         continue ;;
     esac
     run_test "$f" &

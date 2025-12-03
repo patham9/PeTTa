@@ -12,7 +12,7 @@
 :- use_module(library(apply)).
 :- use_module(library(apply_macros)).
 :- current_prolog_flag(argv, Argv),
-   ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, morkspaces, spaces])
+   ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, '../mork_ffi/morkspaces', spaces])
                          ; ensure_loaded([parser, translator, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
