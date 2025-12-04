@@ -214,7 +214,7 @@ translate_expr([H0|T0], Goals, Out) :-
                                                                    append(GsH, [Goal], Goals)
         ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      translate_expr(Body, GsB, Out),
-                                                     append(G1, [match(S, Pattern, Out, Out)], G2),
+                                                     append(G1, [match(S, Pattern, Body, Body)], G2),
                                                      append(G2, GsB, Goals)
         %--- Manual dispatch options: ---
         %Generate a predicate call on compilation, translating Args for nesting:
