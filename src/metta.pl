@@ -30,8 +30,12 @@ repra(Term, R) :- term_to_atom(Term, R).
 '%'(A,B,R)  :- R is A mod B.
 '<'(A,B,R)  :- (A<B -> R=true ; R=false).
 '>'(A,B,R)  :- (A>B -> R=true ; R=false).
-'=='(A,B,R) :- (A==B -> R=true ; R=false).
-'!='(A,B,R) :- (A==B -> R=false ; R=true).
+'=='(A,B,true)  :- number(A), number(B), A =:= B, !.
+'=='(A,B,false) :- number(A), number(B), A =\= B, !.
+'=='(A,B,R)     :- (A==B -> R=true ; R=false).
+'!='(A,B,true)  :- number(A), number(B), A =\= B, !.
+'!='(A,B,false) :- number(A), number(B), A =:= B, !.
+'!='(A,B,R)     :- (A==B -> R=false ; R=true).
 '='(A,B,R) :-  (A=B -> R=true ; R=false).
 '=?'(A,B,R) :- (\+ \+ A=B -> R=true ; R=false).
 '=alpha'(A,B,R) :- (A =@= B -> R=true ; R=false).
