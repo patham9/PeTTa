@@ -99,16 +99,6 @@ translate_expr([H0|T0], Goals, Out) :-
                                          append(GsH, [with_mutex(M,Conj)], Goals)
         ; HV == transaction, T = [X] -> translate_expr_to_conj(X, Conj, Out),
                                         append(GsH, [transaction(Conj)], Goals)
-        %--- Sequential execution ---:
-        ; HV == progn, T = Exprs -> translate_args(Exprs, GsList, Outs),
-                                    append(GsH, GsList, Tmp),
-                                    last(Outs, Out),
-                                    Goals = Tmp
-        ; HV == prog1, T = Exprs -> Exprs = [First|Rest],
-                                    translate_expr(First, GsF, Out),
-                                    translate_args(Rest, GsRest, _),
-                                    append(GsH, GsF, Tmp1),
-                                    append(Tmp1, GsRest, Goals)
         %--- Conditionals ---:
         ; HV == if, T = [Cond, Then, Else] -> translate_expr_to_conj(Cond, ConC, Cv),
                                               translate_expr_to_conj(Then, ConT, Tv),
