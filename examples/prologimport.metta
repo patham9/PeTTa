@@ -1,12 +1,13 @@
 ;%%% FILE LOADING, REGEX MANIPULATION, PROCESS METTA STRING %%%
+!(import! &self (library lib_roman))
 
 ;Loading a Prolog builtin predicate that follows function form convention:
 !(import_prolog_function re_replace)
 
 ;Using a Prolog builtin that has the last arg as an input argument (an instantiated options list):
 (= (read_file_to_string_functionized $filename $options)
-   (progn (callPredicate (Predicate (read_file_to_string $filename $text $options)))
-          $text))
+   (progn ((callPredicate (Predicate (read_file_to_string $filename $text $options)))
+           $text)))
 
 ;which in most cases we can ignore:
 (= (read_file_to_string_functionized $filename)
@@ -70,7 +71,7 @@
 !(assertaPredicate (myAddPred))
 
 ;We can invoke it as a predicate:
-!(test (progn (callPredicate (Predicate (myAdd 140 $x))) $x) 142)
+!(test (progn ((callPredicate (Predicate (myAdd 140 $x))) $x)) 142)
 
 ;But let's suppose it is in function convention:
 !(import_prolog_function myAdd)

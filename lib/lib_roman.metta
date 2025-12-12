@@ -84,9 +84,7 @@
 (= (rcons $xs $x) (union-atom $xs ($x)))
 
 ;Utils
+(= (prog1 (cons $x $xs)) $x)
+(= (progn (rcons $xs $x)) $x)
 
-;(= (prog1 (cons $x $xs)) $x)
-;(= (progn (rcons $xs $x)) $x)
-
-(= (clear-space $space) (let $as (get-atoms $space) (prog1 (remove-atom $space $as) (cut))))
-(= (clear-space $space) false)
+(= (clear-space $space) (prog1 (true (collapse (let $as (get-atoms $space) (remove-atom $space $as))))))
