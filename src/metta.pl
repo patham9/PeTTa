@@ -7,8 +7,7 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
    asserta(library_path(LibPath)).
 :- autoload(library(uuid)).
 :- use_module(library(random)).
-% Optional Python interop - only load if needed for Python import functionality
-% :- use_module(library(janus)).
+:- use_module(library(janus)).
 :- use_module(library(error)).
 :- use_module(library(listing)).
 :- use_module(library(aggregate)).
