@@ -62,9 +62,9 @@ grab_until_balanced(D, Acc, Cs, LC0, LC2, InS) --> [C], { ( C=0'" -> InS1 is 1-I
 top_forms([],_) --> blanks, eos.
 top_forms([Term|Fs], LC0) --> newlines(LC0, LC1),
                               ( "!" -> {Tag = runnable} ; {Tag = form} ),
-                              ( "(" -> [] ; string_without("\n", Rest), { format("Parse error: expected '(' or '!(', line ~w:~n~s~n", [LC1, Rest]), halt(1) } ),
+                              ( "(" -> [] ; string_without("\n", Rest), { format(atom(Msg), "Parse error: expected '(' or '!(', line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), _)) } ),
                               ( grab_until_balanced(1, [0'(], Cs, LC1, LC2, 0)
-                                -> { true } ; string_without("\n", Rest), { format("Parse error: missing ')', starting at line ~w:~n~s~n", [LC1, Rest]), halt(1) } ),
+                                -> { true } ; string_without("\n", Rest), { format(atom(Msg), "Parse error: missing ')', starting at line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), _)) } ),
                               { string_codes(FormStr, Cs), Term =.. [Tag, FormStr] },
                               top_forms(Fs, LC2).
 
