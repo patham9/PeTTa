@@ -1,0 +1,12 @@
+{
+    "argv": [
+        "python3",
+        "-m", "petta_jupyter",
+        "-f", "{connection_file}"
+    ],
+    "display_name": "PeTTa (MeTTa)",
+    "language": "MeTTa",
+    "name": "petta",
+    "codemirror_mode": "scheme",
+    "pygments_lexer": "scheme"
+}
