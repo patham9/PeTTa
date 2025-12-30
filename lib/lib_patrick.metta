@@ -11,8 +11,17 @@
 (= (@ $a $b) (let $a $b $a))
 
 ;For loop
-(: for (-> Expression Expression Expression Expression))
+(: for (-> Expression Atom Expression Expression))
 (= (for $var $collection $body)
    (quote (let $var (superpose $collection)
                     $body)))
 !(add-translator-rule! for)
+
+;Iteration with function
+(= (iterate $i $n $state $step)
+   (if (== $n 0)
+       $state
+       (iterate (+ $i 1)
+                (- $n 1)
+                ($step $i $state)
+                $step)))
