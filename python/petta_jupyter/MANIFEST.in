@@ -1,0 +1,3 @@
+include README.md
+include install.sh
+recursive-include resources *
