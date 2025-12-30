@@ -45,6 +45,3 @@
 !(test (prog1 (+ 1 1) (+ 2 2)) 2)
 !(test (progn (+ 1 1) (+ 2 2)) 4)
 
-!(test (clear-space space) false)
-!(add-atom space (: a b c))
-!(test (clear-space space) true)

@@ -1,17 +1,9 @@
-%Arity expander for JIT-indexing-efficient representation of space entries:
-ensure_dynamic_arity(Space,Arity) :- ( current_predicate(Space/Arity)
-                                       -> true ; dynamic(Space/Arity) ).
-
 %Since both normal add-attom call and function additions needs to add the S-expression:
-add_sexp(Space, [Rel|Args]) :- length(Args, N), Arity is N + 2,
-                               ensure_dynamic_arity(Space, Arity),
-                               Term =.. [Space, Rel | Args],
+add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                assertz(Term).
 
 %Same but for removal:
-remove_sexp(Space, [Rel|Args]) :- length(Args, N), Arity is N + 2,
-                                  ensure_dynamic_arity(Space, Arity),
-                                  Term =.. [Space, Rel | Args],
+remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                   retractall(Term).
 
 %Add a function atom:
@@ -21,7 +13,7 @@ remove_sexp(Space, [Rel|Args]) :- length(Args, N), Arity is N + 2,
                                  length(W, N),
                                  Arity is N + 1,
                                  assertz(arity(FAtom,Arity)),
-                                 translate_clause(Term, Clause),
+                                 once(translate_clause(Term, Clause)),
                                  assertz(Clause),
                                  ( silent(true) -> true ; format("\e[33m--> added clause -->~n\e[32m", []),
                                                           Clause = (CHead :- CBody),
@@ -35,7 +27,7 @@ remove_sexp(Space, [Rel|Args]) :- length(Args, N), Arity is N + 2,
 %%Remove a function atom:
 'remove-atom'('&self', Term, Removed) :- Term = [=,[F|Ins],_], !,
                                          remove_sexp('&self', Term),
-                                         translate_clause(Term, Cl),
+                                         once(translate_clause(Term, Cl)),
                                          ( retract(Cl) -> length(Ins, K),
                                                           unregister_fun(F/K),
                                                           Removed=true

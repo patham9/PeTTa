@@ -45,7 +45,7 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                             Out = [F|Args],
                             \+ cyclic_term(Out).
 
-% Calling reduce from aggregate function foldall needs this argument wrapping
+%Calling reduce from aggregate function foldall needs this argument wrapping
 agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
 
 %Combined expr translation to goals list
@@ -71,12 +71,23 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
                                                                           ; Out = In).
 
 %Turn MeTTa code S-expression into goals list:
-translate_expr(X, [], X)          :- (var(X) ; atomic(X)), !.
+translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
 translate_expr([H0|T0], Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
         translate_expr(H, GsH, HV),
+        %--- Translator rules ---:
+        ( nonvar(HV), translator_rule(HV) -> ( catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail)
+                                               -> TypeChain = [->|Xs],
+                                                  append(ArgTypes, [_], Xs),
+                                                  translate_args_by_type(T, ArgTypes, GsT, T1)
+                                                ; translate_args(T, GsT, T1) ),
+                                             append(T1,[Gs],Args),
+                                             HookCall =.. [HV|Args],
+                                             call(HookCall),
+                                             translate_expr(Gs, GsE, Out),
+                                             append([GsH,GsT,GsE],Goals)
         %--- Non-determinism ---:
-        ( HV == superpose, T = [Args], is_list(Args) -> build_superpose_branches(Args, Out, Branches),
+        ; HV == superpose, T = [Args], is_list(Args) -> build_superpose_branches(Args, Out, Branches),
                                                         disj_list(Branches, Disj),
                                                         append(GsH, [Disj], Goals)
         ; HV == collapse, T = [E] -> translate_expr_to_conj(E, Conj, EV),
@@ -110,6 +121,11 @@ translate_expr([H0|T0], Goals, Out) :-
                                     append(GsH, GsF, Tmp1),
                                     append(Tmp1, GsRest, Goals)
         %--- Conditionals ---:
+        ; HV == if, T = [Cond, Then] -> translate_expr_to_conj(Cond, ConC, Cv),
+                                        translate_expr_to_conj(Then, ConT, Tv),
+                                        build_branch(ConT, Tv, Out, BT),
+                                        ( ConC == true -> append(GsH, [ ( Cv == true -> BT ) ], Goals)
+                                                        ; append(GsH, [ ( ConC, ( Cv == true -> BT ) ) ], Goals) )
         ; HV == if, T = [Cond, Then, Else] -> translate_expr_to_conj(Cond, ConC, Cv),
                                               translate_expr_to_conj(Then, ConT, Tv),
                                               translate_expr_to_conj(Else, ConE, Ev),
@@ -139,8 +155,8 @@ translate_expr([H0|T0], Goals, Out) :-
                                                            append([GsH,[(P=V)],Gp,Gv,Gi,Gc], Goals)
         ; HV == 'let*', T = [Binds, Body] -> letstar_to_rec_let(Binds,Body,RecLet),
                                              translate_expr(RecLet,  Goals, Out)
-        ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Out),
-                                            Goals = [copy_term(Vars,Con,_,Ncon),Ncon]
+        ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Val),
+                                            Goals = [copy_term(Vars,[Con,Val],_,[Ncon,Out]),Ncon]
         %--- Iterating over non-deterministic generators without reification ---:
         ; HV == 'forall', T = [GF, TF]
           -> ( is_list(GF) -> GF = [GFH|GFA],
@@ -221,6 +237,12 @@ translate_expr([H0|T0], Goals, Out) :-
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
+        %--- Predicate to compiled goal ---:
+        ; HV == translatePredicate, T = [Expr] -> Expr = [S|Args],
+                                                  translate_args(Args, GsArgs, ArgsOut),
+                                                  Goal =.. [S|ArgsOut],
+                                                  append(GsH, GsArgs, Inner),
+                                                  append(Inner, [Goal], Goals)
         %--- Manual dispatch options: ---
         %Generate a predicate call on compilation, translating Args for nesting:
         ; HV == call,  T = [Expr] -> Expr = [F|Args],
@@ -230,12 +252,13 @@ translate_expr([H0|T0], Goals, Out) :-
                                      Goal =.. [F|CallArgs],
                                      append(Inner, [Goal], Goals)
         %Produce a dynamic dispatch, translating Args for nesting:
-        ; HV == reduce, T = [Expr] -> Expr = [F|Args],
-                                      translate_args(Args, GsArgs, ArgsOut),
-                                      append(GsH, GsArgs, Inner),
-                                      ExprOut = [F|ArgsOut],
-                                      Goal = reduce(ExprOut, Out),
-                                      append(Inner, [Goal], Goals)
+        ; HV == reduce, T = [Expr] -> ( var(Expr) -> translate_expr(Expr, GsH, ExprOut),
+                                                     Goals = [reduce(ExprOut, Out)|GsH]
+                                                   ; Expr = [F|Args],
+                                                     translate_args(Args, GsArgs, ArgsOut),
+                                                     append(GsH, GsArgs, Inner),
+                                                     ExprOut = [F|ArgsOut],
+                                                     append(Inner, [reduce(ExprOut, Out)], Goals) )
         %Invoke translator to evaluate MeTTa code as data/list:
         ; HV == eval, T = [Arg] -> append(GsH, [], Inner),
                                    Goal = eval(Arg, Out),
@@ -261,25 +284,13 @@ translate_expr([H0|T0], Goals, Out) :-
             ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
             ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
             ) % Check for type definition [:,HV,TypeChain]
-            -> ( catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail)
-                 -> TypeChain = [->|Xs],
-                    append(ArgTypes, [OutType], Xs),
-                    translate_args_by_type(T, ArgTypes, GsT2, AVsTmp0),
-                    (IsPartial -> append(Bound,AVsTmp0,AVsTmp) ; AVsTmp = AVsTmp0),
-                    append(GsH, GsT2, InnerTmp),
-                    ( (OutType == '%Undefined%' ; OutType == 'Atom')
-                      -> Extra = [] ; Extra = [('get-type'(Out, OutType) *-> true ; 'get-metatype'(Out, OutType))] )
-                  ; AVsTmp = AllAVs,
-                    InnerTmp = Inner,
-                    Extra = [] ),
-               length(AVsTmp, N),
-               Arity is N + 1,
-               ( (((current_predicate(Fun/Arity) ; catch(arity(Fun, Arity),_,fail)), \+ (current_op(_, _, Fun), Arity =< 2)))
-                 -> append(AVsTmp, [Out], ArgsV),
-                    Goal =.. [Fun|ArgsV],
-                    append(InnerTmp, [Goal|Extra], Goals)
-                  ; Out = partial(Fun,AVsTmp),
-                    append(InnerTmp,Extra, Goals) )
+            -> findall(TypeChain, catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
+               ( TypeChains \= []
+                 -> maplist({Fun,T,GsH,IsPartial,Bound,Out}/[TypeChain,BranchGoal]>>(
+                            typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal)), TypeChains, Branches),
+                    disj_list(Branches, Disj),
+                    Goals = [Disj]
+              ; build_call_or_partial(Fun, AllAVs, Out, Inner, [], Goals))
           %Literals (numbers, strings, etc.), known non-function atom => data:
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
@@ -289,6 +300,30 @@ translate_expr([H0|T0], Goals, Out) :-
                            Out = [HV1|AVs]
           %Unknown head (var/compound) => runtime dispatch:
           ; append(Inner, [reduce([HV|AVs], Out)], Goals) )).
+
+%Generate actual function call or partial if arity not complete:
+build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
+                                                             Arity is N + 1,
+                                                             ( ( ( current_predicate(Fun/Arity) ; catch(arity(Fun, Arity), _, fail) ),
+                                                                   \+ ( current_op(_, _, Fun), Arity =< 2 ) )
+                                                               -> append(AVs, [Out], Args),
+                                                                  Goal =.. [Fun|Args],
+                                                                  append(Inner, [Goal|Extra], Goals)
+                                                                ; Out = partial(Fun, AVs),
+                                                                  append(Inner, Extra, Goals) ).
+
+%Type function call generation, returns function call plus typechecks for input and output:
+typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal) :-
+    TypeChain = [->|Xs],
+    append(ArgTypes, [OutType], Xs),
+    translate_args_by_type(T, ArgTypes, GsT2, AVsTmp0),
+    ( IsPartial -> append(Bound, AVsTmp0, AVsTmp) ; AVsTmp = AVsTmp0 ),
+    append(GsH, GsT2, InnerTmp),
+    ( (OutType == '%Undefined%' ; OutType == 'Atom')
+       -> Extra = [] ; Extra = [('get-type'(Out, OutType) *-> true ; 'get-metatype'(Out, OutType))] ),
+    build_call_or_partial(Fun, AVsTmp, Out, InnerTmp, Extra, GoalsList),
+    goals_list_to_conj(GoalsList, BranchGoal).
+
 
 %Selectively apply translate_args for non-Expression args while Expression args stay as data input:
 translate_args_by_type([], _, [], []) :- !.

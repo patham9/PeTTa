@@ -24,7 +24,10 @@ parse_form(form(S), parsed(T, S, Term)) :- sread(S, Term),
 parse_form(runnable(S), parsed(runnable, S, Term)) :- sread(S, Term).
 
 %Second pass to compile / run / add the Terms:
-process_form(Space, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true).
+process_form(Space, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true),
+                                                        ( silent(true) -> true ; swrite(Term,STerm),
+                                                                                 format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
+                                                                                 format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
 process_form(_, parsed(runnable, FormStr, Term), Result) :- translate_expr([collapse, Term], Goals, Result),
                                                             ( silent(true) -> true ; format("\e[33m--> metta runnable  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
                                                                                      forall(member(G, Goals), portray_clause((:- G))),

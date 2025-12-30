@@ -71,7 +71,6 @@
 
 (= (&^& $f1 $f2 $arg) (superpose (($f1 $arg) ($f2 $arg))))
 
-
 ;Reverse Function Matching
 (= (@ $a $b) (let $a $b $a))
 
@@ -87,6 +86,3 @@
 
 ;(= (prog1 (cons $x $xs)) $x)
 ;(= (progn (rcons $xs $x)) $x)
-
-(= (clear-space $space) (let $as (get-atoms $space) (prog1 (remove-atom $space $as) (cut))))
-(= (clear-space $space) false)
