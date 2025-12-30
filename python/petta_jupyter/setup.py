@@ -9,7 +9,7 @@ After installation, register the kernel:
 Or use the provided install.sh script for automatic installation.
 """
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name='petta-jupyter',
@@ -19,9 +19,9 @@ setup(
     long_description_content_type='text/markdown',
     author='SingularityNET',
     url='https://github.com/patham9/PeTTa',
-    py_modules=['__init__', '__main__', 'kernel', 'output_formatter'],
+    packages=find_packages(),
     package_data={
-        '': ['resources/kernel.json'],
+        'petta_jupyter': ['../resources/kernel.json'],
     },
     include_package_data=True,
     install_requires=[

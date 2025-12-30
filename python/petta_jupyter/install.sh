@@ -21,9 +21,9 @@ if ! command -v pip &> /dev/null && ! python3 -m pip --version &> /dev/null; the
     exit 1
 fi
 
-# Install Python dependencies
-echo "Installing Python dependencies..."
-python3 -m pip install --upgrade ipykernel janus-swi
+# Install the kernel package
+echo "Installing PeTTa Jupyter kernel package..."
+python3 -m pip install -e "${SCRIPT_DIR}"
 
 # Install the kernel spec
 echo "Registering Jupyter kernel..."

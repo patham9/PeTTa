@@ -2,6 +2,15 @@
 
 import tempfile
 import os
+import sys
+
+# Add PeTTa python directory to path so we can import petta module
+# The kernel is in: /opt/snet/PeTTa/python/petta_jupyter/petta_jupyter/
+# We need to add: /opt/snet/PeTTa/python/
+petta_python_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if petta_python_dir not in sys.path:
+    sys.path.insert(0, petta_python_dir)
+
 from ipykernel.kernelbase import Kernel
 from petta import PeTTa
 from .output_formatter import format_results
@@ -112,3 +121,8 @@ class PeTTaKernel(Kernel):
             'payload': [],
             'user_expressions': {}
         }
+
+    def do_shutdown(self, restart):
+        """Handle shutdown request"""
+        # Clean up resources if needed
+        return {'status': 'ok', 'restart': restart}
