@@ -19,8 +19,8 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
-   ( member(mork, Argv) -> ensure_loaded([parser, translator, filereader, '../mork_ffi/morkspaces', spaces])
-                         ; ensure_loaded([parser, translator, filereader, spaces])).
+   ( member(mork, Argv) -> ensure_loaded([parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
+                         ; ensure_loaded([parser, translator, specializer, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -91,14 +91,14 @@ exp(Arg,R) :- R is exp(Arg).
 'random-float'('&rng', Min, Max, Result) :- random(R), Result is Min + R * (Max - Min).
 
 %%% Boolean Logic: %%%
-and(true,  X, X).
-and(false, _, false).
-or( false, X, X).
-or( true,  _, true).
-not(true,  false).
-not(false, true).
-xor(false, A, A).
-xor(true, A, B) :- not(A, B).
+bool(true).
+bool(false).
+and(A,B,C) :- bool(A), bool(B), ( A == true -> C = B ; A == false -> C = false ).
+or(A,B,C) :- bool(A), bool(B), ( A == true -> C = true ; A == false -> C = B ).
+not(A,B) :- bool(A), ( A == true -> B = false ; A == false -> B = true ).
+xor(A,B,C) :- bool(A), bool(B), ( A == B -> C = false ; C = true ).
+implies(A,B,C) :- bool(A), bool(B), ( A == true -> ( B == true  -> C = true ; B == false -> C = false )
+                                                 ; A == false -> C = true ).
 
 %%% Nondeterminism: %%%
 superpose(L,X) :- member(X,L).
@@ -118,7 +118,7 @@ first([A, _], A).
 decons([H|T], [H|[T]]).
 cons(H, T, [H|T]).
 'index-atom'(List, Index, Elem) :- nth0(Index, List, Elem).
-member(X, L, _) :- member(X, L).
+member(X, L, true) :- member(X, L).
 'is-member'(X, List, true) :- member(X, List).
 'is-member'(X, List, false) :- \+ member(X, List).
 'exclude-item'(A, L, R) :- exclude(==(A), L, R).
@@ -283,11 +283,9 @@ ensure_metta_ext(Path, PathWithExt) :- file_name_extension(Path, metta, PathWith
 %%% Registration: %%%
 :- dynamic fun/1.
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
-unregister_fun(N/Arity) :- retractall(fun(N)),
-                           abolish(N, Arity).
 
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
-                          '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, not, sqrt, exp, log, cos, sin,
+                          '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, implies, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom',
                           repr, repra, 'println!', 'readln!', 'trace!', test, assert, 'mm2-exec', atom_concat, atom_chars, copy_term, term_hash,
                           foldl, first, last, append, length, 'size-atom', sort, msort, member, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',

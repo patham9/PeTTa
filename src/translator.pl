@@ -9,9 +9,15 @@ constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsLi
                                   flatten(NestedGoalsList, Goals), !.
 
 %Flatten (= Head Body) MeTTa function into Prolog Clause:
-translate_clause(Input, (Head :- BodyConj)) :- Input = [=, [F|Args0], BodyExpr],
-                                               maplist(constrain_args, Args0, Args1, GoalsA),
-                                               append(GoalsA, GoalsPrefix),
+translate_clause(Input, (Head :- BodyConj)) :- translate_clause(Input, (Head :- BodyConj), true).
+translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
+                                               Input = [=, [F|Args0], BodyExpr],
+                                               b_setval(current, F),
+                                               ( ConstrainArgs -> maplist(constrain_args, Args0, Args1, GoalsA),
+                                                                  flatten(GoalsA,GoalsPrefix)
+                                                                ; Args1 = Args0, GoalsPrefix = [] ),
+                                               catch(nb_getval(F, Prev), _, Prev = []),
+                                               nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
                                                translate_expr(BodyExpr, GoalsBody, ExpOut),
                                                (  nonvar(ExpOut) , ExpOut = partial(Base,Bound)
                                                -> current_predicate(Base/Arity), length(Bound, N), M is (Arity - N) - 1,
@@ -22,6 +28,14 @@ translate_clause(Input, (Head :- BodyConj)) :- Input = [=, [F|Args0], BodyExpr],
                                                Head =.. [F|FinalArgs],
                                                append(GoalsPrefix, FinalGoals, Goals),
                                                goals_list_to_conj(Goals, BodyConj).
+
+%Print compiled clause:
+maybe_print_compiled_clause(_, _, _) :- silent(true), !.
+maybe_print_compiled_clause(Label, FormTerm, Clause) :-
+    swrite(FormTerm, FormStr),
+    format("\e[33m-->  ~w  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [Label, FormStr]),
+    portray_clause(current_output, Clause),
+    format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m").
 
 %Conjunction builder, turning goals list to a flat conjunction:
 goals_list_to_conj([], true)      :- !.
@@ -216,13 +230,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                            append(FreeVars, Args, FullArgs),
                                            % compile clause with all bound + free vars
                                            translate_clause([=, [F|FullArgs], Body], Clause),
-                                           ( silent(true) -> true ; format("\e[33m--> lambda clause -->~n\e[32m", []),
-                                                                    Clause = (CHead :- CBody),
-                                                                    ( CBody == true -> Show = CHead; Show = (CHead :- CBody) ),
-                                                                    portray_clause(current_output, Show),
-                                                                    format("\e[33m^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ),
                                            register_fun(F),
                                            assertz(Clause),
+                                           format(atom(Label), "metta lambda (~w)", [F]),
+                                           maybe_print_compiled_clause(Label, ['|->', Args, Body], Clause),
                                            length(FullArgs, N),
                                            Arity is N + 1,
                                            assertz(arity(F, Arity)),
@@ -304,13 +315,15 @@ translate_expr([H0|T0], Goals, Out) :-
 %Generate actual function call or partial if arity not complete:
 build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                              Arity is N + 1,
-                                                             ( ( ( current_predicate(Fun/Arity) ; catch(arity(Fun, Arity), _, fail) ),
-                                                                   \+ ( current_op(_, _, Fun), Arity =< 2 ) )
-                                                               -> append(AVs, [Out], Args),
-                                                                  Goal =.. [Fun|Args],
-                                                                  append(Inner, [Goal|Extra], Goals)
-                                                                ; Out = partial(Fun, AVs),
-                                                                  append(Inner, Extra, Goals) ).
+                                                             ( maybe_specialize_call(Fun, AVs, Out, Goal)
+                                                               -> append(Inner, [Goal|Extra], Goals)
+                                                                ; ( ( current_predicate(Fun/Arity) ; catch(arity(Fun, Arity), _, fail) ),
+                                                                     \+ ( current_op(_, _, Fun), Arity =< 2 ) )
+                                                                  -> append(AVs, [Out], Args),
+                                                                     Goal =.. [Fun|Args],
+                                                                     append(Inner, [Goal|Extra], Goals)
+                                                                   ; Out = partial(Fun, AVs),
+                                                                     append(Inner, Extra, Goals) ).
 
 %Type function call generation, returns function call plus typechecks for input and output:
 typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal) :-
