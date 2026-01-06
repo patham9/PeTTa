@@ -18,7 +18,7 @@ seq([X|Xs]) --> swrite_exp(X), " ", seq(Xs).
 sread(S, T) :- ( atom_string(A, S),
                  atom_codes(A, Cs),
                  phrase(sexpr(T, [], _), Cs)
-               -> true ; format(atom(Msg), 'Parse error in form: ~w', [S]), throw(error(syntax_error(Msg), _)) ).
+               -> true ; format(atom(Msg), 'Parse error in form: ~w', [S]), throw(error(syntax_error(Msg), none)) ).
 
 %An S-Expression is a parentheses-nesting of S-Expressions that are either numbers, variables, sttrings, or atoms:
 sexpr(S,E,E)  --> blanks, string_lit(S), blanks, !.

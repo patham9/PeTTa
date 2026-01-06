@@ -31,3 +31,8 @@
           ($part      (py-call (builtins.index $content 0)))
           ($text      (py-call (getattr $part "text"))))
          $text))
+
+(= (sread-safe $w)
+   (case (catch (sread $w))
+         (((Error $A $B) (empty))
+          ($z $z))))

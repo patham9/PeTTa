@@ -2,7 +2,7 @@
 
 ;GPT LLM use case, extract country cities are located in:
 !(let* (($city (superpose (stockholm vienna)))
-        ($sexpr (sread (useGPT (py-str ("in which country is " $city "? Answer via S-Expression (in CITY COUNTRY), output in lowercase and do not output anything else"))))))
+        ($sexpr (sread-safe (useGPT (py-str ("in which country is " $city "? Answer via S-Expression (in CITY COUNTRY), output in lowercase and do not output anything else"))))))
        (add-atom &self $sexpr))
 
 ;Test for inserted knowledge:
