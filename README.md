@@ -14,13 +14,20 @@ Example run:
 
 ### Jupyter Notebook Support
 
-PeTTa includes a Jupyter kernel for interactive MeTTa development in notebooks.
+A Jupyter kernel for PeTTa is available in a separate repository for interactive MeTTa development in notebooks.
+
+**Repository:** [trueagi-io/jupyter-petta-kernel](https://github.com/trueagi-io/jupyter-petta-kernel)
 
 Quick install:
 
 ```bash
-cd python/petta_jupyter
+# Set PETTA_PATH to this PeTTa installation
+export PETTA_PATH=/path/to/PeTTa
+
+# Clone and install the kernel
+git clone https://github.com/trueagi-io/jupyter-petta-kernel.git
+cd jupyter-petta-kernel
 ./install.sh
 ```
 
-See [python/petta_jupyter/README.md](python/petta_jupyter/README.md) for details.
+See the [jupyter-petta-kernel README](https://github.com/trueagi-io/jupyter-petta-kernel/blob/main/README.md) for detailed installation instructions and usage.
