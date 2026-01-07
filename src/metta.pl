@@ -235,20 +235,6 @@ call_goals([G|Gs]) :- call(G),
                                                              ; Out = RT ),
                                    'filter-atom'(T, Func, RT).
 
-%%% Aggregate Functions: %%%
-% foldall/4 - fold over all solutions of a generator
-% foldall(+AggFunc, +GenGoal, +Init, -Result)
-% AggFunc should be agg_reduce(Func, Var) where Var gets bound by GenGoal
-% GenGoal generates values via backtracking, binding Var
-foldall(agg_reduce(Func, Var), GenGoal, Init, Result) :-
-    findall(Var, GenGoal, Vals),
-    foldall_list(Vals, Func, Init, Result).
-
-foldall_list([], _, Acc, Acc).
-foldall_list([V|Vs], Func, Acc, Result) :-
-    agg_reduce(Func, Acc, V, NewAcc),
-    foldall_list(Vs, Func, NewAcc, Result).
-
 %%% Prolog interop: %%%
 import_prolog_function(N, true) :- register_fun(N).
 'Predicate'([F|Args], Term) :- Term =.. [F|Args].
