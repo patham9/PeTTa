@@ -4,7 +4,7 @@ Efficient MeTTa in Prolog.
 
 ### Dependencies
 
-SWI-Prolog
+SWI-Prolog >= 9.3.x
 
 ### Usage
 
