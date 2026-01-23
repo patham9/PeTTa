@@ -50,4 +50,5 @@ for pid in $pids; do
 done
 
 rm -f "$pidfile"
+
 exit $status
