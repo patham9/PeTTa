@@ -1,4 +1,5 @@
 !(import_prolog_function statistics)
+!(import_prolog_function reset)
 
 (= (BudgetLimitCheck)
    (if (> (- (statistics inferences) (get-state &initinferences)) (get-state &inferenceslimit))
@@ -21,15 +22,15 @@
                  (add-atom &self (= $head (progn (BudgetLimitCheck) $body)))))))
 
 (= (CallWithBudgetLimitInternal $var $predicate)
-   (let $compute (translatePredicate (reset $predicate $signal $cont))
-      (if (is-var $signal)
-          $var
-          (progn (println! "Out of inferences. Do you want to buy another 10000? Answer (yes) or (no):")
-                 (let $response (catch (readln!))
-                      (if (== $response (yes))
-                          (progn (AssignBudgetLimit 10000)
-                                 (CallWithBudgetLimitInternal $var $cont))
-                          (Ok bye)))))))
+   (let $cont (reset $predicate $signal)
+        (if (is-var $signal)
+            $var
+            (progn (println! "Out of inferences. Do you want to buy another 10000? Answer (yes) or (no):")
+                   (let $response (catch (readln!))
+                        (if (== $response (yes))
+                            (progn (AssignBudgetLimit 10000)
+                                   (CallWithBudgetLimitInternal $var $cont))
+                            (Ok bye)))))))
 
 (: CallWithBudgetLimit (-> Expression Atom))
 (= (CallWithBudgetLimit $G)
