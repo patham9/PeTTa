@@ -4,10 +4,10 @@
 
 (= (BudgetLimitCheck)
    (if (> (- (statistics inferences) (get-state &initinferences)) (get-state &inferenceslimit))
-       (progn (progn ;metadata with clause refs needs to be dropped:
-                     (translatePredicate (retractall (Predicate (translated_from $1 $2))))
-                     ;save current atom space with computation continuation entry point:
-                     (translatePredicate (qsave_program "saveme.p" ((Predicate (goal (Predicate (quote (__resume__ $x)))))))))
+       (progn ;metadata with clause refs needs to be dropped:
+              (translatePredicate (retractall (Predicate (translated_from $1 $2))))
+              ;save current atom space with computation continuation entry point:
+              (translatePredicate (qsave_program "saveme.p" ((Predicate (goal (Predicate (quote (__resume__ $x))))))))
               (translatePredicate (shift (pay-for-inferences))))
        True))
 
