@@ -17,16 +17,14 @@
           (change-state! &inferenceslimit $N)))
 
 (= (InjectBudgetLimitCheck)
-   (let $L (collapse (match &self $option
-           (if (= $option (quote (= $head $body)))
-                (let (cons $f $rest) $head
-                     (if (not (is-member $f (quote (BudgetLimitCheck AssignBudgetLimit InjectBudgetLimitCheck
-                                                    CallWithBudgetLimitInternal CallWithBudgetLimit __resume__ resume))))
-                         (progn (remove-atom &self $option)
-                                $option))))))
-        (let $f (superpose $L)
-             (if (= $f (quote (= $head $body)))
-                 (add-atom &self (= $head (progn (BudgetLimitCheck) $body)))))))
+   (let $L (collapse (match &self $func
+           (let (cons = ((cons $f $rest) $body)) $func
+                (if (not (is-member $f (quote (BudgetLimitCheck AssignBudgetLimit InjectBudgetLimitCheck
+                                               CallWithBudgetLimitInternal CallWithBudgetLimit __resume__ resume))))
+                         (progn (remove-atom &self $func)
+                                $func)))))
+        (let (cons = ($head $body)) (superpose $L)
+             (add-atom &self (= $head (progn (BudgetLimitCheck) $body))))))
 
 (= (CallWithBudgetLimitInternal $var $predicate)
    (let $cont (reset $predicate $signal)
