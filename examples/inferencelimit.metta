@@ -81,10 +81,11 @@
           ($c (+ $a $b)))
          (fib-step (+ $i 1) $c (+ $b $c))))
 
-;2. Inject compute budget check into user code:
+;1. Inject compute budget check into user code:
 !(InjectBudgetLimitCheck)
 
-;3. Assign a budget limit to the user:
+;2. Assign a budget limit to the user:
 !(AssignBudgetLimit 10000)
 
+;3. Start computation:
 !(CallWithBudgetLimit (fib-resume))
