@@ -17,14 +17,12 @@
           (change-state! &inferenceslimit $N)))
 
 (= (InjectBudgetLimitCheck)
-   (let $L (collapse (match &self $func
-           (let (cons = ((cons $f $rest) $body)) $func
-                (if (not (is-member $f (quote (BudgetLimitCheck AssignBudgetLimit InjectBudgetLimitCheck
-                                               CallWithBudgetLimitInternal CallWithBudgetLimit __resume__ resume))))
-                         (progn (remove-atom &self $func)
-                                $func)))))
-        (let (cons = ($head $body)) (superpose $L)
-             (add-atom &self (= $head (progn (BudgetLimitCheck) $body))))))
+   (let (cons = ($head $body))
+        (match &self $func (let (cons = ((cons $f $rest) $body)) $func
+                                (if (not (is-member $f (quote (BudgetLimitCheck AssignBudgetLimit InjectBudgetLimitCheck
+                                                               CallWithBudgetLimitInternal CallWithBudgetLimit __resume__ resume))))
+                                    (progn (remove-atom &self $func) $func))))
+        (add-atom &self (= $head (progn (BudgetLimitCheck) $body)))))
 
 (= (CallWithBudgetLimitInternal $var $predicate)
    (let $cont (reset $predicate $signal)
@@ -36,7 +34,7 @@
                             (progn (AssignBudgetLimit 10000)
                                    ;continue computation:
                                    (CallWithBudgetLimitInternal $var $cont))
-                            (Ok bye)))))))
+                            (Ok bye and execute "swipl -x saveme.p" to continue)))))))
 
 (: CallWithBudgetLimit (-> Expression Atom))
 (= (CallWithBudgetLimit $G)
