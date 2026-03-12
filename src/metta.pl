@@ -19,8 +19,8 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
-   ( member(mork, Argv) -> ensure_loaded([parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
-                         ; ensure_loaded([parser, translator, specializer, filereader, spaces])).
+   ( member(mork, Argv) -> ensure_loaded([debugger, parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
+                         ; ensure_loaded([debugger, parser, translator, specializer, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -212,11 +212,76 @@ assert(Goal, true) :- ( call(Goal) -> true
 
 %%% Eval: %%%
 eval(C, Out) :- translate_expr(C, Goals, Out),
-                call_goals(Goals).
+                call_goals(Goals, meta(eval, 0, eval)).
 
 call_goals([]).
-call_goals([G|Gs]) :- call(G), 
-                      call_goals(Gs).
+call_goals(Goals) :-
+    call_goals(Goals, meta(eval, 0, eval)).
+
+call_goals(Goals, Meta) :-
+    call_goals(Goals, Meta, 1).
+
+call_goals([], _, _).
+call_goals([G|Gs], Meta, GoalIndex) :-
+    instrument_goal(G, Meta, GoalIndex, InstrumentedGoal),
+    call(InstrumentedGoal),
+    NextGoalIndex is GoalIndex + 1,
+    call_goals(Gs, Meta, NextGoalIndex).
+
+instrument_goal(Goal, _, _, Goal) :-
+    var(Goal),
+    !.
+instrument_goal((A,B), Meta, Path, (IA,IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal((A;B), Meta, Path, (IA;IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal((A->B), Meta, Path, (IA->IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal(findall(Template, Goal, Bag), Meta, Path, Instrumented) :-
+    !,
+    child_goal_path(Path, 1, InnerPath),
+    instrument_goal(Goal, Meta, InnerPath, InstrumentedGoal),
+    InstrumentedCall = findall(Template, InstrumentedGoal, Bag),
+    Instrumented = trace_goal_execution(Meta, Path, InstrumentedCall).
+instrument_goal(once(Goal), Meta, Path, Instrumented) :-
+    !,
+    child_goal_path(Path, 1, InnerPath),
+    instrument_goal(Goal, Meta, InnerPath, InstrumentedGoal),
+    Instrumented = trace_goal_execution(Meta, Path, once(InstrumentedGoal)).
+instrument_goal(Goal, Meta, Path, trace_goal_execution(Meta, Path, Goal)).
+
+child_goal_path(Path, Child, [Path,Child]) :-
+    integer(Path),
+    !.
+child_goal_path(Path, Child, NextPath) :-
+    append(Path, [Child], NextPath).
+
+trace_goal_execution(Meta, GoalIndex, Goal) :-
+    maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+    ( call(Goal)
+      -> maybe_debug_runtime(success, Meta, GoalIndex, Goal)
+      ; maybe_debug_runtime(fail, Meta, GoalIndex, Goal),
+        fail
+    ).
+
+maybe_debug_runtime(Stage, Meta, GoalIndex, Goal) :-
+    ( runtime_event_enabled(Stage, Goal),
+      runtime_goal_enabled(Goal)
+      -> debug_event(runtime, Meta, goal(Stage, GoalIndex, Goal))
+      ; true
+    ).
 
 %%% Higher-Order Functions: %%%
 'foldl-atom'([], Acc, _Func, Acc).

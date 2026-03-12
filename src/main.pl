@@ -9,14 +9,14 @@ prolog_interop_example :- register_fun(prologfunc),
                           format("mettafunc(30) = ~w~n", [R]).
 
 main :- current_prolog_flag(argv, Args),
-        ( Args = [] -> prolog_interop_example
-        ; Args = [mork] -> prolog_interop_example,
-                           mork_test
-        ; Args = [File|_] -> file_directory_name(File, Dir),
-                             assertz(working_dir(Dir)),
-                             load_metta_file(File,Results),
-                             maplist(swrite,Results,ResultsR),
-                             maplist(format("~w~n"), ResultsR)
+        ( file_argument(Args, File) -> file_directory_name(File, Dir),
+                                      assertz(working_dir(Dir)),
+                                      load_metta_file(File,Results),
+                                      maplist(swrite,Results,ResultsR),
+                                      maplist(format("~w~n"), ResultsR)
+        ; mork_enabled(Args) -> prolog_interop_example,
+                                mork_test
+        ; prolog_interop_example
         ),
         halt.
 

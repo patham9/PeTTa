@@ -34,7 +34,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                goals_list_to_conj(Goals, BodyConj).
 
 %Print compiled clause:
-maybe_print_compiled_clause(_, _, _) :- silent(true), !.
+maybe_print_compiled_clause(_, _, _) :- \+ legacy_verbose_enabled(compile), !.
 maybe_print_compiled_clause(Label, FormTerm, Clause) :-
     swrite(FormTerm, FormStr),
     format("\e[33m-->  ~w  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [Label, FormStr]),
