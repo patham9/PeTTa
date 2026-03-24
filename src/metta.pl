@@ -268,17 +268,77 @@ child_goal_path(Path, Child, [Path,Child]) :-
 child_goal_path(Path, Child, NextPath) :-
     append(Path, [Child], NextPath).
 
+:- dynamic debug_trace_success/1.
+
 trace_goal_execution(Meta, GoalIndex, Goal) :-
+    call_stack_push(Goal),
     maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
-    ( call(Goal)
-      -> maybe_debug_runtime(success, Meta, GoalIndex, Goal)
-      ; maybe_debug_runtime(fail, Meta, GoalIndex, Goal),
-        fail
+    catch(
+        traced_goal_body(Meta, GoalIndex, Goal),
+        Error,
+        ( call_stack_pop(Goal),
+          throw(Error)
+        )),
+    call_stack_pop(Goal).
+
+traced_goal_body(Meta, GoalIndex, Goal) :-
+    fresh_trace_id(TraceId),
+    retractall(debug_trace_success(TraceId)),
+    call_cleanup(
+        traced_goal_port(TraceId, Meta, GoalIndex, Goal),
+        cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal)
     ).
 
+trace_compiled_goal(SourceExpr, Goal) :-
+    runtime_tracing_active,
+    !,
+    Meta = meta(compiled, 0, compiled(SourceExpr)),
+    GoalIndex = compiled,
+    call_stack_push(Goal),
+    maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+    catch(
+        traced_goal_body(Meta, GoalIndex, Goal),
+        Error,
+        ( call_stack_pop(Goal),
+          throw(Error)
+        )),
+    call_stack_pop(Goal).
+trace_compiled_goal(_SourceExpr, Goal) :-
+    call(Goal).
+
+fresh_trace_id(TraceId) :-
+    flag(debug_trace_id, TraceId, TraceId + 1).
+
+traced_goal_port(TraceId, Meta, GoalIndex, Goal) :-
+    call(Goal),
+    retractall(debug_trace_success(TraceId)),
+    assertz(debug_trace_success(TraceId)),
+    maybe_debug_runtime(success, Meta, GoalIndex, Goal).
+
+cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal) :-
+    ( retract(debug_trace_success(TraceId))
+      -> true
+      ; maybe_debug_runtime(fail, Meta, GoalIndex, Goal)
+    ).
+
+runtime_tracing_active :-
+    debug_enabled(runtime).
+runtime_tracing_active :-
+    debug_break_target(_).
+runtime_tracing_active :-
+    debug_break_condition(_, _, _).
+runtime_tracing_active :-
+    debug_break_once.
+
+maybe_debug_runtime(_Stage, _Meta, _GoalIndex, _Goal) :-
+    \+ runtime_tracing_active,
+    !.
 maybe_debug_runtime(Stage, Meta, GoalIndex, Goal) :-
     ( runtime_event_enabled(Stage, Goal),
-      runtime_goal_enabled(Goal)
+      ( runtime_goal_enabled(Goal)
+      ; breakpoint_goal_enabled(Goal)
+      ; breakpoint_condition_enabled(Stage, Goal)
+      )
       -> debug_event(runtime, Meta, goal(Stage, GoalIndex, Goal))
       ; true
     ).

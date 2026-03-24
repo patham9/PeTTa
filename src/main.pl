@@ -9,7 +9,8 @@ prolog_interop_example :- register_fun(prologfunc),
                           format("mettafunc(30) = ~w~n", [R]).
 
 main :- current_prolog_flag(argv, Args),
-        ( file_argument(Args, File) -> file_directory_name(File, Dir),
+        ( debug_help_requested(Args) -> print_debug_help
+        ; file_argument(Args, File) -> file_directory_name(File, Dir),
                                       assertz(working_dir(Dir)),
                                       load_metta_file(File,Results),
                                       maplist(swrite,Results,ResultsR),

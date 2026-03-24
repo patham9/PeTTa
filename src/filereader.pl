@@ -62,6 +62,7 @@ process_form(Space, parsed(function, Index, Line, FormStr, Term), []) :- add_sex
 process_form(_, In, _) :- format(atom(Msg), "failed to process form: ~w", [In]), throw(error(syntax_error(Msg), none)).
 
 emit_source_debug(source_form(Tag, Index, Line, FormStr)) :-
+    register_debug_source_form(Index, Line, Tag, FormStr),
     debug_event(source, meta(Index, Line, Tag), FormStr).
 
 %Like blanks but counts newlines:
