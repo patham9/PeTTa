@@ -214,7 +214,6 @@ assert(Goal, true) :- ( call(Goal) -> true
 eval(C, Out) :- translate_expr(C, Goals, Out),
                 call_goals(Goals, meta(eval, 0, eval)).
 
-call_goals([]).
 call_goals(Goals) :-
     call_goals(Goals, meta(eval, 0, eval)).
 
@@ -223,7 +222,13 @@ call_goals(Goals, Meta) :-
 
 call_goals([], _, _).
 call_goals([G|Gs], Meta, GoalIndex) :-
-    instrument_goal(G, Meta, GoalIndex, InstrumentedGoal),
+    % Only rewrite goals for instrumentation when tracing is actually on.
+    % Otherwise run the goal verbatim (as upstream does) so the rewriting
+    % cannot perturb semantics or solution counts on normal runs.
+    ( runtime_tracing_active
+      -> instrument_goal(G, Meta, GoalIndex, InstrumentedGoal)
+      ;  InstrumentedGoal = G
+    ),
     call(InstrumentedGoal),
     NextGoalIndex is GoalIndex + 1,
     call_goals(Gs, Meta, NextGoalIndex).
@@ -270,16 +275,25 @@ child_goal_path(Path, Child, NextPath) :-
 
 :- dynamic debug_trace_success/1.
 
+% When no runtime tracing is requested this must be a transparent no-op:
+% rewriting it to anything other than call(Goal) (e.g. the call-stack
+% bookkeeping below) corrupts backtracking and collapses nondeterministic
+% MeTTa goals to their first solution.
+trace_goal_execution(_Meta, _GoalIndex, Goal) :-
+    \+ runtime_tracing_active,
+    !,
+    call(Goal).
 trace_goal_execution(Meta, GoalIndex, Goal) :-
-    call_stack_push(Goal),
-    maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
-    catch(
-        traced_goal_body(Meta, GoalIndex, Goal),
-        Error,
-        ( call_stack_pop(Goal),
-          throw(Error)
-        )),
-    call_stack_pop(Goal).
+    % setup_call_cleanup pushes the frame once and pops it exactly once when
+    % Goal is finished (deterministic exit, failure, error, or cut), so the
+    % shared metta_call_stack is not re-popped on every backtrack.
+    setup_call_cleanup(
+        call_stack_push(Goal),
+        ( maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+          traced_goal_body(Meta, GoalIndex, Goal)
+        ),
+        call_stack_pop(Goal)
+    ).
 
 traced_goal_body(Meta, GoalIndex, Goal) :-
     fresh_trace_id(TraceId),
@@ -294,15 +308,13 @@ trace_compiled_goal(SourceExpr, Goal) :-
     !,
     Meta = meta(compiled, 0, compiled(SourceExpr)),
     GoalIndex = compiled,
-    call_stack_push(Goal),
-    maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
-    catch(
-        traced_goal_body(Meta, GoalIndex, Goal),
-        Error,
-        ( call_stack_pop(Goal),
-          throw(Error)
-        )),
-    call_stack_pop(Goal).
+    setup_call_cleanup(
+        call_stack_push(Goal),
+        ( maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+          traced_goal_body(Meta, GoalIndex, Goal)
+        ),
+        call_stack_pop(Goal)
+    ).
 trace_compiled_goal(_SourceExpr, Goal) :-
     call(Goal).
 

@@ -52,7 +52,7 @@ OK     (yourFunc 7 3) => 4
 
 If a function may be calling the wrong built-in, trace the operator directly.
 
-Example from the intentionally broken [examples/add_buggy.metta](/home/bereketeshete/iCog/PeTTa/examples/add_buggy.metta#L1):
+Example from the intentionally broken [examples/add_buggy.metta](./examples/add_buggy.metta):
 
 ```bash
 sh debug.sh examples/add_buggy.metta --debug=runtime --debug-goal=- --silent
@@ -69,7 +69,7 @@ OK     (- 7 3) => 4
 
 Use a conditional breakpoint to stop on impossible states.
 
-Example from [examples/fib_buggy.metta](/home/bereketeshete/iCog/PeTTa/examples/fib_buggy.metta#L1):
+Example from [examples/fib_buggy.metta](./examples/fib_buggy.metta):
 
 ```bash
 sh debug.sh examples/fib_buggy.metta --debug-break-if='fib:arg1<0' --debug-break-once --debug-goal=fib --silent
