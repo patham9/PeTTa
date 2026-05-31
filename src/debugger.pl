@@ -11,6 +11,7 @@
 :- dynamic debug_break_context/4.
 :- dynamic debug_step_mode/1.
 :- dynamic debug_step_armed/0.
+:- dynamic debug_eval_suspended/0.
 :- dynamic debug_break_skip/1.
 :- dynamic debug_break_hits/1.
 :- dynamic debug_max_depth/1.
@@ -533,6 +534,7 @@ print_call_stack :-
 print_call_stack.
 
 debug_event(Category, Meta, Payload) :-
+    \+ debug_eval_suspended,
     debug_enabled(Category),
     debug_event_allowed,
     !,
@@ -788,7 +790,7 @@ note_breakpoint_fired.
 maybe_pause_on_breakpoint :-
     stream_property(user_input, tty(true)),
     !,
-    color_format(user_error, magenta, "break> Enter=continue, l=source, s=stack, f=frame, p=goal, i=step-into, n=step-over, o=step-out, c=continue without more breaks, q=abort~n", []),
+    color_format(user_error, magenta, "break> Enter=continue, l=source, s=stack, f=frame, p=goal, i=step-into, n=step-over, o=step-out, 'e <expr>'=eval MeTTa, ':break <spec>'/':clear'/':info'=manage breakpoints, c=continue without more breaks, q=abort~n", []),
     read_line_to_string(user_input, Input),
     handle_breakpoint_input(Input).
 maybe_pause_on_breakpoint.
@@ -818,8 +820,119 @@ handle_breakpoint_input("q") :-
 handle_breakpoint_input("s") :-
     print_call_stack,
     maybe_pause_on_breakpoint.
+handle_breakpoint_input(Input) :-
+    ( string_concat("e ", Expr, Input)
+    ; string_concat(":eval ", Expr, Input)
+    ),
+    !,
+    debug_repl_eval(Expr),
+    maybe_pause_on_breakpoint.
+handle_breakpoint_input(Input) :-
+    string_concat(":break ", Spec, Input),
+    !,
+    debug_repl_add_break(Spec),
+    maybe_pause_on_breakpoint.
+handle_breakpoint_input(":clear") :-
+    !,
+    debug_repl_clear_breaks,
+    maybe_pause_on_breakpoint.
+handle_breakpoint_input(":info") :-
+    !,
+    debug_repl_show_breaks,
+    maybe_pause_on_breakpoint.
 handle_breakpoint_input(_) :-
     true.
+
+% Evaluate a MeTTa expression typed at a breakpoint. Tracing is suspended for the
+% duration (debug_eval_suspended) so the evaluation does not recurse into the
+% debugger, and the expression's $variables are first unified with the current
+% breakpoint's variable bindings so it can refer to them by name.
+debug_repl_eval(ExprString) :-
+    ( catch(sread(ExprString, Term, Env), Error, ( report_repl_error(Error), fail ))
+      -> apply_break_context_vars(Env),
+         debug_repl_run(Term)
+      ; true
+    ).
+
+debug_repl_run(Term) :-
+    setup_call_cleanup(
+        assertz(debug_eval_suspended),
+        findall(Out, eval(Term, Out), Results),
+        retractall(debug_eval_suspended)
+    ),
+    print_repl_results(Results).
+
+print_repl_results([]) :-
+    !,
+    color_format(user_error, cyan, "= <no results>~n", []).
+print_repl_results(Results) :-
+    forall(member(Result, Results),
+           ( swrite(Result, Text),
+             color_format(user_error, cyan, "= ~w~n", [Text]) )).
+
+report_repl_error(Error) :-
+    color_format(user_error, red, "eval error: ~w~n", [Error]).
+
+% Bind the REPL expression's $variables (Name-Var from the fresh parse) to the
+% values captured for the current breakpoint, where the names match.
+apply_break_context_vars(Env) :-
+    ( is_list(Env), break_context_bindings(Bindings)
+      -> bind_named_vars(Env, Bindings)
+      ; true
+    ).
+
+% Explicit recursion (not forall/2, which is \+ \+ and would undo the bindings).
+bind_named_vars([], _).
+bind_named_vars([Name-Var|Rest], Bindings) :-
+    ( member(BName-BValue, Bindings), BName == Name
+      -> Var = BValue
+      ;  true
+    ),
+    bind_named_vars(Rest, Bindings).
+
+break_context_bindings(Bindings) :-
+    debug_break_context(_Stage, meta(_Index, _Line, compiled(_SourceExpr, Bindings)), _GoalIndex, _Goal),
+    is_list(Bindings),
+    !.
+break_context_bindings([]).
+
+% Live breakpoint management from the prompt. A spec containing ':' is a
+% conditional breakpoint (head:condition), otherwise a goal-head breakpoint.
+debug_repl_add_break(Spec) :-
+    atom_string(SpecAtom, Spec),
+    ( sub_atom(SpecAtom, _, 1, _, ':')
+      -> ( catch(parse_break_condition_spec(SpecAtom, Head, Condition), _, fail)
+           -> assertz(debug_break_condition(Head, Condition, SpecAtom)),
+              color_format(user_error, magenta, "added conditional breakpoint ~w~n", [SpecAtom])
+           ;  color_format(user_error, red, "could not parse condition ~w~n", [SpecAtom])
+         )
+      ;  assertz(debug_break_target(SpecAtom)),
+         color_format(user_error, magenta, "added breakpoint on goal head ~w~n", [SpecAtom])
+    ).
+
+debug_repl_clear_breaks :-
+    retractall(debug_break_target(_)),
+    retractall(debug_break_condition(_, _, _)),
+    retractall(debug_break_space(_)),
+    retractall(debug_break_match_fail),
+    retractall(debug_break_error),
+    color_format(user_error, magenta, "cleared all breakpoints~n", []).
+
+debug_repl_show_breaks :-
+    color_format(user_error, magenta, "active breakpoints:~n", []),
+    forall(debug_break_target(Head),
+           color_format(user_error, magenta, "  head: ~w~n", [Head])),
+    forall(debug_break_condition(_, _, Spec),
+           color_format(user_error, magenta, "  condition: ~w~n", [Spec])),
+    forall(debug_break_space(Space),
+           color_format(user_error, magenta, "  space mutation: ~w~n", [Space])),
+    ( debug_break_match_fail -> color_format(user_error, magenta, "  match failures~n", []) ; true ),
+    ( debug_break_error -> color_format(user_error, magenta, "  error results~n", []) ; true ),
+    ( \+ debug_break_target(_), \+ debug_break_condition(_, _, _),
+      \+ debug_break_space(_), \+ debug_break_match_fail, \+ debug_break_error
+      -> color_format(user_error, magenta, "  (none)~n", [])
+      ; true
+    ).
 
 arm_step_into :-
     retractall(debug_break_continue),
@@ -1438,6 +1551,10 @@ print_debug_help :-
     format("  i  step into~n", []),
     format("  n  step over~n", []),
     format("  o  step out~n", []),
+    format("  e <expr>      evaluate a MeTTa expression in the current context~n", []),
+    format("  :break <spec>  add a breakpoint live (head, or head:condition)~n", []),
+    format("  :clear         clear all breakpoints~n", []),
+    format("  :info          list active breakpoints~n", []),
     format("  c  continue without more breakpoint pauses~n", []),
     format("  q  abort~n~n", []),
     format("Categories:~n", []),

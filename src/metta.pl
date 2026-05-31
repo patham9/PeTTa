@@ -340,6 +340,13 @@ cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal) :-
     ).
 
 runtime_tracing_active :-
+    % While a breakpoint REPL evaluation is in progress, tracing is suspended so
+    % the evaluated expression does not recursively trigger instrumentation,
+    % breakpoints, or call-stack mutation.
+    debug_eval_suspended,
+    !,
+    fail.
+runtime_tracing_active :-
     debug_enabled(runtime).
 runtime_tracing_active :-
     debug_break_target(_).

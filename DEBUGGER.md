@@ -251,8 +251,16 @@ When running in a TTY, breakpoint hits accept:
 - `i`: step into the next visible runtime event
 - `n`: step over until execution returns to the same frame depth or shallower
 - `o`: step out of the current frame
+- `e <expr>`: evaluate a MeTTa expression in the current context and print its result(s)
+- `:break <spec>`: add a breakpoint live (`<head>`, or `<head>:<condition>`)
+- `:clear`: clear all breakpoints
+- `:info`: list the active breakpoints
 - `c`: continue without any more breakpoint pauses
 - `q`: abort
+
+The `e` command evaluates with tracing suspended (so it will not recurse into
+the debugger) and binds the expression's `$variables` to the current frame's
+values, so you can write things like `e (+ $N 1)` to probe the paused goal.
 
 ## Suggested first commands
 
