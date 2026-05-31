@@ -36,16 +36,47 @@ The program to debug is taken from the `launch` request's `program` argument.
 `initialized`, `stopped` (at a breakpoint), `terminated` and `exited` (when the
 program finishes).
 
+## Trying it without an editor (terminal client)
+
+`dap_client.py` is a tiny readable DAP client. It launches `dap.sh`, sets a
+function breakpoint, runs a file, and prints the stack + MeTTa variables at each
+stop — the same exchange an editor performs, but in your terminal:
+
+```bash
+python3 editors/dap_client.py examples/fib_buggy.metta fib 4
+```
+
+`tests/debugger/dap.sh` is a second worked example (it also exercises `evaluate`
+and run-to-completion).
+
 ## VS Code
 
-`vscode/launch.json` is a minimal launch configuration. VS Code needs a small
-debug-adapter extension that declares a debug `type` of `petta` and starts
-`dap.sh` as the adapter (an stdio adapter via `DebugAdapterExecutable`). Any
-generic "DAP over stdio" bridge extension works too — point it at `dap.sh`.
+This folder is a ready-to-run (unpacked) VS Code extension that registers
+`dap.sh` as a debug adapter of type `petta`. It is plain JavaScript — no build
+or `npm install` is needed.
 
-## Trying it without an editor
+1. Open this extension folder in VS Code:
+   ```bash
+   code editors/vscode
+   ```
+2. Press **F5** ("Run Extension"). A second VS Code window opens (the Extension
+   Development Host) with the extension active.
+3. In that window, open the PeTTa repo folder and open a `.metta` file, e.g.
+   `examples/fib_buggy.metta`.
+4. Set a breakpoint one of two ways:
+   - click the gutter on the function's definition line (line 1 of `fib_buggy.metta`); or
+   - in the **Run and Debug** view, add a **Function Breakpoint** named `fib`.
+5. Press **F5** and choose **Debug PeTTa file** (it debugs the active file via
+   `"program": "${file}"`).
+6. Execution stops at the breakpoint. Use the **Call Stack** and **Variables**
+   panels (you'll see `$N`), the step buttons (step in/over/out, continue), and
+   the Debug Console's evaluate box (type a MeTTa expression like `(+ $N 1)`).
 
-The adapter is just stdio JSON, so you can script a session. See
-`tests/debugger/dap.sh` for a complete worked example that initializes, sets a
-function breakpoint, launches a file, hits a breakpoint, fetches the stack and
-variables, evaluates an expression in the paused frame, and disconnects.
+Notes / current limitations:
+
+- Gutter breakpoints map to the breakpoint's source line; recursion through a
+  function clause reports that clause's definition line.
+- Program `stdout` (e.g. test results) goes to the adapter's stderr, not the
+  Debug Console; the console is for `evaluate` results.
+- The adapter resolves the repo root relative to this file, so keep the
+  extension inside the PeTTa checkout (or open the repo as a workspace folder).
