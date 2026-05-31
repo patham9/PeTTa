@@ -2,6 +2,18 @@
 
 This guide focuses on practical debugging workflows in PeTTa.
 
+## Editor integration (DAP)
+
+PeTTa includes a Debug Adapter Protocol server so editors can drive the debugger
+(breakpoints, stepping, stack/variable inspection, evaluation):
+
+```bash
+sh dap.sh
+```
+
+It speaks DAP JSON over stdin/stdout. See [editors/README.md](./editors/README.md)
+for the supported requests and a VS Code launch configuration.
+
 ## Entry points
 
 Show debugger help:

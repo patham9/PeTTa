@@ -15,6 +15,8 @@
 :- dynamic debug_step_armed/0.
 :- dynamic debug_eval_suspended/0.
 :- dynamic debug_format_json/0.
+:- dynamic debug_break_line/1.
+:- dynamic dap_mode/0.
 :- dynamic debug_break_skip/1.
 :- dynamic debug_break_hits/1.
 :- dynamic debug_max_depth/1.
@@ -45,6 +47,7 @@ init_runtime_flags(Args) :-
     retractall(debug_step_armed),
     retractall(debug_eval_suspended),
     retractall(debug_format_json),
+    retractall(debug_break_line(_)),
     retractall(debug_break_skip(_)),
     retractall(debug_break_hits(_)),
     retractall(debug_max_depth(_)),
@@ -344,6 +347,9 @@ runtime_category_alias(runtime) :-
     debug_break_condition(_, _, _),
     !.
 runtime_category_alias(runtime) :-
+    debug_break_line(_),
+    !.
+runtime_category_alias(runtime) :-
     debug_break_once,
     !.
 runtime_category_alias(runtime) :-
@@ -555,6 +561,9 @@ debug_event(Category, Meta, Payload) :-
     !,
     ( debug_format_json
       -> emit_json_event(Category, Meta, Payload)
+      ;  dap_mode
+      -> maybe_handle_breakpoint(Category, Meta, Payload),
+         maybe_handle_step(Category, Meta, Payload)
       ;  maybe_handle_breakpoint(Category, Meta, Payload),
          maybe_handle_step(Category, Meta, Payload),
          render_debug_event(Category, Meta, Payload)
@@ -584,7 +593,9 @@ notify_debug_event_limit_reached :-
     color_format(user_error, magenta, "[DEBUG limit] event limit reached; suppressing further debug output~n", []).
 
 maybe_handle_breakpoint(runtime, Meta, goal(Stage, GoalIndex, Goal)) :-
-    breakpoint_event_visible(Stage, Goal),
+    ( breakpoint_event_visible(Stage, Goal)
+    ; line_breakpoint_visible(Stage, Meta)
+    ),
     !,
     debug_breakpoint(Stage, Meta, GoalIndex, Goal).
 maybe_handle_breakpoint(space, Meta, Payload) :-
@@ -650,6 +661,14 @@ breakpoint_event_visible(Stage, Goal) :-
     note_breakpoint_hit(HitCount),
     \+ breakpoint_skipped(HitCount),
     runtime_depth_visible.
+
+% Break when entering a compiled goal whose source form is on a requested line
+% (set via the DAP setBreakpoints request -> debug_break_line/1).
+line_breakpoint_visible(enter, meta(_Index, Line, _Kind)) :-
+    debug_break_line(Line),
+    \+ breakpoint_disabled_after_first_hit,
+    note_breakpoint_hit(HitCount),
+    \+ breakpoint_skipped(HitCount).
 
 breakpoint_triggered(enter, Goal) :-
     breakpoint_goal_enabled(Goal),
@@ -901,6 +920,10 @@ note_breakpoint_fired :-
 note_breakpoint_fired.
 
 maybe_pause_on_breakpoint :-
+    dap_mode,
+    !,
+    ( current_predicate(dap_on_pause/0) -> dap_on_pause ; true ).
+maybe_pause_on_breakpoint :-
     stream_property(user_input, tty(true)),
     !,
     color_format(user_error, magenta, "break> Enter=continue, l=source, s=stack, f=frame, p=goal, i=step-into, n=step-over, o=step-out, 'e <expr>'=eval MeTTa, ':break <spec>'/':clear'/':info'=manage breakpoints, c=continue without more breaks, q=abort~n", []),
@@ -961,19 +984,22 @@ handle_breakpoint_input(_) :-
 % debugger, and the expression's $variables are first unified with the current
 % breakpoint's variable bindings so it can refer to them by name.
 debug_repl_eval(ExprString) :-
-    ( catch(sread(ExprString, Term, Env), Error, ( report_repl_error(Error), fail ))
-      -> apply_break_context_vars(Env),
-         debug_repl_run(Term)
+    ( debug_eval_collect(ExprString, Results)
+      -> print_repl_results(Results)
       ; true
     ).
 
-debug_repl_run(Term) :-
+% Parse a MeTTa expression string, bind its $variables to the current
+% breakpoint's frame values, and collect all solutions with tracing suspended.
+% Shared by the interactive REPL (e/:eval) and the DAP evaluate request.
+debug_eval_collect(ExprString, Results) :-
+    catch(sread(ExprString, Term, Env), Error, ( report_repl_error(Error), fail )),
+    apply_break_context_vars(Env),
     setup_call_cleanup(
         assertz(debug_eval_suspended),
         findall(Out, eval(Term, Out), Results),
         retractall(debug_eval_suspended)
-    ),
-    print_repl_results(Results).
+    ).
 
 print_repl_results([]) :-
     !,

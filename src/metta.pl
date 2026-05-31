@@ -353,6 +353,8 @@ runtime_tracing_active :-
 runtime_tracing_active :-
     debug_break_condition(_, _, _).
 runtime_tracing_active :-
+    debug_break_line(_).
+runtime_tracing_active :-
     debug_break_once.
 
 maybe_debug_runtime(_Stage, _Meta, _GoalIndex, _Goal) :-
