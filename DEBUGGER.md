@@ -29,7 +29,35 @@ sh debug_test.sh
 - `--debug=source,parse,translate,result`: source-to-result pipeline trace.
 - `--debug=space`: atom-space mutations and matches.
 - `--debug-output=<file>`: write a plain-text copy of debugger output to a file while still showing terminal output.
+- `--debug-format=json` (alias `--debug-jsonl`): emit events as machine-readable JSON, one object per line.
 - `--silent`: suppress the legacy compile/run pretty-print and keep the debugger output.
+
+## Machine-readable JSON output
+
+Add `--debug-format=json` (or `--debug-jsonl`) to any debug run to emit one JSON
+object per line instead of the human-readable trace. This is the format intended
+for tooling and editor integration.
+
+```bash
+sh debug.sh examples/mettaset.metta --debug=runtime --debug-goal=match --debug-format=json --silent
+```
+
+```json
+{"event":"runtime","stage":"enter","goal":"(match &self (set $x $y) (set $x $y))","index":2,"line":6,"depth":1,"vars":{}}
+{"event":"runtime","stage":"success","goal":"(match &self (set 1 a) (set 1 a))","index":2,"line":6,"depth":1,"vars":{},"result":"(set 1 a)"}
+{"event":"runtime","stage":"redo","goal":"(match &self (set 1 b) (set 1 b))","index":2,"line":6,"depth":1,"vars":{}}
+```
+
+Event kinds:
+
+- `runtime`: `stage` is `enter`/`success`/`redo`/`fail`; carries `goal`, `index`,
+  `line`, `depth`, `vars` (MeTTa variable bindings), and `result` on success.
+- `space`: `op` is `add`/`remove`/`match`/`get_atoms`, with `space`, `term`/`pattern`,
+  and `result`/`removed` as applicable.
+- `result`: the final results of a runnable form.
+
+Combine with `--debug-goal`, `--debug-depth`, and `--debug-max-events` to scope
+the stream. Use `--silent` so program output does not interleave with the JSON.
 
 ## Common workflows
 

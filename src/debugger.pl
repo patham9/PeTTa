@@ -1,3 +1,5 @@
+:- use_module(library(http/json)). % json_write_dict/3 for --debug-format=json
+
 :- dynamic debug_category/1.
 :- dynamic debug_goal_target/1.
 :- dynamic debug_break_target/1.
@@ -12,6 +14,7 @@
 :- dynamic debug_step_mode/1.
 :- dynamic debug_step_armed/0.
 :- dynamic debug_eval_suspended/0.
+:- dynamic debug_format_json/0.
 :- dynamic debug_break_skip/1.
 :- dynamic debug_break_hits/1.
 :- dynamic debug_max_depth/1.
@@ -40,6 +43,8 @@ init_runtime_flags(Args) :-
     retractall(debug_break_context(_, _, _, _)),
     retractall(debug_step_mode(_)),
     retractall(debug_step_armed),
+    retractall(debug_eval_suspended),
+    retractall(debug_format_json),
     retractall(debug_break_skip(_)),
     retractall(debug_break_hits(_)),
     retractall(debug_max_depth(_)),
@@ -63,6 +68,7 @@ init_runtime_flags(Args) :-
     forall(member(Space, BreakSpaces), assertz(debug_break_space(Space))),
     ( debug_break_match_fail_requested(Args) -> assertz(debug_break_match_fail) ; true ),
     ( debug_break_error_requested(Args) -> assertz(debug_break_error) ; true ),
+    ( debug_format_json_requested(Args) -> assertz(debug_format_json) ; true ),
     ( debug_break_once_requested(Args) -> assertz(debug_break_once) ; true ),
     ( debug_break_skip_arg(Args, BreakSkip) -> assertz(debug_break_skip(BreakSkip)) ; true ),
     ( debug_output_arg(Args, OutputPath) -> open(OutputPath, write, OutputStream), assertz(debug_output_stream(OutputStream)) ; true ),
@@ -142,6 +148,15 @@ debug_break_space_arg(Args, Space) :-
     atomic_list_concat(Parts, ',', Spec),
     member(Part, Parts),
     Space = Part.
+
+debug_format_json_requested(Args) :-
+    ( member('--debug-jsonl', Args)
+    ; member(Arg, Args),
+      atom(Arg),
+      atom_concat('--debug-format=', Value, Arg),
+      memberchk(Value, [json, jsonl])
+    ),
+    !.
 
 debug_break_match_fail_requested(Args) :-
     member('--debug-break-match-fail', Args).
@@ -538,9 +553,12 @@ debug_event(Category, Meta, Payload) :-
     debug_enabled(Category),
     debug_event_allowed,
     !,
-    maybe_handle_breakpoint(Category, Meta, Payload),
-    maybe_handle_step(Category, Meta, Payload),
-    render_debug_event(Category, Meta, Payload).
+    ( debug_format_json
+      -> emit_json_event(Category, Meta, Payload)
+      ;  maybe_handle_breakpoint(Category, Meta, Payload),
+         maybe_handle_step(Category, Meta, Payload),
+         render_debug_event(Category, Meta, Payload)
+    ).
 debug_event(_, _, _).
 
 debug_event_allowed :-
@@ -751,6 +769,101 @@ render_debug_event(result, meta(Index, Line, Kind), Results) :-
       ; forall(member(Result, Results), print_result_line(Result)),
         debug_nl
     ).
+
+% --- JSON / JSONL machine-readable event stream (--debug-format=json) ---
+% One JSON object per line, written to the debug streams. This is the raw event
+% feed the DAP server (M7) maps into stopped/output/terminated events.
+
+emit_json_event(runtime, meta(Index, Line, Kind), goal(Stage, _GoalIndex, Goal)) :-
+    runtime_event_visible(Stage, Goal),
+    !,
+    strip_trace_wrappers(Goal, CleanGoal),
+    runtime_goal_core_text(CleanGoal, GoalText),
+    json_meta_index(Index, IndexJson),
+    current_call_stack_depth(Depth),
+    kind_vars_dict(Kind, VarsDict),
+    ( Stage == success, runtime_goal_result(CleanGoal, ResultText)
+      -> ResultPairs = [result-ResultText]
+      ;  ResultPairs = []
+    ),
+    dict_pairs(Dict, json,
+        [ event-runtime, stage-Stage, goal-GoalText,
+          index-IndexJson, line-Line, depth-Depth, vars-VarsDict | ResultPairs ]),
+    write_json_line(Dict).
+emit_json_event(runtime, _, _) :-
+    !.
+emit_json_event(space, _Meta, space(add, Space, Term)) :-
+    !,
+    swrite(Term, TermText),
+    dict_pairs(Dict, json, [event-space, op-add, space-Space, term-TermText]),
+    write_json_line(Dict).
+emit_json_event(space, _Meta, space(remove, Space, Term, Removed)) :-
+    !,
+    swrite(Term, TermText),
+    json_text(Removed, RemovedText),
+    dict_pairs(Dict, json, [event-space, op-remove, space-Space, term-TermText, removed-RemovedText]),
+    write_json_line(Dict).
+emit_json_event(space, _Meta, space(match, Stage, Space, Pattern, Result)) :-
+    !,
+    swrite(Pattern, PatternText),
+    json_text(Result, ResultText),
+    dict_pairs(Dict, json, [event-space, op-match, stage-Stage, space-Space, pattern-PatternText, result-ResultText]),
+    write_json_line(Dict).
+emit_json_event(space, _Meta, space(get_atoms, Space, Pattern)) :-
+    !,
+    swrite(Pattern, PatternText),
+    dict_pairs(Dict, json, [event-space, op-get_atoms, space-Space, pattern-PatternText]),
+    write_json_line(Dict).
+emit_json_event(result, _Meta, Results) :-
+    is_list(Results),
+    !,
+    maplist(swrite, Results, ResultTexts),
+    dict_pairs(Dict, json, [event-result, results-ResultTexts]),
+    write_json_line(Dict).
+emit_json_event(_, _, _).
+
+write_json_line(Dict) :-
+    forall(debug_stream(Stream),
+           ( json_write_dict(Stream, Dict, [width(0)]),
+             nl(Stream) )).
+
+% Form index is an integer for source forms but an atom (compiled/eval) for
+% synthesized metas; keep integers as numbers and render atoms as strings.
+json_meta_index(Index, Index) :-
+    integer(Index),
+    !.
+json_meta_index(Index, Text) :-
+    json_text(Index, Text).
+
+% Render an arbitrary value to a JSON-friendly scalar: numbers/atoms/strings pass
+% through (json_write_dict encodes them), unbound is null, compound becomes its
+% MeTTa text.
+json_text(Value, null) :-
+    var(Value),
+    !.
+json_text(Value, Value) :-
+    ( number(Value) ; string(Value) ),
+    !.
+json_text(Value, Text) :-
+    atom(Value),
+    !,
+    Text = Value.
+json_text(Value, Text) :-
+    swrite(Value, S),
+    atom_string(Text, S).
+
+kind_vars_dict(compiled(_SourceExpr, Bindings), VarsDict) :-
+    is_list(Bindings),
+    !,
+    bindings_to_pairs(Bindings, Pairs),
+    dict_pairs(VarsDict, json, Pairs).
+kind_vars_dict(_, VarsDict) :-
+    dict_pairs(VarsDict, json, []).
+
+bindings_to_pairs([], []).
+bindings_to_pairs([Name-Value|Rest], [Name-Text|PairsRest]) :-
+    json_text(Value, Text),
+    bindings_to_pairs(Rest, PairsRest).
 
 debug_breakpoint(Stage, meta(Index, Line, Kind), GoalIndex, Goal) :-
     note_breakpoint_fired,
@@ -1483,7 +1596,11 @@ runtime_option(Arg) :-
     atom_concat('--debug-break-space=', _, Arg),
     !.
 runtime_option(Arg) :-
-    memberchk(Arg, ['--debug-break-match-fail', '--debug-break-error']),
+    memberchk(Arg, ['--debug-break-match-fail', '--debug-break-error', '--debug-jsonl']),
+    !.
+runtime_option(Arg) :-
+    atom(Arg),
+    atom_concat('--debug-format=', _, Arg),
     !.
 runtime_option(Arg) :-
     memberchk(Arg, ['--debug-break-once']),
@@ -1539,6 +1656,7 @@ print_debug_help :-
     format("  --debug-break-once      Disable further breakpoints after the first hit~n", []),
     format("  --debug-break-skip=<n>  Skip the first n breakpoint hits before stopping~n", []),
     format("  --debug-output=<file>   Write a plain-text copy of debugger output to file~n", []),
+    format("  --debug-format=json     Emit events as machine-readable JSON lines (alias: --debug-jsonl)~n", []),
     format("  --debug-depth=<n>       Limit runtime trace output to call-stack depth n~n", []),
     format("  --debug-max-events=<n>  Stop debug output after n emitted events~n", []),
     format("  --silent                Suppress the legacy compile/run pretty-print output~n", []),
