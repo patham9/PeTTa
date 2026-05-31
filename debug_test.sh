@@ -92,6 +92,7 @@ printf '%s\n' "$clean_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (
 if printf '%s\n' "$clean_break_output" | grep -F "stack: (fib 10) → (fib 9) →" >/dev/null; then exit 1; fi
 printf '%s\n' "$clean_cond_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib -1)" >/dev/null
 printf '%s\n' "$clean_cond_break_output" | grep -F "source expr: (fib (- 2 3))" >/dev/null
+printf '%s\n' "$clean_cond_break_output" | grep -F "var \$N = 2" >/dev/null
 break_once_count=$(printf '%s\n' "$clean_break_once_output" | grep -F "[BREAKPOINT #1 line 1 compiled]" | wc -l | tr -d ' ')
 [ "$break_once_count" = "1" ]
 printf '%s\n' "$clean_result_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib 2) => 0" >/dev/null

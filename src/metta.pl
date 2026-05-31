@@ -303,10 +303,10 @@ traced_goal_body(Meta, GoalIndex, Goal) :-
         cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal)
     ).
 
-trace_compiled_goal(Index, Line, SourceExpr, Goal) :-
+trace_compiled_goal(Index, Line, SourceExpr, Bindings, Goal) :-
     runtime_tracing_active,
     !,
-    Meta = meta(Index, Line, compiled(SourceExpr)),
+    Meta = meta(Index, Line, compiled(SourceExpr, Bindings)),
     GoalIndex = compiled,
     setup_call_cleanup(
         call_stack_push(Goal),
@@ -315,7 +315,7 @@ trace_compiled_goal(Index, Line, SourceExpr, Goal) :-
         ),
         call_stack_pop(Goal)
     ).
-trace_compiled_goal(_Index, _Line, _SourceExpr, Goal) :-
+trace_compiled_goal(_Index, _Line, _SourceExpr, _Bindings, Goal) :-
     call(Goal).
 
 fresh_trace_id(TraceId) :-

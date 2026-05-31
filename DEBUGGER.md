@@ -195,6 +195,8 @@ A breakpoint hit now shows:
 - the hit number
 - the reason it matched
 - the matched values
+- the originating MeTTa source expression (`source expr:`)
+- the MeTTa `$variable` bindings by name for that expression (`var $Name = Value`)
 - the current MeTTa stack
 - source form index and line number through `f` or `p`
 - goal head and current stack depth through `f` or `p`
@@ -219,8 +221,8 @@ When running in a TTY, breakpoint hits accept:
 - `Enter`: continue
 - `l`: print the current MeTTa source form
 - `s`: print stack again
-- `f`: print the current frame, source location, depth, and arguments
-- `p`: print the current goal, source location, depth, arguments, and result if available
+- `f`: print the current frame, source location, depth, arguments, and MeTTa variable bindings
+- `p`: print the current goal, source location, depth, arguments, MeTTa variable bindings, and result if available
 - `i`: step into the next visible runtime event
 - `n`: step over until execution returns to the same frame depth or shallower
 - `o`: step out of the current frame

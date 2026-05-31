@@ -17,8 +17,8 @@ process_metta_string(S, Results, Space) :- string_codes(S, Cs),
                                            append(ResultsList, Results).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:
-parse_form(source_form(form, Index, Line, S), parsed(T, Index, Line, S, Term)) :-
-    sread(S, Term),
+parse_form(source_form(form, Index, Line, S), parsed(T, Index, Line, S, Term, Env)) :-
+    sread(S, Term, Env),
     ( Term = [=, [F|W], _]
       , atom(F)
       -> register_fun(F),
@@ -29,16 +29,16 @@ parse_form(source_form(form, Index, Line, S), parsed(T, Index, Line, S, Term)) :
       ; T = expression
     ),
     debug_event(parse, meta(Index, Line, form), parsed(T, Term)).
-parse_form(source_form(runnable, Index, Line, S), parsed(runnable, Index, Line, S, Term)) :-
-    sread(S, Term),
+parse_form(source_form(runnable, Index, Line, S), parsed(runnable, Index, Line, S, Term, Env)) :-
+    sread(S, Term, Env),
     debug_event(parse, meta(Index, Line, runnable), parsed(runnable, Term)).
 
 %Second pass to compile / run / add the Terms:
-process_form(Space, parsed(expression, _, _, _, Term), []) :- 'add-atom'(Space, Term, true),
+process_form(Space, parsed(expression, _, _, _, Term, _Env), []) :- 'add-atom'(Space, Term, true),
                                                         ( silent(true) -> true ; swrite(Term,STerm),
                                                                                  format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
                                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
-process_form(_, parsed(runnable, Index, Line, FormStr, Term), Result) :- with_compile_form(Index, Line, translate_expr([collapse, Term], Goals, Result)),
+process_form(_, parsed(runnable, Index, Line, FormStr, Term, Env), Result) :- with_compile_form(Index, Line, Env, translate_expr([collapse, Term], Goals, Result)),
                                                             debug_event(translate, meta(Index, Line, runnable), goals(Goals)),
                                                             ( legacy_verbose_enabled(translate)
                                                               -> format("\e[33m--> metta runnable  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
@@ -47,8 +47,8 @@ process_form(_, parsed(runnable, Index, Line, FormStr, Term), Result) :- with_co
                                                               ; true ),
                                                             call_goals(Goals, meta(Index, Line, runnable)),
                                                             debug_event(result, meta(Index, Line, runnable), Result).
-process_form(Space, parsed(function, Index, Line, FormStr, Term), []) :- add_sexp(Space, Term),
-                                                            with_compile_form(Index, Line, translate_clause(Term, Clause)),
+process_form(Space, parsed(function, Index, Line, FormStr, Term, Env), []) :- add_sexp(Space, Term),
+                                                            with_compile_form(Index, Line, Env, translate_clause(Term, Clause)),
                                                             debug_event(compile, meta(Index, Line, form), clause(Clause)),
                                                             assertz(Clause, Ref),
                                                             assertz(translated_from(Ref, Term)),
@@ -61,16 +61,20 @@ process_form(Space, parsed(function, Index, Line, FormStr, Term), []) :- add_sex
                                                               ; true ).
 process_form(_, In, _) :- format(atom(Msg), "failed to process form: ~w", [In]), throw(error(syntax_error(Msg), none)).
 
-% Run a translation goal with current_compile_form/2 (defined in translator.pl)
-% bound to the form's source Index/Line, so wrap_runtime_call can bake the real
-% location into each compiled-call wrapper. Forms are processed sequentially, so
-% a single global fact is sufficient; cleared on the way out regardless of outcome.
-with_compile_form(Index, Line, Goal) :-
+% Run a translation goal with the source location (current_compile_form/2) and
+% variable-name environment (current_compile_vars global) of the form in scope,
+% so wrap_runtime_call can bake the real location and the MeTTa $variable names
+% into each compiled-call wrapper. The env goes through b_setval rather than
+% assertz to keep its variables identical to the clause being built (assertz
+% would copy them). Forms are processed sequentially, so single globals suffice.
+with_compile_form(Index, Line, Env, Goal) :-
     setup_call_cleanup(
         ( retractall(current_compile_form(_, _)),
-          assertz(current_compile_form(Index, Line)) ),
+          assertz(current_compile_form(Index, Line)),
+          b_setval(current_compile_vars, Env) ),
         Goal,
-        retractall(current_compile_form(_, _))
+        ( retractall(current_compile_form(_, _)),
+          nb_setval(current_compile_vars, []) )
     ).
 
 emit_source_debug(source_form(Tag, Index, Line, FormStr)) :-

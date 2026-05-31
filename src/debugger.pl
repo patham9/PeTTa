@@ -637,6 +637,7 @@ debug_breakpoint(Stage, meta(Index, Line, Kind), GoalIndex, Goal) :-
     print_breakpoint_hit_count,
     print_breakpoint_reason(Stage, Goal),
     print_compiled_source_expr(Kind),
+    print_compiled_vars(Kind),
     print_call_stack,
     maybe_print_runtime_prolog(GoalIndex, Goal),
     maybe_pause_on_breakpoint.
@@ -649,6 +650,7 @@ debug_step_pause(Stage, meta(Index, Line, Kind), GoalIndex, Goal) :-
     meta_kind_label(Kind, KindLabel),
     color_format(user_error, magenta, "[STEP #~w line ~w ~w] ~w @ ~w~n", [Index, Line, KindLabel, GoalText, GoalPathText]),
     print_compiled_source_expr(Kind),
+    print_compiled_vars(Kind),
     print_call_stack,
     maybe_print_runtime_prolog(GoalIndex, Goal),
     maybe_pause_on_breakpoint.
@@ -743,7 +745,8 @@ print_breakpoint_overview(Stage, Meta, GoalIndex, Goal, frame) :-
     print_breakpoint_location(Meta),
     print_breakpoint_head(Goal),
     print_breakpoint_depth,
-    print_breakpoint_frame_details(Stage, Goal).
+    print_breakpoint_frame_details(Stage, Goal),
+    print_breakpoint_meta_vars(Meta).
 print_breakpoint_overview(Stage, Meta, GoalIndex, Goal, goal) :-
     goal_path_text(GoalIndex, GoalPathText),
     runtime_goal_text(Stage, Goal, GoalText),
@@ -751,17 +754,46 @@ print_breakpoint_overview(Stage, Meta, GoalIndex, Goal, goal) :-
     print_breakpoint_location(Meta),
     print_breakpoint_head(Goal),
     print_breakpoint_depth,
-    print_breakpoint_frame_details(Stage, Goal).
+    print_breakpoint_frame_details(Stage, Goal),
+    print_breakpoint_meta_vars(Meta).
+
+print_breakpoint_meta_vars(meta(_Index, _Line, Kind)) :-
+    print_compiled_vars(Kind).
 
 print_breakpoint_location(meta(Index, Line, Kind)) :-
     meta_kind_label(Kind, KindLabel),
     color_format(user_error, magenta, "location: form #~w line ~w (~w)~n", [Index, Line, KindLabel]).
 
+print_compiled_source_expr(compiled(SourceExpr, _Bindings)) :-
+    !,
+    swrite(SourceExpr, SourceText),
+    color_format(user_error, magenta, "source expr: ~w~n", [SourceText]).
 print_compiled_source_expr(compiled(SourceExpr)) :-
     !,
     swrite(SourceExpr, SourceText),
     color_format(user_error, magenta, "source expr: ~w~n", [SourceText]).
 print_compiled_source_expr(_).
+
+% Print MeTTa $variable bindings carried in a compiled meta Kind. Shown at
+% breakpoints/steps and via the f/p inspection commands.
+print_compiled_vars(compiled(_SourceExpr, Bindings)) :-
+    !,
+    print_var_bindings(Bindings).
+print_compiled_vars(_).
+
+print_var_bindings(Bindings) :-
+    ( is_list(Bindings) -> true ; fail ),
+    !,
+    forall(member(Name-Value, Bindings),
+           print_var_binding(Name, Value)).
+print_var_bindings(_).
+
+print_var_binding(Name, Value) :-
+    ( var(Value)
+      -> color_format(user_error, magenta, "var $~w = _~n", [Name])
+      ;  swrite(Value, ValueText),
+         color_format(user_error, magenta, "var $~w = ~w~n", [Name, ValueText])
+    ).
 
 print_breakpoint_head(Goal) :-
     goal_head_name(Goal, Head),
@@ -786,6 +818,9 @@ print_breakpoint_source_form :-
     color_format(user_error, magenta, "source: form #~w line ~w (~w) not available~n", [Index, Line, KindLabel]).
 print_breakpoint_source_form.
 
+breakpoint_source_form(meta(_Index, _Line, compiled(SourceExpr, _Bindings)), FormStr) :-
+    !,
+    swrite(SourceExpr, FormStr).
 breakpoint_source_form(meta(_Index, _Line, compiled(SourceExpr)), FormStr) :-
     !,
     swrite(SourceExpr, FormStr).
@@ -884,6 +919,8 @@ debug_header_label(Index, Line, Kind, Label) :-
     meta_kind_label(Kind, KindLabel),
     format(atom(Label), "#~w line ~w ~w", [Index, Line, KindLabel]).
 
+meta_kind_label(compiled(_, _), compiled) :-
+    !.
 meta_kind_label(compiled(_), compiled) :-
     !.
 meta_kind_label(Kind, Kind).

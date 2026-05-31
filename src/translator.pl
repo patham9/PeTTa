@@ -334,14 +334,45 @@ build_call_or_partial(SourceExpr, Fun, AVs, Out, Inner, Extra, Goals) :-
       append(Inner, Extra, Goals)
     ).
 
-% Source location of the form currently being translated. Set by process_form
+% Source location of the form currently being translated, set by process_form
 % (src/filereader.pl) around translate_clause/translate_expr so that the
-% compiled-call wrapper can bake the real form Index/Line into the runtime
-% trace instead of the old hard-coded line 0.
+% compiled-call wrapper can bake the real form Index/Line (instead of the old
+% hard-coded line 0) into the runtime trace. Index/Line are ground, so a copying
+% assert is fine here.
 :- dynamic current_compile_form/2.
 
-wrap_runtime_call(SourceExpr, Goal, trace_compiled_goal(Index, Line, SourceExpr, Goal)) :-
-    ( current_compile_form(Index, Line) -> true ; Index = compiled, Line = 0 ).
+% The form's variable-name environment (Name-Var pairs) is passed via the
+% backtrackable global current_compile_vars instead of a dynamic predicate:
+% assertz/nb_setval copy the term and would sever the variable identity we need,
+% whereas b_setval keeps the live variables shared with the clause being built.
+:- initialization(nb_setval(current_compile_vars, [])).
+
+wrap_runtime_call(SourceExpr, Goal, trace_compiled_goal(Index, Line, SourceExpr, Bindings, Goal)) :-
+    ( current_compile_form(Index, Line) -> true ; Index = compiled, Line = 0 ),
+    source_expr_bindings(SourceExpr, Bindings).
+
+% Select the Name-Var pairs from the current form's parse environment whose
+% variable actually occurs in this call's SourceExpr. The collected pairs must
+% reference the live SourceExpr variables (so they bind together with the goal at
+% runtime), which rules out findall/copy_term; collect_named_vars/3 walks the
+% list preserving identity. Falls back to [] when no environment is available.
+source_expr_bindings(SourceExpr, Bindings) :-
+    ( catch(b_getval(current_compile_vars, Env), _, fail), is_list(Env)
+      -> term_variables(SourceExpr, Vars),
+         collect_named_vars(Env, Vars, Bindings)
+      ; Bindings = []
+    ).
+
+collect_named_vars([], _, []).
+collect_named_vars([Name-Var|Rest], Vars, Out) :-
+    ( ident_member(Var, Vars)
+      -> Out = [Name-Var|Out1]
+      ;  Out = Out1
+    ),
+    collect_named_vars(Rest, Vars, Out1).
+
+ident_member(V, [X|_]) :- V == X, !.
+ident_member(V, [_|Xs]) :- ident_member(V, Xs).
 
 %Type function call generation, returns function call plus typechecks for input and output:
 typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal) :-
