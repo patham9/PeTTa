@@ -334,7 +334,14 @@ build_call_or_partial(SourceExpr, Fun, AVs, Out, Inner, Extra, Goals) :-
       append(Inner, Extra, Goals)
     ).
 
-wrap_runtime_call(SourceExpr, Goal, trace_compiled_goal(SourceExpr, Goal)).
+% Source location of the form currently being translated. Set by process_form
+% (src/filereader.pl) around translate_clause/translate_expr so that the
+% compiled-call wrapper can bake the real form Index/Line into the runtime
+% trace instead of the old hard-coded line 0.
+:- dynamic current_compile_form/2.
+
+wrap_runtime_call(SourceExpr, Goal, trace_compiled_goal(Index, Line, SourceExpr, Goal)) :-
+    ( current_compile_form(Index, Line) -> true ; Index = compiled, Line = 0 ).
 
 %Type function call generation, returns function call plus typechecks for input and output:
 typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal) :-

@@ -84,16 +84,19 @@ printf '%s\n' "$clean_depth_output" | grep -F "ENTER  (fib 10)" >/dev/null
 printf '%s\n' "$clean_depth_output" | grep -F "ENTER  (fib 9)" >/dev/null
 if printf '%s\n' "$clean_depth_output" | grep -F "stack: (fib 10) → (fib 9) →" >/dev/null; then exit 1; fi
 printf '%s\n' "$clean_limit_output" | grep -F "[DEBUG limit] event limit reached; suppressing further debug output" >/dev/null
-printf '%s\n' "$clean_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled] (fib 10)" >/dev/null
-printf '%s\n' "$clean_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled] (fib 9)" >/dev/null
+# The top-level !(test (fib 10) ...) call is form #2 on line 7; recursive fib
+# calls come from the function clause defined as form #1 on line 1 (M1 source
+# mapping replaced the old hard-coded "#compiled line 0").
+printf '%s\n' "$clean_break_output" | grep -F "[BREAKPOINT #2 line 7 compiled] (fib 10)" >/dev/null
+printf '%s\n' "$clean_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib 9)" >/dev/null
 if printf '%s\n' "$clean_break_output" | grep -F "stack: (fib 10) → (fib 9) →" >/dev/null; then exit 1; fi
-printf '%s\n' "$clean_cond_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled] (fib -1)" >/dev/null
+printf '%s\n' "$clean_cond_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib -1)" >/dev/null
 printf '%s\n' "$clean_cond_break_output" | grep -F "source expr: (fib (- 2 3))" >/dev/null
-break_once_count=$(printf '%s\n' "$clean_break_once_output" | grep -F "[BREAKPOINT #compiled line 0 compiled]" | wc -l | tr -d ' ')
+break_once_count=$(printf '%s\n' "$clean_break_once_output" | grep -F "[BREAKPOINT #1 line 1 compiled]" | wc -l | tr -d ' ')
 [ "$break_once_count" = "1" ]
-printf '%s\n' "$clean_result_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled] (fib 2) => 0" >/dev/null
-printf '%s\n' "$clean_and_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled] (fib 2) => 0" >/dev/null
-and_break_count=$(printf '%s\n' "$clean_and_break_output" | grep -F "[BREAKPOINT #compiled line 0 compiled]" | wc -l | tr -d ' ')
+printf '%s\n' "$clean_result_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib 2) => 0" >/dev/null
+printf '%s\n' "$clean_and_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled] (fib 2) => 0" >/dev/null
+and_break_count=$(printf '%s\n' "$clean_and_break_output" | grep -F "[BREAKPOINT #1 line 1 compiled]" | wc -l | tr -d ' ')
 [ "$and_break_count" = "1" ]
 printf '%s\n' "$clean_or_break_output" | grep -F "reason: matched condition fib:arg1<0|result=0" >/dev/null
 printf '%s\n' "$clean_or_break_output" | grep -F "match: arg1 = -1" >/dev/null

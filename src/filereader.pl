@@ -38,7 +38,7 @@ process_form(Space, parsed(expression, _, _, _, Term), []) :- 'add-atom'(Space, 
                                                         ( silent(true) -> true ; swrite(Term,STerm),
                                                                                  format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
                                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
-process_form(_, parsed(runnable, Index, Line, FormStr, Term), Result) :- translate_expr([collapse, Term], Goals, Result),
+process_form(_, parsed(runnable, Index, Line, FormStr, Term), Result) :- with_compile_form(Index, Line, translate_expr([collapse, Term], Goals, Result)),
                                                             debug_event(translate, meta(Index, Line, runnable), goals(Goals)),
                                                             ( legacy_verbose_enabled(translate)
                                                               -> format("\e[33m--> metta runnable  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
@@ -48,7 +48,7 @@ process_form(_, parsed(runnable, Index, Line, FormStr, Term), Result) :- transla
                                                             call_goals(Goals, meta(Index, Line, runnable)),
                                                             debug_event(result, meta(Index, Line, runnable), Result).
 process_form(Space, parsed(function, Index, Line, FormStr, Term), []) :- add_sexp(Space, Term),
-                                                            translate_clause(Term, Clause),
+                                                            with_compile_form(Index, Line, translate_clause(Term, Clause)),
                                                             debug_event(compile, meta(Index, Line, form), clause(Clause)),
                                                             assertz(Clause, Ref),
                                                             assertz(translated_from(Ref, Term)),
@@ -60,6 +60,18 @@ process_form(Space, parsed(function, Index, Line, FormStr, Term), []) :- add_sex
                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^^^^~n\e[0m")
                                                               ; true ).
 process_form(_, In, _) :- format(atom(Msg), "failed to process form: ~w", [In]), throw(error(syntax_error(Msg), none)).
+
+% Run a translation goal with current_compile_form/2 (defined in translator.pl)
+% bound to the form's source Index/Line, so wrap_runtime_call can bake the real
+% location into each compiled-call wrapper. Forms are processed sequentially, so
+% a single global fact is sufficient; cleared on the way out regardless of outcome.
+with_compile_form(Index, Line, Goal) :-
+    setup_call_cleanup(
+        ( retractall(current_compile_form(_, _)),
+          assertz(current_compile_form(Index, Line)) ),
+        Goal,
+        retractall(current_compile_form(_, _))
+    ).
 
 emit_source_debug(source_form(Tag, Index, Line, FormStr)) :-
     register_debug_source_form(Index, Line, Tag, FormStr),
