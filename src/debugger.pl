@@ -1030,10 +1030,12 @@ runtime_goal_result(Goal, ResultText) :-
 
 runtime_stage_label(enter, 'ENTER  ').
 runtime_stage_label(success, 'OK     ').
+runtime_stage_label(redo, 'REDO   ').
 runtime_stage_label(fail, 'FAIL   ').
 
 runtime_color(enter, yellow).
 runtime_color(success, green).
+runtime_color(redo, blue).
 runtime_color(fail, red).
 
 runtime_goal_prefix(GoalIndex, GoalPathText, Prefix) :-

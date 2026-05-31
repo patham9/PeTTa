@@ -48,6 +48,25 @@ ENTER  (yourFunc 7 3)
 OK     (yourFunc 7 3) => 4
 ```
 
+### Nondeterministic goals (multiple solutions)
+
+MeTTa goals such as `match`, `superpose`, and `case` can produce several
+solutions through backtracking. The runtime trace models this with a `REDO`
+port: the first solution is an `OK`, and each later solution reached on
+backtracking is preceded by a `REDO`.
+
+```bash
+sh debug.sh examples/mettaset.metta --debug=runtime --debug-goal=match --silent
+```
+
+```text
+ENTER  (match &self (set $x $y) (set $x $y))
+OK     (match &self (set 1 a) (set 1 a)) => (set 1 a)
+REDO   (match &self (set 1 b) (set 1 b))
+OK     (match &self (set 1 b) (set 1 b)) => (set 1 b)
+...
+```
+
 ### Wrong operator
 
 If a function may be calling the wrong built-in, trace the operator directly.

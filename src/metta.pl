@@ -323,8 +323,14 @@ fresh_trace_id(TraceId) :-
 
 traced_goal_port(TraceId, Meta, GoalIndex, Goal) :-
     call(Goal),
-    retractall(debug_trace_success(TraceId)),
-    assertz(debug_trace_success(TraceId)),
+    % First solution: record the success. Every later solution is reached by
+    % backtracking into the goal, so emit a `redo` port before its success.
+    % This makes nondeterministic MeTTa goals (match, superpose, case, ...)
+    % render as ENTER → OK → REDO → OK → ... instead of collapsing to one OK.
+    ( debug_trace_success(TraceId)
+      -> maybe_debug_runtime(redo, Meta, GoalIndex, Goal)
+      ;  assertz(debug_trace_success(TraceId))
+    ),
     maybe_debug_runtime(success, Meta, GoalIndex, Goal).
 
 cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal) :-
