@@ -2,6 +2,49 @@
 
 This guide focuses on practical debugging workflows in PeTTa.
 
+## Quick start (new to PeTTa? start here)
+
+You only need one command to begin. `watch` traces your program and shows the
+calls nested by depth — no flags to assemble:
+
+```bash
+# trace everything the program does
+sh debug.sh watch your_file.metta
+
+# trace just one function's calls (much less noise)
+sh debug.sh watch your_file.metta yourFunction
+```
+
+For example, on the intentionally broken `examples/fib_buggy.metta`:
+
+```bash
+sh debug.sh watch examples/fib_buggy.metta fib
+```
+
+```text
+ENTER  (fib 10)
+  ENTER  (fib 9)
+    ENTER  (fib 8)
+      ...
+                ENTER  (fib 2)
+                  ENTER  (fib -1)      <- a negative input: the bug is here
+                  OK     (fib -1) => -1
+                OK     (fib 2) => 0    <- (fib 2) should be 1, not 0
+```
+
+The indentation shows who called whom; reading down to where a value first goes
+wrong points at the bug.
+
+When you want to stop and poke at a specific function, set a breakpoint:
+
+```bash
+sh debug.sh your_file.metta --debug-break=yourFunction
+```
+
+If you mistype a flag or category, PeTTa tells you (and suggests the closest
+match) instead of silently doing nothing. Run `sh debug.sh --debug-help` for the
+full list of options; the rest of this guide covers them in depth.
+
 ## Editor integration (DAP)
 
 PeTTa includes a Debug Adapter Protocol server so editors can drive the debugger

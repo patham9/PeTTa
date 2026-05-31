@@ -15,6 +15,7 @@
 :- dynamic debug_step_armed/0.
 :- dynamic debug_eval_suspended/0.
 :- dynamic debug_format_json/0.
+:- dynamic debug_indent/0.
 :- dynamic debug_break_line/1.
 :- dynamic dap_mode/0.
 :- dynamic debug_break_skip/1.
@@ -47,6 +48,7 @@ init_runtime_flags(Args) :-
     retractall(debug_step_armed),
     retractall(debug_eval_suspended),
     retractall(debug_format_json),
+    retractall(debug_indent),
     retractall(debug_break_line(_)),
     retractall(debug_break_skip(_)),
     retractall(debug_break_hits(_)),
@@ -72,17 +74,77 @@ init_runtime_flags(Args) :-
     ( debug_break_match_fail_requested(Args) -> assertz(debug_break_match_fail) ; true ),
     ( debug_break_error_requested(Args) -> assertz(debug_break_error) ; true ),
     ( debug_format_json_requested(Args) -> assertz(debug_format_json) ; true ),
+    ( debug_indent_requested(Args) -> assertz(debug_indent) ; true ),
     ( debug_break_once_requested(Args) -> assertz(debug_break_once) ; true ),
     ( debug_break_skip_arg(Args, BreakSkip) -> assertz(debug_break_skip(BreakSkip)) ; true ),
     ( debug_output_arg(Args, OutputPath) -> open(OutputPath, write, OutputStream), assertz(debug_output_stream(OutputStream)) ; true ),
     ( debug_max_depth_arg(Args, MaxDepth) -> assertz(debug_max_depth(MaxDepth)) ; true ),
-    ( debug_max_events_arg(Args, MaxEvents) -> assertz(debug_max_events(MaxEvents)) ; true ).
+    ( debug_max_events_arg(Args, MaxEvents) -> assertz(debug_max_events(MaxEvents)) ; true ),
+    warn_unknown_debug_args(Args).
 
 :- initialization((current_prolog_flag(argv, Args), init_runtime_flags(Args))).
 
 silent_requested(Args) :-
     member(Arg, Args),
     memberchk(Arg, [silent, '--silent', '-s']).
+
+debug_indent_requested(Args) :-
+    memberchk('--debug-indent', Args).
+
+% Beginner guardrail: warn (don't fail) on mistyped --debug categories and
+% unrecognized --debug-* flags so a typo doesn't look like a broken debugger.
+warn_unknown_debug_args(Args) :-
+    forall(member(Arg, Args), warn_if_unknown_debug_arg(Args, Arg)).
+
+warn_if_unknown_debug_arg(_Args, Arg) :-
+    atom(Arg),
+    atom_concat('--debug=', Spec, Arg),
+    !,
+    atomic_list_concat(Parts, ',', Spec),
+    forall(member(Part, Parts), warn_if_unknown_category(Part)).
+warn_if_unknown_debug_arg(_Args, Arg) :-
+    atom(Arg),
+    atom_concat('--debug', _, Arg),
+    \+ runtime_option(Arg),
+    !,
+    format(user_error, "PeTTa: unknown debug option '~w'. Run: sh debug.sh --debug-help~n", [Arg]).
+warn_if_unknown_debug_arg(_Args, _Arg).
+
+warn_if_unknown_category(Part) :-
+    normalize_debug_category(Part, _),
+    !.
+warn_if_unknown_category(Part) :-
+    findall(Label, (debug_category_name(C), debug_category_label(C, Label)), Labels),
+    atomic_list_concat(Labels, ', ', Valid),
+    ( closest_category(Part, Suggestion)
+      -> format(user_error, "PeTTa: unknown debug category '~w'. Did you mean '~w'? Valid: ~w~n",
+                [Part, Suggestion, Valid])
+      ;  format(user_error, "PeTTa: unknown debug category '~w'. Valid: ~w~n", [Part, Valid])
+    ).
+
+% A cheap "did you mean" -- prefer a valid category that the typo is a prefix of
+% (runtim -> runtime), then any that shares the typo as a substring.
+closest_category(Part, Suggestion) :-
+    debug_category_name(C),
+    debug_category_label(C, Suggestion),
+    atom_concat(Part, _, Suggestion),
+    Part \== Suggestion,
+    !.
+closest_category(Part, Suggestion) :-
+    sub_atom(Part, 0, _, _, ''),
+    atom_length(Part, L), L >= 3,
+    debug_category_name(C),
+    debug_category_label(C, Suggestion),
+    sub_atom(Suggestion, _, _, _, Part),
+    !.
+
+% True when the args carry a --debug* option (used to distinguish "ran the
+% debugger but forgot the file" from "ran the bare interpreter demo").
+debug_args_present(Args) :-
+    member(Arg, Args),
+    atom(Arg),
+    atom_concat('--debug', _, Arg),
+    !.
 
 debug_categories(Args, Categories) :-
     findall(Category, debug_category_arg(Args, Category), RawCategories),
@@ -745,6 +807,11 @@ render_debug_event(translate, meta(Index, Line, Kind), goals(Goals)) :-
     debug_header(translate, Index, Line, Kind),
     print_goals(Goals),
     debug_nl.
+render_debug_event(runtime, _Meta, goal(Stage, _GoalIndex, Goal)) :-
+    debug_indent,
+    runtime_event_visible(Stage, Goal),
+    !,
+    print_indented_runtime_line(Stage, Goal).
 render_debug_event(runtime, meta(Index, Line, Kind), goal(Stage, GoalIndex, Goal)) :-
     runtime_event_visible(Stage, Goal),
     !,
@@ -1355,6 +1422,18 @@ print_runtime_goal_line_on(Stream, Color, BaseLine) :-
 print_runtime_goal_line_on(Stream, _Color, BaseLine) :-
     format(Stream, "~w~n", [BaseLine]).
 
+% Compact "watch" rendering: one indented ENTER/OK/REDO/FAIL line per event,
+% nested by call-stack depth, with no per-event header or stack dump.
+print_indented_runtime_line(Stage, Goal) :-
+    current_call_stack_depth(Depth),
+    Spaces is max(0, (Depth - 1) * 2),
+    format(atom(Pad), "~*c", [Spaces, 0' ]),
+    runtime_goal_text(Stage, Goal, GoalText),
+    runtime_stage_label(Stage, StageLabel),
+    runtime_color(Stage, Color),
+    format(atom(BaseLine), "~w~w~w", [Pad, StageLabel, GoalText]),
+    forall(debug_stream(Stream), print_runtime_goal_line_on(Stream, Color, BaseLine)).
+
 runtime_event_visible(_, Goal) :-
     ( debug_category(all)
     ; debug_category(runtime_prolog)
@@ -1622,7 +1701,7 @@ runtime_option(Arg) :-
     atom_concat('--debug-break-space=', _, Arg),
     !.
 runtime_option(Arg) :-
-    memberchk(Arg, ['--debug-break-match-fail', '--debug-break-error', '--debug-jsonl']),
+    memberchk(Arg, ['--debug-break-match-fail', '--debug-break-error', '--debug-jsonl', '--debug-indent']),
     !.
 runtime_option(Arg) :-
     atom(Arg),
@@ -1654,6 +1733,7 @@ runtime_option(Arg) :-
 file_argument(Args, File) :-
     member(File, Args),
     \+ runtime_option(File),
+    \+ ( atom(File), atom_concat('--', _, File) ),
     !.
 
 mork_enabled(Args) :-
@@ -1668,6 +1748,11 @@ print_debug_help :-
     format("Usage:~n", []),
     format("  sh run.sh <file.metta> [debug options]~n", []),
     format("  sh debug.sh <file.metta> [debug options]~n~n", []),
+    format("Quick start (new to PeTTa? start here):~n", []),
+    format("  sh debug.sh watch <file.metta>             Trace what your program does, nested by call.~n", []),
+    format("  sh debug.sh watch <file.metta> <function>  Trace just one function's calls (less noise).~n", []),
+    format("  sh debug.sh <file.metta> --debug-break=<function>   Stop at a function to inspect it.~n", []),
+    format("Then reach for the options below when you need finer control.~n~n", []),
     format("Debug options:~n", []),
     format("  --debug                 Enable all debug categories~n", []),
     format("  --debug-all             Same as --debug~n", []),
@@ -1685,6 +1770,7 @@ print_debug_help :-
     format("  --debug-format=json     Emit events as machine-readable JSON lines (alias: --debug-jsonl)~n", []),
     format("  --debug-depth=<n>       Limit runtime trace output to call-stack depth n~n", []),
     format("  --debug-max-events=<n>  Stop debug output after n emitted events~n", []),
+    format("  --debug-indent          Compact trace: one indented line per event, nested by call (used by 'watch')~n", []),
     format("  --silent                Suppress the legacy compile/run pretty-print output~n", []),
     format("  --debug-help            Show this help text~n~n", []),
     format("TTY breakpoint commands:~n", []),
@@ -1704,6 +1790,7 @@ print_debug_help :-
     format("Categories:~n", []),
     forall((debug_category_name(Category), debug_category_label(Category, Label)), format("  ~w~n", [Label])),
     format("~nExamples:~n", []),
+    format("  sh debug.sh watch examples/fib_buggy.metta fib~n", []),
     format("  sh debug.sh examples/fib.metta --debug=runtime~n", []),
     format("  sh debug.sh examples/fib.metta --debug=runtime-leaf --debug-goal=fib~n", []),
     format("  sh debug.sh examples/fib.metta --debug=runtime-prolog --debug-goal=fib --silent~n", []),
