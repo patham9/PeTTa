@@ -2,6 +2,9 @@
 :- dynamic debug_goal_target/1.
 :- dynamic debug_break_target/1.
 :- dynamic debug_break_condition/3.
+:- dynamic debug_break_space/1.
+:- dynamic debug_break_match_fail/0.
+:- dynamic debug_break_error/0.
 :- dynamic debug_break_once/0.
 :- dynamic debug_break_fired/0.
 :- dynamic debug_break_continue/0.
@@ -27,6 +30,9 @@ init_runtime_flags(Args) :-
     retractall(debug_goal_target(_)),
     retractall(debug_break_target(_)),
     retractall(debug_break_condition(_, _, _)),
+    retractall(debug_break_space(_)),
+    retractall(debug_break_match_fail),
+    retractall(debug_break_error),
     retractall(debug_break_once),
     retractall(debug_break_fired),
     retractall(debug_break_continue),
@@ -52,6 +58,10 @@ init_runtime_flags(Args) :-
     forall(member(Target, BreakTargets), assertz(debug_break_target(Target))),
     debug_break_conditions(Args, BreakConditions),
     forall(member(Head-Condition-Spec, BreakConditions), assertz(debug_break_condition(Head, Condition, Spec))),
+    debug_break_spaces(Args, BreakSpaces),
+    forall(member(Space, BreakSpaces), assertz(debug_break_space(Space))),
+    ( debug_break_match_fail_requested(Args) -> assertz(debug_break_match_fail) ; true ),
+    ( debug_break_error_requested(Args) -> assertz(debug_break_error) ; true ),
     ( debug_break_once_requested(Args) -> assertz(debug_break_once) ; true ),
     ( debug_break_skip_arg(Args, BreakSkip) -> assertz(debug_break_skip(BreakSkip)) ; true ),
     ( debug_output_arg(Args, OutputPath) -> open(OutputPath, write, OutputStream), assertz(debug_output_stream(OutputStream)) ; true ),
@@ -120,6 +130,24 @@ debug_break_condition_arg(Args, Head, Condition, Spec) :-
     parse_break_condition_spec(Part, Head, Condition),
     Spec = Part.
 
+debug_break_spaces(Args, Spaces) :-
+    findall(Space, debug_break_space_arg(Args, Space), RawSpaces),
+    sort(RawSpaces, Spaces).
+
+debug_break_space_arg(Args, Space) :-
+    member(Arg, Args),
+    atom(Arg),
+    atom_concat('--debug-break-space=', Spec, Arg),
+    atomic_list_concat(Parts, ',', Spec),
+    member(Part, Parts),
+    Space = Part.
+
+debug_break_match_fail_requested(Args) :-
+    member('--debug-break-match-fail', Args).
+
+debug_break_error_requested(Args) :-
+    member('--debug-break-error', Args).
+
 parse_break_condition_spec(Spec, Head, Condition) :-
     sub_atom(Spec, ColonPos, 1, _, ':'),
     sub_atom(Spec, 0, ColonPos, _, Head),
@@ -185,6 +213,14 @@ parse_break_value(true, true) :-
     !.
 parse_break_value(false, false) :-
     !.
+parse_break_value(ValueSpec, Value) :-
+    % A parenthesised spec is a MeTTa s-expression: parse it so structural
+    % (=, !=) and substring (~) comparisons work against the actual term, e.g.
+    % match:arg1=(set 1 a) compares against the list [set,1,a].
+    sub_atom(ValueSpec, 0, 1, _, '('),
+    catch(sread(ValueSpec, Parsed), _, fail),
+    !,
+    Value = Parsed.
 parse_break_value(ValueSpec, ValueSpec).
 
 break_operator(>=, '>=').
@@ -192,6 +228,7 @@ break_operator(=<, '<=').
 break_operator(\=, '!=').
 break_operator(>, '>').
 break_operator(<, '<').
+break_operator(~, '~').
 break_operator(=, '=').
 
 debug_max_depth_arg(Args, MaxDepth) :-
@@ -294,8 +331,17 @@ runtime_category_alias(runtime) :-
     debug_break_once,
     !.
 runtime_category_alias(runtime) :-
-    debug_step_mode(_).
+    debug_step_mode(_),
+    !.
+runtime_category_alias(runtime) :-
+    debug_break_error.
 
+space_category_alias(space) :-
+    debug_break_space(_),
+    !.
+space_category_alias(space) :-
+    debug_break_match_fail,
+    !.
 space_category_alias(space) :-
     debug_category(space_mutation),
     !.
@@ -384,23 +430,40 @@ compare_break_value(=<, Actual, Expected) :-
     number(Actual),
     number(Expected),
     Actual =< Expected.
+compare_break_value(~, Actual, Expected) :-
+    % Substring / containment: render both to their MeTTa text and test whether
+    % the expected text occurs inside the actual one. Works for atoms, strings,
+    % numbers and compound MeTTa expressions.
+    break_value_text(Actual, ActualText),
+    break_value_text(Expected, ExpectedText),
+    sub_atom(ActualText, _, _, _, ExpectedText).
+
+break_value_text(Value, Text) :-
+    ( atom(Value) -> Text = Value
+    ; number(Value) -> atom_number(Text, Value)
+    ; string(Value) -> atom_string(Text, Value)
+    ; swrite(Value, S), atom_string(Text, S)
+    ).
 
 space_event_enabled(add, _) :-
     ( debug_category(all)
     ; debug_category(space)
     ; debug_category(space_mutation)
+    ; debug_break_space(_)
     ),
     !.
 space_event_enabled(remove, _) :-
     ( debug_category(all)
     ; debug_category(space)
     ; debug_category(space_mutation)
+    ; debug_break_space(_)
     ),
     !.
 space_event_enabled(match, fail) :-
     ( debug_category(all)
     ; debug_category(space)
     ; debug_category(space_match_fail)
+    ; debug_break_match_fail
     ),
     !.
 space_event_enabled(match, success) :-
@@ -504,7 +567,56 @@ maybe_handle_breakpoint(runtime, Meta, goal(Stage, GoalIndex, Goal)) :-
     breakpoint_event_visible(Stage, Goal),
     !,
     debug_breakpoint(Stage, Meta, GoalIndex, Goal).
+maybe_handle_breakpoint(space, Meta, Payload) :-
+    space_breakpoint_visible(Payload, Reason),
+    !,
+    debug_space_breakpoint(Meta, Payload, Reason).
 maybe_handle_breakpoint(_, _, _).
+
+% A space event triggers a breakpoint when --debug-break-space matches the
+% mutated space, or --debug-break-match-fail is set and a match failed. Shares
+% the hit-count / skip / once bookkeeping with runtime breakpoints.
+space_breakpoint_visible(Payload, Reason) :-
+    \+ breakpoint_disabled_after_first_hit,
+    space_breakpoint_reason(Payload, Reason),
+    note_breakpoint_hit(HitCount),
+    \+ breakpoint_skipped(HitCount).
+
+space_breakpoint_reason(space(add, Space, _Term), Reason) :-
+    space_break_armed(Space),
+    format(atom(Reason), "space mutation: add to ~w", [Space]).
+space_breakpoint_reason(space(remove, Space, _Term, _Removed), Reason) :-
+    space_break_armed(Space),
+    format(atom(Reason), "space mutation: remove from ~w", [Space]).
+space_breakpoint_reason(space(match, fail, Space, _Pattern, _Result), Reason) :-
+    debug_break_match_fail,
+    format(atom(Reason), "match failed in ~w", [Space]).
+
+space_break_armed(Space) :-
+    debug_break_space(Space),
+    !.
+space_break_armed(_) :-
+    debug_break_space('*').
+
+debug_space_breakpoint(meta(_Index, _Line, _Kind), Payload, Reason) :-
+    note_breakpoint_fired,
+    retractall(debug_break_context(_, _, _, _)),
+    space_payload_text(Payload, OpText),
+    color_format(user_error, magenta, "[BREAKPOINT space] ~w~n", [OpText]),
+    print_breakpoint_hit_count,
+    color_format(user_error, magenta, "reason: ~w~n", [Reason]),
+    print_call_stack,
+    maybe_pause_on_breakpoint.
+
+space_payload_text(space(add, Space, Term), Text) :-
+    swrite(Term, TermText),
+    format(atom(Text), "add ~w to ~w", [TermText, Space]).
+space_payload_text(space(remove, Space, Term, _Removed), Text) :-
+    swrite(Term, TermText),
+    format(atom(Text), "remove ~w from ~w", [TermText, Space]).
+space_payload_text(space(match, Stage, Space, Pattern, _Result), Text) :-
+    swrite(Pattern, PatternText),
+    format(atom(Text), "match ~w in ~w (~w)", [PatternText, Space, Stage]).
 
 maybe_handle_step(runtime, Meta, goal(Stage, GoalIndex, Goal)) :-
     step_event_visible(Stage, Goal),
@@ -522,8 +634,19 @@ breakpoint_event_visible(Stage, Goal) :-
 breakpoint_triggered(enter, Goal) :-
     breakpoint_goal_enabled(Goal),
     !.
+breakpoint_triggered(success, Goal) :-
+    debug_break_error,
+    goal_result_is_error(Goal),
+    !.
 breakpoint_triggered(Stage, Goal) :-
     breakpoint_condition_enabled(Stage, Goal).
+
+% True when a goal succeeded with PeTTa's normalised error representation as its
+% result, i.e. an ['Error'|_] term produced by the translator's catch wrapper.
+goal_result_is_error(Goal) :-
+    breakpoint_frame_result(Goal, Result),
+    nonvar(Result),
+    Result = ['Error'|_].
 
 breakpoint_disabled_after_first_hit :-
     debug_break_continue,
@@ -879,7 +1002,14 @@ breakpoint_reason(Stage, Goal, Reason, Details) :-
 breakpoint_reason(enter, Goal, Reason, []) :-
     breakpoint_goal_enabled(Goal),
     goal_head_name(Goal, Head),
+    !,
     format(atom(Reason), "entered goal head ~w", [Head]).
+breakpoint_reason(success, Goal, Reason, []) :-
+    debug_break_error,
+    goal_result_is_error(Goal),
+    breakpoint_frame_result(Goal, Result),
+    swrite(Result, ResultText),
+    format(atom(Reason), "returned error ~w", [ResultText]).
 
 breakpoint_condition_reason(Stage, Goal, Spec, Details) :-
     goal_head_name(Goal, Head),
@@ -1236,6 +1366,13 @@ runtime_option(Arg) :-
     atom_concat('--debug-break-if=', _, Arg),
     !.
 runtime_option(Arg) :-
+    atom(Arg),
+    atom_concat('--debug-break-space=', _, Arg),
+    !.
+runtime_option(Arg) :-
+    memberchk(Arg, ['--debug-break-match-fail', '--debug-break-error']),
+    !.
+runtime_option(Arg) :-
     memberchk(Arg, ['--debug-break-once']),
     !.
 runtime_option(Arg) :-
@@ -1282,6 +1419,10 @@ print_debug_help :-
     format("  --debug-goal=<heads>    Restrict runtime events to goal head names~n", []),
     format("  --debug-break=<heads>   Break when entering matching goal head names~n", []),
     format("  --debug-break-if=<spec> Break on conditional match, e.g. fib:arg1<0 or fib:arg1=2&result=0 or fib:arg1<0|result=0~n", []),
+    format("                          Operators: = != > < >= <= and ~~ (substring/structural contains), e.g. match:arg3~~set or f:arg1=(a b)~n", []),
+    format("  --debug-break-space=<spaces>  Break on add/remove mutation of the named space(s), e.g. &self (comma-separated, * = any)~n", []),
+    format("  --debug-break-match-fail      Break when a space match fails~n", []),
+    format("  --debug-break-error           Break when a goal returns an Error term~n", []),
     format("  --debug-break-once      Disable further breakpoints after the first hit~n", []),
     format("  --debug-break-skip=<n>  Skip the first n breakpoint hits before stopping~n", []),
     format("  --debug-output=<file>   Write a plain-text copy of debugger output to file~n", []),

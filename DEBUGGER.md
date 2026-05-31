@@ -148,11 +148,36 @@ Supported operators:
 - `<`
 - `>=`
 - `<=`
+- `~` substring / structural contains (text or MeTTa expression)
+
+Values can be numbers, atoms, `true`/`false`, or a MeTTa s-expression in
+parentheses for structural matching, e.g.:
+
+```bash
+sh debug.sh examples/mettaset.metta --debug-break-if='match:arg3~set' --debug-goal=match --silent
+sh debug.sh your_file.metta --debug-break-if='f:arg1=(a b c)' --debug-goal=f --silent
+```
 
 Supported condition combinators:
 
 - `&` for `and`
 - `|` for `or`
+
+### Break on space mutation, match failure, or error
+
+Beyond goal-head and conditional breakpoints, you can break on space and
+control-flow events:
+
+```bash
+# Break when an atom is added to or removed from a space (comma-separated, * = any space)
+sh debug.sh examples/spaces.metta --debug-break-space='&self' --debug-break-once --silent
+
+# Break when a space match fails
+sh debug.sh your_file.metta --debug-break-match-fail --debug-break-once --silent
+
+# Break when a goal returns an Error term
+sh debug.sh examples/he_error.metta --debug-break-error --debug-break-once --silent
+```
 
 Examples:
 

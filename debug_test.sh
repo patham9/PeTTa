@@ -62,6 +62,9 @@ printf '%s\n' "$clean_help_output" | grep -F "sh debug.sh examples/fib.metta --d
 printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break=<heads>" >/dev/null
 printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-if=<spec>" >/dev/null
 printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-once" >/dev/null
+printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-space=<spaces>" >/dev/null
+printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-match-fail" >/dev/null
+printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-error" >/dev/null
 printf '%s\n' "$clean_help_output" | grep -F -- "--debug-break-skip=<n>" >/dev/null
 printf '%s\n' "$clean_help_output" | grep -F -- "--debug-output=<file>" >/dev/null
 printf '%s\n' "$clean_help_output" | grep -F "arg1=2&result=0" >/dev/null
