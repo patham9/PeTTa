@@ -1,4 +1,6 @@
 %%%%%%%%%% Dependencies %%%%%%%%%%
+:- dynamic library_path/1.
+
 library(X, Path) :- resolve_library_path(library_path_candidate(X), Path).
 library(X, Y, Path) :- resolve_library_path(library_path_candidate(X, Y), Path).
 
