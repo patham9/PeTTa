@@ -44,13 +44,15 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                                          ; strict_check_function_typed(F, Args1) ),
                                                append(HeadArgs, [Out], FinalArgs),
                                                Head =.. [F|FinalArgs],
-                                               append([GoalsPrefix, FinalGoals, OutChecks], Goals),
+                                               %declared-deterministic functions commit to the first matching
+                                               %clause (non-overlap is validated), guaranteeing no choicepoints
+                                               %and enabling last-call optimization:
+                                               ( clause_commit_cut(F, Args1) -> Commit = [!] ; Commit = [] ),
+                                               append([GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
-%Record atoms compiled as plain symbol heads, so late function registrations can be flagged:
-:- dynamic symbol_head/1.
-note_symbol_head(HV) :- atom(HV), \+ symbol_head(HV), !, assertz(symbol_head(HV)).
-note_symbol_head(_).
+clause_commit_cut(F, Args) :- length(Args, N),
+                              catch(fn_determinism(F, N, det), _, fail).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.
