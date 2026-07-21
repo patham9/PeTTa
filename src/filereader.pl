@@ -17,37 +17,11 @@ pop_working_dir.
 
 %Read Filename into string S and process it (S holds MeTTa code):
 load_metta_file(Filename, Results) :- load_metta_file(Filename, Results, '&self').
-load_metta_file(Filename, Results, Space) :- catch(load_metta_file_impl(Filename, Results, Space),
-                                                   Error,
-                                                   rethrow_metta_file_error(Filename, Error)).
-
-load_metta_file_impl(Filename, Results, Space) :-
-    absolute_file_name(Filename, CanonPath, [access(read), file_errors(fail)]),
-    setup_call_cleanup(
-        assertz(active_metta_load(Space, CanonPath), Ref),
-        load_metta_file_contents(CanonPath, Results, Space),
-        erase(Ref)
-    ).
-
-load_metta_file_contents(CanonPath, Results, Space) :-
-    claim_source_compile(CanonPath, Mode),
-    setup_call_cleanup(
-        push_working_dir(CanonPath),
-        ( read_file_to_string(CanonPath, S, []),
-          process_metta_string(S, Results, Space, Mode) ),
-        pop_working_dir
-    ).
-
-claim_source_compile(CanonPath, space_only) :-
-    metta_source_functions_started(CanonPath), !.
-claim_source_compile(CanonPath, compile_functions) :-
-    assertz(metta_source_functions_started(CanonPath)).
-
-rethrow_metta_file_error(_, Error) :- Error = error(_, context(_, _)), !,
-                                      throw(Error).
-rethrow_metta_file_error(Filename, error(Type, _)) :- !,
-                                                      throw(error(Type, context(Filename, 'while loading MeTTa file'))).
-rethrow_metta_file_error(_, Error) :- throw(Error).
+load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []),
+                                             ( catch(nb_getval('$metta_file', Prev), _, Prev = '<string>') ),
+                                             setup_call_cleanup(nb_setval('$metta_file', Filename),
+                                                                process_metta_string(S, Results, Space),
+                                                                nb_setval('$metta_file', Prev)).
 
 %Extract function definitions, call invocations, and S-expressions part of &self space:
 process_metta_string(S, Results) :- process_metta_string(S, Results, '&self').
@@ -71,28 +45,34 @@ warn_if_used_as_symbol(F) :- \+ fun(F), symbol_head(F), !,
 warn_if_used_as_symbol(_).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:
-parse_form(form(S), parsed(T, S, Term)) :- sread(S, Term),
-                                           ( Term = [=, [F|W], _], atom(F) -> length(W, N),
-                                                                              Arity is N + 1,
-                                                                              register_function_signature(F, Arity),
-                                                                              T=function
-                                                                            ; T=expression ).
-parse_form(runnable(S), parsed(runnable, S, Term)) :- sread(S, Term).
+parse_form(form(S, L), parsed(T, S, L, Term)) :- sread(S, Term),
+                                                 ( Term = [=, [F|W], _], atom(F) -> register_fun(F), length(W, N), Arity is N + 1, assertz(arity(F,Arity)), T=function
+                                                                                  ; T=expression ).
+parse_form(runnable(S, L), parsed(runnable, S, L, Term)) :- sread(S, Term).
+
+%Report where a static type/determinism error was raised before rethrowing it:
+with_form_location(Line, FormStr, Goal) :-
+    catch(Goal, error(E, Ctx),
+          ( ( Ctx == typecheck ; Ctx == determinism )
+            -> ( catch(nb_getval('$metta_file', File), _, File = '<string>') ),
+               format(user_error, "Type error at ~w:~w in:~n  ~w~n", [File, Line, FormStr]),
+               throw(error(E, Ctx))
+             ; throw(error(E, Ctx)) )).
 
 %Second pass to compile / run / add the Terms:
-process_form(Space, _, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true),
+process_form(Space, parsed(expression, _, _, Term), []) :- 'add-atom'(Space, Term, true),
                                                         ( silent(true) -> true ; swrite(Term,STerm),
                                                                                  format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
                                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
-process_form(_, _, parsed(runnable, FormStr, Term), Result) :- translate_expr([collapse, Term], Goals, Result),
+process_form(_, parsed(runnable, FormStr, Line, Term), Result) :- with_form_location(Line, FormStr,
+                                                                                     translate_expr([collapse, Term], Goals, Result)),
                                                             ( silent(true) -> true ; format("\e[33m--> metta runnable  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
                                                                                      forall(member(G, Goals), portray_clause((:- G))),
                                                                                      format("\e[33m^^^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ),
                                                             call_goals(Goals).
-process_form(Space, space_only, parsed(function, _, Term), []) :- add_sexp(Space, Term).
-process_form(Space, compile_functions, parsed(function, FormStr, Term), []) :- add_sexp(Space, Term),
-                                                            Term = [=, [F|_], _],
-                                                            translate_clause(Term, Clause),
+process_form(Space, parsed(function, FormStr, Line, Term), []) :- add_sexp(Space, Term),
+                                                            with_form_location(Line, FormStr,
+                                                                               translate_clause(Term, Clause)),
                                                             assertz(Clause, Ref),
                                                             assertz(translated_from(Ref, Term)),
                                                             metta_on_function_changed(F),
@@ -125,7 +105,7 @@ top_forms([Term|Fs], LC0) --> newlines(LC0, LC1),
                               ( "(" -> [] ; string_without("\n", Rest), { format(atom(Msg), "expected '(' or '!(', line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), none)) } ),
                               ( grab_until_balanced(1, [0'(], Cs, LC1, LC2, 0)
                                 -> { true } ; string_without("\n", Rest), { format(atom(Msg), "missing ')', starting at line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), none)) } ),
-                              { string_codes(FormStr, Cs), Term =.. [Tag, FormStr] },
+                              { string_codes(FormStr, Cs), Term =.. [Tag, FormStr, LC1] },
                               top_forms(Fs, LC2).
 
 %Strip off code that is commented out, while tracking when inside of string:
