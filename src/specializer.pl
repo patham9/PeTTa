@@ -20,7 +20,7 @@ maybe_specialize_call(HV, AVs, Out, Goal) :- catch(nb_getval('$spec_stack', Stac
 % Prolog variable ids inside compound terms, producing unstable specialization
 % names such as app_Spec_[partial(lambda_1,[_17896])].
 normalize_specialization_key(Term, Normalized) :-
-    copy_term(Term, Normalized),
+    copy_term_nat(Term, Normalized),
     numbervars(Normalized, 0, _, [singletons(true)]).
 
 %Specialize a call by creating and translating a specialized version of the MeTTa code:
