@@ -1,23 +1,6 @@
 %%%%%%%%%% Dependencies %%%%%%%%%%
-:- dynamic library_path/1.
-
-library(X, Path) :- resolve_library_path(library_path_candidate(X), Path).
-library(X, Y, Path) :- resolve_library_path(library_path_candidate(X, Y), Path).
-
-library_path_candidate(X, Path) :- standard_library_path(Base),
-                                   atomic_list_concat([Base, '/', X], Path).
-library_path_candidate(X, Y, Path) :- library_path(Base),
-                                      atom_concat(_, X, Base),
-                                      atomic_list_concat([Base, '/', Y], Path).
-
-resolve_library_path(Candidate, Path) :- ( once((call(Candidate, ExistingPath),
-                                                  library_source_exists(ExistingPath)))
-                                           -> Path = ExistingPath
-                                            ; once(call(Candidate, Path)) ).
-
-library_source_exists(Path) :- exists_file(Path), !.
-library_source_exists(Path) :- file_name_extension(Path, metta, MettaPath),
-                               exists_file(MettaPath).
+library(X, Path) :- library_path(Base), atomic_list_concat([Base, '/', X], Path).
+library(X, Y, Path) :- library_path(Base), atom_concat(_, X, Base), atomic_list_concat([Base, '/', Y], Path).
 :- prolog_load_context(directory, Source),
    directory_file_path(Source, '..', Parent),
    directory_file_path(Parent, 'lib', LibPath),
