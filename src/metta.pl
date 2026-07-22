@@ -1,5 +1,5 @@
 %%%%%%%%%% Dependencies %%%%%%%%%%
-library(X, Path) :- library_path(Base), atomic_list_concat([Base, '/', X], Path).
+library(X, Path) :- standard_library_path(Base), atomic_list_concat([Base, '/', X], Path).
 library(X, Y, Path) :- library_path(Base), atom_concat(_, X, Base), atomic_list_concat([Base, '/', Y], Path).
 :- prolog_load_context(directory, Source),
    directory_file_path(Source, '..', Parent),
