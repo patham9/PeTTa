@@ -25,24 +25,16 @@ load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []
 
 %Extract function definitions, call invocations, and S-expressions part of &self space:
 process_metta_string(S, Results) :- process_metta_string(S, Results, '&self').
-process_metta_string(S, Results, Space) :-
-    process_metta_string(S, Results, Space, compile_functions).
-process_metta_string(S, Results, Space, Mode) :- string_codes(S, Cs),
-                                                 strip(Cs, 0, Codes),
-                                                 phrase(top_forms(Forms, 1), Codes),
-                                                 maplist(parse_form, Forms, ParsedForms),
-                                                 maplist(process_form(Space, Mode), ParsedForms, ResultsList), !,
-                                                 append(ResultsList, Results).
-
-register_function_signature(F, Arity) :- warn_if_used_as_symbol(F),
-                                         register_fun(F),
-                                         ( catch(arity(F, Arity), _, fail) -> true ; assertz(arity(F, Arity)) ).
-
-%A function arriving after expressions already compiled its name as a plain symbol
-%cannot be called by those expressions anymore, which usually means an import came too late:
-warn_if_used_as_symbol(F) :- \+ fun(F), symbol_head(F), !,
-                             format(user_error, "Warning: ~w is defined or imported after already being used; earlier expressions treat it as a plain symbol. Move the import or definition above the first use.~n", [F]).
-warn_if_used_as_symbol(_).
+process_metta_string(S, Results, Space) :- string_codes(S, Cs),
+                                           strip(Cs, 0, Codes),
+                                           phrase(top_forms(Forms, 1), Codes),
+                                           maplist(parse_form, Forms, ParsedForms),
+                                           %declaration prepass: every function type declaration in the
+                                           %file is visible to every definition in it, independent of order
+                                           forall(member(parsed(expression, _, _, Decl), ParsedForms),
+                                                  precache_fn_type_decl(Space, Decl)),
+                                           maplist(process_form(Space), ParsedForms, ResultsList), !,
+                                           append(ResultsList, Results).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:
 parse_form(form(S, L), parsed(T, S, L, Term)) :- sread(S, Term),
