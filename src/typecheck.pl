@@ -42,15 +42,43 @@ warn_residual_check(Ctx, T) :- ( warn_runtime_checks(true)
                                   ; true ).
 
 %%% Arrow shapes: prefix, like every MeTTa form - (-> A B), (-[det]-> A B),
-%%% (-[nondet]-> A B). Under --strict-det a plain -> is a determinism
-%%% commitment: functions are deterministic unless declared -[nondet]->.
+%%% (-[semidet]-> A B), (-[nondet]-> A B). Under --strict-det a plain -> is a
+%%% determinism commitment: functions are deterministic unless declared
+%%% -[nondet]->.
+%%% Cardinality is a total order: det (exactly one) < semidet (zero or one)
+%%% < nondet (any). semidet commits exactly like det - it only adds the right
+%%% to fail - so it keeps the clause-entry cut and last-call optimization.
 plain_arrow_det(Det) :- ( strict_det(true) -> Det = det ; Det = unspecified ).
 
 arrow_det('->', Det) :- plain_arrow_det(Det).
 arrow_det('-[det]->', det).
 arrow_det('-[deterministic]->', det).
+arrow_det('-[semidet]->', semidet).
+arrow_det('-[semideterministic]->', semidet).
 arrow_det('-[nondet]->', nondet).
 arrow_det('-[nondeterministic]->', nondet).
+
+%%% The single enumeration of the CANONICAL arrow atoms (what
+%%% canonical_arrow/2 produces) and the determinism each commits to. Every
+%%% site that used to spell out ('->' ; '-[det]->' ; '-[nondet]->') goes
+%%% through this - adding an arrow means adding a clause here, arrow_det/2 and
+%%% canonical_arrow/2, and nowhere else. `plain` is the mode-dependent -> (see
+%%% plain_arrow_det/1); it is deliberately NOT the atom det, so a site can ask
+%%% for an explicit commitment without accidentally matching -> :
+arrow_atom_det('->', plain).
+arrow_atom_det('-[det]->', det).
+arrow_atom_det('-[semidet]->', semidet).
+arrow_atom_det('-[nondet]->', nondet).
+
+arrow_atom(A) :- nonvar(A), arrow_atom_det(A, _).
+
+%The determinism level of an arrow TYPE's head, only ever read, never bound:
+arrow_head_level(K, L) :- nonvar(K), K = [A|_], nonvar(A), arrow_atom_det(A, L).
+
+%A commitment that makes the compiler emit the clause-entry cut and validate
+%the clause set: det and semidet both promise at most one result:
+committed_det(det).
+committed_det(semidet).
 
 fn_type_shape(Type, ArgTypes, OutType, Det) :- is_list(Type), Type = [Arrow|Xs],
                                                nonvar(Arrow), atom(Arrow), arrow_det(Arrow, Det), !,
@@ -82,6 +110,8 @@ normalize_type(T, T).
 %carry their commitment in every mode, not only under --strict-det:
 canonical_arrow('-[det]->', '-[det]->') :- !.
 canonical_arrow('-[deterministic]->', '-[det]->') :- !.
+canonical_arrow('-[semidet]->', '-[semidet]->') :- !.
+canonical_arrow('-[semideterministic]->', '-[semidet]->') :- !.
 canonical_arrow('-[nondet]->', '-[nondet]->') :- !.
 canonical_arrow('-[nondeterministic]->', '-[nondet]->') :- !.
 canonical_arrow(_, (->)).
@@ -111,6 +141,7 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                            ; nonvar(Type), fn_type_shape(Type, ATs, OT, Det)
                                              -> maplist(normalize_type, ATs, ATN),
                                                 normalize_type(OT, OTN),
+                                                note_explicit_det_decl(Name, Type, ATN),
                                                 retractall(inferred_fn_type(Name, _, _)),  %declaration supersedes inference
                                                 ( declared_fn_type(Name, A2, O2, D2),
                                                   (A2-O2-D2) =@= (ATN-OTN-Det) -> true
@@ -120,6 +151,17 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                 ( declared_value_type(Name, T2), T2 =@= TN -> true
                                                 ; assertz(declared_value_type(Name, TN)) ) )
                                          ; true ).
+
+%declared_fn_type/4 keeps the determinism, not the arrow that expressed it, and
+%under --strict-det a plain -> also yields det. The exhaustiveness check needs
+%the difference: an EXPLICIT -[det]-> is a per-function promise of exactly one
+%result, a plain -> is a mode-wide default. Only the former is recorded here:
+:- dynamic explicit_det_decl/2.
+
+note_explicit_det_decl(Name, Type, ATs) :- ( nonvar(Type), Type = [Arrow|_], atom(Arrow),
+                                             canonical_arrow(Arrow, '-[det]->'),
+                                             length(ATs, N), \+ explicit_det_decl(Name, N)
+                                             -> assertz(explicit_det_decl(Name, N)) ; true ).
 
 %Declaration prepass: only function (arrow) declarations are hoisted, so
 %definitions may call helpers declared later in the same file. Value
@@ -147,7 +189,11 @@ maybe_uncache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term 
                                                   normalize_type(OT, OTN),
                                                   ( clause(declared_fn_type(Name, A2, O2, D2), true, Ref),
                                                     (A2-O2-D2) =@= (ATN-OTN-Det)
-                                                    -> erase(Ref) ; true )
+                                                    -> erase(Ref),
+                                                       length(ATN, NA),
+                                                       ( declared_fn_type(Name, A3, _, _), length(A3, NA)
+                                                         -> true ; retractall(explicit_det_decl(Name, NA)) )
+                                                     ; true )
                                                 ; normalize_type(Type, TN),
                                                   ( clause(declared_value_type(Name, T2), true, Ref),
                                                     T2 =@= TN
@@ -164,6 +210,7 @@ warn_if_late_declaration(Name) :-
        ; true ).
 
 forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
+                             retractall(explicit_det_decl(Name, _)),
                              retractall(declared_value_type(Name, _)),
                              retractall(declared_newtype(Name, _)),
                              retractall(inferred_fn_type(Name, _, _)).
@@ -207,16 +254,24 @@ type_unify(A, B) :- is_arrow_type(A), is_arrow_type(B), !,
 type_unify(A, B) :- is_list(A), !, is_list(B), same_length(A, B), maplist(type_unify, A, B).
 type_unify(A, B) :- A == B.
 
-det_arrow_fits(_, HB) :- HB == '-[nondet]->', !.
-det_arrow_fits(HA, HB) :- HB == '-[det]->', !,
-                          ( HA == '-[det]->' -> true ; HA == (->), strict_det(true) ).
-det_arrow_fits(HA, _) :- ( HA == '-[nondet]->' -> \+ strict_det(true) ; true ).
+%A closure fits a required arrow when it can produce no MORE results than the
+%requirement allows (det < semidet < nondet). An explicit -[det]->/-[semidet]->
+%requirement is a commitment in every mode, so a nondet closure never fits it;
+%a plain -> claims nothing outside --strict-det, where it becomes det:
+det_arrow_fits(HA, HB) :- arrow_atom_det(HA, LA), arrow_atom_det(HB, LB),
+                          det_level_fits(LA, LB).
+
+det_level_fits(_, nondet) :- !.
+det_level_fits(LA, plain) :- !, ( LA == nondet -> \+ strict_det(true) ; true ).
+det_level_fits(LA, LB) :- ( LA == plain -> strict_det(true)
+                          ; LA == det -> true
+                          ; LA == semidet -> LB == semidet ).
 
 is_union(T) :- nonvar(T), T = [P|_], P == '|'.
 
 type_compat_soft(A, B) :- \+ \+ type_unify(A, B).
 
-is_arrow_type(T) :- nonvar(T), T = [A|_], ( A == (->) ; A == '-[det]->' ; A == '-[nondet]->' ).
+is_arrow_type(T) :- nonvar(T), T = [A|_], arrow_atom(A).
 
 list_type(T, ET) :- nonvar(T), T = [L, ET], L == 'List'.
 
@@ -414,8 +469,7 @@ value_candidate_types(_, []).
 value_single_type(V, T) :- ( var(V) -> known_singleton(V, T)
                                      ; value_candidate_types(V, [T0]), T = T0 ).
 
-det_arrow_head(nondet, '-[nondet]->') :- !.
-det_arrow_head(det, '-[det]->') :- !.
+det_arrow_head(Det, H) :- nonvar(Det), arrow_atom_det(H, Det), !.
 det_arrow_head(_, (->)).
 
 bound_args_match(B, PTs) :- \+ \+ maplist(arg_soft_ok, B, PTs).
@@ -523,7 +577,7 @@ tuple_fields_status([F|Fs], [T|Ts], St) :- elem_status(F, T, S1),
 %transitive-evidence rule calls use), otherwise conservatively nondet:
 inferred_arrow_head(F, N, H) :- ( strict_det(true)
                                   -> ( catch((body_determinism(F, N, D), D == det), _, fail)
-                                       -> H = (->) ; H = '-[nondet]->' )
+                                       -> H = (->) ; det_arrow_head(nondet, H) )
                                    ; H = (->) ).
 
 inferred_value_candidates(V, Cs) :- atom(V), !,
@@ -1126,28 +1180,41 @@ merge_inferred(F, ATs, OT) :- length(ATs, N),
 
 join_inferred(A, B, J) :- ( A =@= B -> J = A ; J = '%Undefined%' ).
 
-%%% Determinism arrows (-[det]->, -[nondet]->) %%%
+%%% Determinism arrows (-[det]->, -[semidet]->, -[nondet]->) %%%
 
+%Several declarations at one arity are overloads, and the function as a whole
+%can only be trusted with the WEAKEST commitment any of them makes: det and
+%semidet both commit (semidet is the weaker of the two), while a nondet or an
+%uncommitted plain -> overload leaves the whole function uncommitted. A
+%det/nondet (or semidet/nondet) pair is a contradiction, not a weakening:
 fn_determinism(F, N, Det) :- findall(D, ( declared_fn_type(F, ATs, _, D), length(ATs, N) ), Ds0),
                              sort(Ds0, Ds),
                              ( Ds == [] -> Det = unspecified
                              ; Ds = [D1] -> Det = D1
+                             ; Ds == [det, semidet] -> Det = semidet
                              ; Ds == [det, unspecified] -> Det = unspecified
+                             ; Ds == [semidet, unspecified] -> Det = unspecified
                              ; Ds == [nondet, unspecified] -> Det = nondet
                              ; throw(error(conflicting_determinism_declarations(F), determinism)) ).
 
 validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
     length(Args, N),
     fn_determinism(F, N, Det),
-    ( Det == det -> ensure_deterministic_expr(BodyExpr, F),
-                    ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
-                  ; true ).
+    ( committed_det(Det) -> ensure_deterministic_expr(Det, BodyExpr, F),
+                            ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
+                          ; true ).
 
-ensure_deterministic_expr(Expr, Fun) :- deterministic_expr(Expr, R),
-                                        ( R == ok -> true
-                                        ; R = nondeterministic(Reason)
-                                          -> throw(error(determinism_conflict(Fun, Reason), determinism))
-                                           ; throw(error(determinism_conflict(Fun, unknown(Expr)), determinism)) ).
+%A det body must neither branch nor fail; a semidet body is the same analysis
+%minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are
+%exactly what it is allowed to do, and nothing else changes (superpose, match
+%and overlapping heads stay rejected for both):
+ensure_deterministic_expr(Det, Expr, Fun) :-
+    deterministic_expr(Expr, R),
+    ( R == ok -> true
+    ; Det == semidet, R = may_fail(_) -> true
+    ; R = nondeterministic(Reason) -> throw(error(determinism_conflict(Fun, Reason), determinism))
+    ; R = may_fail(Reason) -> throw(error(determinism_conflict(Fun, Reason), determinism))
+    ; throw(error(determinism_conflict(Fun, unknown(Expr)), determinism)) ).
 
 %A clause whose body commits with (cut) never falls through to a later
 %clause, so overlap with it cannot create a choicepoint:
@@ -1171,7 +1238,9 @@ clause_heads_overlap(ArgsA, ArgsB) :- copy_term((ArgsA, ArgsB), (CA, CB)),
                                       unifiable(CA, CB, _).
 
 builtin_call_determinism(superpose, 1, nondet).
-builtin_call_determinism(empty, 0, nondet).
+%(empty) produces zero results, never two: it is the canonical semidet body,
+%and the reason a -[semidet]-> function can write its fallthrough explicitly:
+builtin_call_determinism(empty, 0, semidet).
 
 function_call_determinism(F, N, Det) :- builtin_call_determinism(F, N, Det), !.
 function_call_determinism(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
@@ -1228,11 +1297,24 @@ bind_meta_param(Arg, T) :- ignore(catch(bind_pattern_typed(Arg, T), _, true)).
 
 arity_meta(N, fun_meta(Args, _)) :- length(Args, N).
 
-clause_set_determinism(Metas, Det) :- ( member(fun_meta(_, B), Metas),
-                                        deterministic_expr(B, R), R \== ok
-                                        -> ( R = nondeterministic(_) -> Det = nondet ; Det = unspecified )
+%The worst verdict over ALL clause bodies decides (a may_fail clause followed
+%by a nondeterministic one is nondet, not semidet), and overlapping heads
+%multiply results whatever the bodies say:
+clause_set_determinism(Metas, Det) :- clause_bodies_determinism(Metas, R),
+                                      ( R = nondeterministic(_) -> Det = nondet
+                                      ; R = unknown(_) -> Det = unspecified
                                       ; overlapping_meta_pair(Metas) -> Det = nondet
+                                      ; R = may_fail(_) -> Det = semidet
                                       ; Det = det ).
+
+%The metas are walked directly (never through findall) so the parameter type
+%attributes type_meta_params/4 attached to the head vars stay visible in the
+%bodies they are shared with:
+clause_bodies_determinism([], ok).
+clause_bodies_determinism([fun_meta(_, B)|Ms], R) :- deterministic_expr(B, R1),
+                                                     ( det_result_final(R1) -> R = R1
+                                                     ; clause_bodies_determinism(Ms, R2),
+                                                       combine_det_results(R1, R2, R) ).
 
 overlapping_meta_pair(Metas) :- append(_, [fun_meta(A1, _)|Rest], Metas),
                                 member(fun_meta(A2, B2), Rest),
@@ -1247,9 +1329,12 @@ deterministic_expr(Expr, ok) :- ( var(Expr) ; atomic(Expr) ; Expr = partial(_, _
 deterministic_expr([Head|Args], Result) :- var(Head), !,
     ( Args == [] -> Result = ok                    %singleton ($x) is data, not application
     ; known_singleton(Head, K), nonvar(K)
-      -> ( K = [A|_], A == '-[det]->' -> combine_determinism_list(Args, Result)
-         ; K = [A|_], A == (->), strict_det(true) -> combine_determinism_list(Args, Result)
-         ; K = [A|_], A == '-[nondet]->' -> Result = nondeterministic(nondet_closure)
+      -> ( arrow_head_level(K, det) -> combine_determinism_list(Args, Result)
+         ; arrow_head_level(K, plain), strict_det(true) -> combine_determinism_list(Args, Result)
+         ; arrow_head_level(K, semidet)
+           -> combine_determinism_list(Args, R0),
+              combine_det_results(may_fail(semidet_closure), R0, Result)
+         ; arrow_head_level(K, nondet) -> Result = nondeterministic(nondet_closure)
          ; \+ is_arrow_type(K) -> combine_determinism_list(Args, Result)  %non-arrow head: data construction
          ; Result = unknown(dynamic_head(Head)) )
        ; Result = unknown(dynamic_head(Head)) ).
@@ -1289,6 +1374,9 @@ deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),
                                                function_call_determinism(Fun, N, Det),
                                                ( Det == nondet -> Result = nondeterministic(call(Fun))
+                                               ; Det == semidet
+                                                 -> combine_determinism_list(Args, R0),
+                                                    combine_det_results(may_fail(call(Fun)), R0, Result)
                                                ; Det == det -> combine_determinism_list(Args, Result)
                                                ; det_closure_args_ok(Fun, N, Args), body_determinism_assuming(Fun, N, det)
                                                  -> combine_determinism_list(Args, Result)
@@ -1318,13 +1406,16 @@ deterministic_call_expr(Expr, unknown(dynamic_call(Expr))).
 %scoped to the copy; the stored metas are never mutated.
 :- dynamic det_assume_cache/3.
 
-%Declared arrow parameter positions (head -> or -[det]->, never -[nondet]->,
-%whose det-ness is irrelevant or already handled as nondet), as
-%pos(Index, InArity, Head) where InArity is the arrow's parameter count:
+%Declared arrow parameter positions (any head but -[nondet]->, whose det-ness
+%is irrelevant because it is already handled as nondet), as
+%pos(Index, InArity, Head) where InArity is the arrow's parameter count. A
+%-[semidet]-> position is listed too: it is only ever UPGRADED to det when the
+%actual argument proves det, and a semidet actual simply fails the evidence
+%test below, which drops the whole path back to the normal fallbacks:
 arrow_det_positions(ATs, Positions) :- findall(pos(Idx, M, H),
                                               ( nth0(Idx, ATs, T), is_arrow_type(T),
-                                                T = [H|Rest], ( H == (->) ; H == '-[det]->' ),
-                                                length(Rest, L), M is L - 1 ),
+                                                T = [H|Rest], arrow_atom_det(H, L), L \== nondet,
+                                                length(Rest, Len), M is Len - 1 ),
                                               Positions).
 
 %Fun must have a UNIQUE arity-N declaration exposing at least one non-nondet
@@ -1344,8 +1435,9 @@ det_closure_positions([pos(Idx, M, _)|Ps], Args) :- nth0(Idx, Args, Arg),
 %commits to det; a lambda with a det body; a (partial) application or bare
 %atom naming a function that is det at the relevant arity. Anything else
 %fails:
-det_arg_evidence(Arg, _) :- var(Arg), !, known_singleton(Arg, K), nonvar(K), is_arrow_type(K),
-                            K = [H|_], ( H == '-[det]->' -> true ; H == (->), strict_det(true) ).
+det_arg_evidence(Arg, _) :- var(Arg), !, known_singleton(Arg, K),
+                            arrow_head_level(K, L),
+                            ( L == det -> true ; L == plain, strict_det(true) ).
 det_arg_evidence(['|->', _, LBody], _) :- !, deterministic_expr(LBody, ok).
 det_arg_evidence([F2|_], _) :- atom(F2), !, fn_own_arity(F2, A), det_atom_evidence(F2, A).
 det_arg_evidence(F2, M) :- atom(F2), !, det_atom_evidence(F2, M).
@@ -1393,7 +1485,8 @@ assume_det_meta(ATs1, Positions, Meta, Meta2) :- copy_term(Meta, Meta2),
 assume_det_positions([], _, _).
 assume_det_positions([pos(Idx, _, _)|Ps], ATs1, Args) :- nth0(Idx, ATs1, T), T = [_|Rest],
                                                         copy_term(Rest, Rest2),
-                                                        DetArrow = ['-[det]->'|Rest2],
+                                                        det_arrow_head(det, DetHead),
+                                                        DetArrow = [DetHead|Rest2],
                                                         ( nth0(Idx, Args, HeadArg) -> assume_det_param(HeadArg, DetArrow) ; true ),
                                                         assume_det_positions(Ps, ATs1, Args).
 
@@ -1413,32 +1506,53 @@ underapplied_closure(Fun, N) :- CallArity is N + 1,
                                 \+ arity(Fun, CallArity),
                                 arity(Fun, Known), Known > CallArity, !.
 
+%%% Combining determinism verdicts. The lattice is
+%%% ok < may_fail(_) < nondeterministic(_) / unknown(_): a subexpression that
+%%% may fail leaves the whole expression semidet, while a branching or opaque
+%%% one settles it - so may_fail keeps scanning for something worse, and the
+%%% top of the lattice short-circuits (which preserves the historical
+%%% "first non-ok verdict wins" reason reporting):
+det_result_rank(ok, 0).
+det_result_rank(may_fail(_), 1).
+det_result_rank(nondeterministic(_), 2).
+det_result_rank(unknown(_), 2).
+
+det_result_final(R) :- det_result_rank(R, 2).
+
+combine_det_results(A, B, R) :- det_result_rank(A, RA), det_result_rank(B, RB),
+                                ( RB > RA -> R = B ; R = A ).
+
 combine_determinism_list([], ok).
 combine_determinism_list([Expr|Exprs], Result) :- deterministic_expr(Expr, First),
-                                                  ( First == ok -> combine_determinism_list(Exprs, Result)
-                                                                 ; Result = First ).
+                                                  ( det_result_final(First) -> Result = First
+                                                  ; combine_determinism_list(Exprs, Rest),
+                                                    combine_det_results(First, Rest, Result) ).
 
 binds_and_body_determinism([], Body, Result) :- deterministic_expr(Body, Result).
 binds_and_body_determinism([[Pat, Val]|Rest], Body, Result) :-
     pattern_then_exprs(Pat, [Val], HeadResult),
-    ( HeadResult == ok -> binds_and_body_determinism(Rest, Body, Result)
-                        ; Result = HeadResult ).
+    ( det_result_final(HeadResult) -> Result = HeadResult
+    ; binds_and_body_determinism(Rest, Body, R2),
+      combine_det_results(HeadResult, R2, Result) ).
 
 case_expr_determinism(KeyExpr, PairsExpr, Result) :- deterministic_expr(KeyExpr, KeyResult),
-                                                     ( KeyResult == ok -> case_pairs_determinism(PairsExpr, Result)
-                                                                        ; Result = KeyResult ).
+                                                     ( det_result_final(KeyResult) -> Result = KeyResult
+                                                     ; case_pairs_determinism(PairsExpr, R2),
+                                                       combine_det_results(KeyResult, R2, Result) ).
 
 case_pairs_determinism([], ok).
 case_pairs_determinism([[CaseExpr, BranchExpr]|Rest], Result) :-
     pattern_then_exprs(CaseExpr, [BranchExpr], PairResult),
-    ( PairResult == ok -> case_pairs_determinism(Rest, Result)
-                        ; Result = PairResult ).
+    ( det_result_final(PairResult) -> Result = PairResult
+    ; case_pairs_determinism(Rest, R2),
+      combine_det_results(PairResult, R2, Result) ).
 
 %Patterns are matched, not executed: a variable head is structure, and only
 %fun-headed subterms are embedded calls that the pattern evaluates:
 pattern_then_exprs(Pat, Exprs, Result) :- deterministic_pattern(Pat, R0),
-                                          ( R0 == ok -> combine_determinism_list(Exprs, Result)
-                                                      ; Result = R0 ).
+                                          ( det_result_final(R0) -> Result = R0
+                                          ; combine_determinism_list(Exprs, R2),
+                                            combine_det_results(R0, R2, Result) ).
 
 deterministic_pattern(P, ok) :- ( var(P) ; atomic(P) ; P = partial(_, _) ), !.
 deterministic_pattern([H|T], Result) :- atom(H), fun(H), !, deterministic_expr([H|T], Result).
@@ -1446,5 +1560,124 @@ deterministic_pattern(P, Result) :- combine_pattern_list(P, Result).
 
 combine_pattern_list([], ok).
 combine_pattern_list([E|Es], Result) :- deterministic_pattern(E, R1),
-                                        ( R1 == ok -> combine_pattern_list(Es, Result)
-                                                    ; Result = R1 ).
+                                        ( det_result_final(R1) -> Result = R1
+                                        ; combine_pattern_list(Es, R2),
+                                          combine_det_results(R1, R2, Result) ).
+
+%%% Exhaustiveness of -[det]-> functions (--strict-det only) %%%
+%%%
+%%% -[det]-> promises EXACTLY one result, but a clause set that cannot match
+%%% some input of its declared argument types delivers zero. The check is
+%%% deliberately ASYMMETRIC: provably incomplete is an error, cannot tell is
+%%% accepted in silence. PeTTa's nominal types are OPEN - a constructor may be
+%%% declared in a later file - so "cannot tell" is the common case, and
+%%% GHC-style "warn unless proven exhaustive" would reject legitimate code
+%%% with no way out. The way out of a REAL incompleteness is -[semidet]->,
+%%% which commits (and therefore costs) exactly like -[det]->.
+%%%
+%%% Only an EXPLICIT -[det]-> is checked (explicit_det_decl/2). Under
+%%% --strict-det a plain -> also reads as det, but that is a mode-wide default
+%%% rather than a per-function promise, and holding every -> to totality would
+%%% reject most partial helpers in the standard library.
+%%%
+%%% This runs as a per-file PREPASS over the parsed forms (filereader.pl), for
+%%% the same reason type declarations are pre-cached there: exhaustiveness is a
+%%% property of the WHOLE clause set, and clauses arrive one form at a time -
+%%% checking after each one would reject (= (not true) false) before
+%%% (= (not false) true) has been read. Clauses already compiled by earlier
+%%% files count too (stored_clause_head/3), but a function whose clauses are
+%%% split across files is still judged on what the current file can see.
+det_exhaustiveness_prepass(ParsedForms) :-
+    ( strict_det(true)
+      -> findall(F/N, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N) ), Keys0),
+         sort(Keys0, Keys),
+         %value declarations are order-sensitive knowledge atoms, so unlike
+         %arrow declarations they are NOT pre-cached - the file's own nullary
+         %constructors are read straight from its forms instead:
+         findall(C-T, parsed_value_decl(ParsedForms, C, T), Consts),
+         forall(member(F/N, Keys), check_det_exhaustive_group(ParsedForms, Consts, F, N))
+       ; true ).
+
+parsed_clause_head(ParsedForms, Line, Str, F, Args) :-
+    member(parsed(function, Str, Line, Form), ParsedForms),
+    nonvar(Form), Form = [Eq, Head, _], Eq == (=),
+    nonvar(Head), Head = [F|Args], atom(F), Args \== [].
+
+parsed_value_decl(ParsedForms, C, T) :- member(parsed(expression, _, _, Form), ParsedForms),
+                                        nonvar(Form), Form = [Colon, C, T], Colon == (:),
+                                        atom(C), atom(T), \+ fun(C).
+
+stored_clause_head(F, N, Args) :- catch(nb_getval(F, Metas), _, fail),
+                                  member(fun_meta(Args, _), Metas), length(Args, N).
+
+check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
+    ( explicit_det_decl(F, N)
+      -> findall(Args, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N)
+                       ; stored_clause_head(F, N, Args) ), Heads),
+         once(( parsed_clause_head(ParsedForms, Line, Str, F, A0), length(A0, N) )),
+         with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads))
+       ; true ).
+
+%The declaration must be unique at this arity: several declarations are typed
+%overloads, and the clauses then belong to no single argument-type vector.
+check_det_exhaustive(Consts, F, N, Heads) :-
+    ( findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs1]),
+      nth0(Idx, ATs1, T),
+      unmatched_case(Consts, Heads, Idx, T, Missing)
+      -> Pos is Idx + 1,
+         throw(error(det_nonexhaustive(F, Pos, Missing), determinism))
+       ; true ).
+
+%One argument position proves incompleteness when EVERY clause pins it to a
+%recognizable shape - no variable, no wildcard, no computed subterm - and some
+%value of its declared type has no matching shape. A single variable in the
+%column, an unenumerable type, or a pattern the key relation does not
+%recognize makes the position silent; guards and arithmetic conditions live in
+%the body and are never consulted (they can only make a function match LESS,
+%so ignoring them keeps the verdict sound).
+unmatched_case(Consts, Heads, Idx, T, Missing) :-
+    nonvar(T), \+ wildcard_type_t(T),
+    findall(P, ( member(H, Heads), nth0(Idx, H, P) ), Col),
+    Col \== [],
+    maplist(pattern_key, Col, Keys),
+    ( uncovered_infinite_domain(T, Keys) -> Missing = other(T)
+    ; domain_keys(T, Consts, DKeys), member(Missing, DKeys), \+ memberchk(Missing, Keys) ).
+
+%The value shape a head pattern matches, as key(Name, Arity). A variable, a
+%fun-headed (computed) subterm, an empty expression or anything else has no
+%key - and a column containing one is no evidence at all:
+pattern_key(P, key(P, 0)) :- atomic(P), P \== [], \+ ( atom(P), fun(P) ), !.
+pattern_key(P, key(C, K)) :- is_list(P), P = [C|As], atom(C), \+ fun(C),
+                             length(As, K), K > 0.
+
+%Number and String have infinitely many values, so a column of literals of
+%that domain can never cover them:
+uncovered_infinite_domain('Number', Keys) :- forall(member(key(V, A), Keys), ( A =:= 0, number(V) )).
+uncovered_infinite_domain('String', Keys) :- forall(member(key(V, A), Keys), ( A =:= 0, string(V) )).
+
+%The complete set of value shapes of a type, when it can be enumerated at all.
+%Bool is closed by construction; a nominal type's set is its equation-less
+%declared constructors (member_ctor/3 - a declared symbol WITH equations is
+%rewritten at the call site and never survives as a value) plus its
+%equation-less declared constants.
+%LIMITATION (the same one union_member_excluded/3 documents): the set is read
+%as it stands right now. A constructor for T declared in a LATER file would
+%invalidate an "unmatched constructor" verdict made here, and the rejected
+%file is not revisited. Declare a type's constructors before the -[det]->
+%functions that match on it.
+domain_keys('Bool', _, [key(true, 0), key(false, 0)]) :- !.
+domain_keys(T, Consts, Keys) :- atom(T), declared_newtype(T, R), !, domain_keys(R, Consts, Keys).
+domain_keys(T, Consts, Keys) :- atom(T), \+ wildcard_type(T), \+ primitive_type(T),
+                                findall(key(C, K), nominal_ctor(T, Consts, C, K), Keys0),
+                                sort(Keys0, Keys), Keys \== [].
+
+nominal_ctor(T, _, C, K) :- member_ctor(T, K, C).
+nominal_ctor(T, _, C, 0) :- declared_value_type(C, T2), atom(C), T2 == T, \+ fun(C).
+nominal_ctor(T, Consts, C, 0) :- member(C-T, Consts).
+
+%Rendered by main.pl's error message for det_nonexhaustive/3:
+missing_case_text(other(T), Txt) :- !, format(atom(Txt), "a ~w outside the matched literals", [T]).
+missing_case_text(key(C, 0), Txt) :- !, format(atom(Txt), "~w", [C]).
+missing_case_text(key(C, K), Txt) :- length(As, K), maplist(=('_'), As),
+                                     atomic_list_concat([C|As], ' ', Inner),
+                                     format(atom(Txt), "(~w)", [Inner]).

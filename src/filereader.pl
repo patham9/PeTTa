@@ -38,6 +38,10 @@ process_metta_string(S, Results, Space) :- metta_string_forms(S, Forms),
                                            %file is visible to every definition in it, independent of order
                                            forall(member(parsed(expression, _, _, Decl), ParsedForms),
                                                   precache_fn_type_decl(Space, Decl)),
+                                           %exhaustiveness is a property of the whole clause set, so it is
+                                           %judged here, once the file's clauses and declarations are all
+                                           %visible, and before any of its forms runs:
+                                           det_exhaustiveness_prepass(ParsedForms),
                                            maplist(process_form(Space), ParsedForms, ResultsList), !,
                                            append(ResultsList, Results).
 

@@ -162,7 +162,50 @@ that its clauses cannot overlap and its body is deterministic, then commits to
 the first matching clause — guaranteeing choicepoint-free execution and
 constant-memory deep recursion via last-call optimization
 (see `examples/determinism_lco.metta`). `-[nondet]->` documents intentional
-nondeterminism.
+nondeterminism. Result cardinality is a total order: `-[det]->` (exactly one)
+< `-[semidet]->` (zero or one) < `-[nondet]->` (any), and a closure fits an
+arrow that allows at least as many results as it can produce.
+
+**`-[semidet]->`: partial, but still committed.** `-[semidet]->` is the answer
+to "I want a function that may legitimately have no answer" — a lookup with no
+entry, a division by zero, a parse that does not apply. Its body is checked
+exactly like a `-[det]->` body except that it is allowed to FAIL: `(empty)` and
+calls to other `-[semidet]->` functions are fine, while `superpose`, `match`
+and overlapping clause heads stay rejected, because failing is not the same as
+answering twice. **It costs nothing.** semidet commits to its first matching
+clause exactly like det — the right to fail leaves no choicepoint — so it keeps
+choicepoint-free execution and last-call optimization
+(`examples/strictdet_semidet_lco.metta` is `determinism_lco.metta` with the
+arrow changed, one million levels deep). Reaching for `-[nondet]->` instead is
+what actually costs: it throws away the commit for a nondeterminism that is not
+there. A `-[det]->` function may not call a `-[semidet]->` one — that is
+precisely the promise `-[det]->` makes — so partiality is visible in the types
+all the way up. See `examples/strictdet_semidet_arrow.metta`.
+
+**Exhaustiveness of `-[det]->` (under `--strict-det`).** Under `--strict-det`
+only, a `-[det]->` function whose clauses PROVABLY cannot match some input of
+its declared argument types is a compile error naming the unmatched case and
+suggesting `-[semidet]->`. Two things are provable: an argument position every
+clause pins to a literal of an uncoverable domain (`(= (lookup 1) 10)`,
+`(= (lookup 2) 20)` over `Number`), and a position discriminating on the
+constructors of a nominal type whose constructor set is known in full, with one
+constructor unmatched. Everything else is accepted in silence — variables and
+wildcards, guards, arithmetic conditions, `Atom`/`Expression`/`%Undefined%`
+arguments, and any type whose constructors cannot be enumerated.
+
+The check is deliberately one-sided: **provably incomplete is an error, cannot
+tell is accepted**. It is not GHC's "warn unless proven exhaustive" — PeTTa's
+nominal types are open, a constructor may be declared in a later file, so
+"cannot tell" is the normal case and erroring on it would reject working code
+with no way out. What the check reports is therefore a lower bound on
+incompleteness, never a totality guarantee: it can only see the constructors
+declared before it, and it judges a function on the clauses visible in the file
+being loaded. `examples/strictdet_det_exhaustive_limits.metta` pins the
+conservative side; `examples/fail_strictdet_nonexhaustive_det.metta` and
+`fail_strictdet_nonexhaustive_ctor.metta` pin the two provable ones. Only an
+explicit `-[det]->` is checked — under `--strict-det` a plain `->` reads as
+deterministic too, but that is a mode-wide default rather than a per-function
+promise of totality.
 
 **Strict determinism mode.** `--strict-det` (implies `--strict`) makes a
 plain `->` itself a determinism commitment: every declared function is
@@ -173,7 +216,8 @@ error is either an accidental source of multiple results or a missing
 `-[nondet]->`. Closure parameters carry the same commitment: a
 `(-> $a $b)`-typed parameter may be applied inside a deterministic body,
 a `-[nondet]->` one may not. A clause that commits with `(cut)` may overlap
-with later clauses. See `examples/strictdet_basics.metta`.
+with later clauses. See `examples/strictdet_basics.metta`. This flag also
+turns on the `-[det]->` exhaustiveness check described above.
 
 Notes and caveats:
 

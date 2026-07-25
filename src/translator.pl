@@ -58,12 +58,18 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                Head =.. [F|FinalArgs],
                                                length(FinalArgs, CompiledArity),
                                                (arity(F, CompiledArity) -> true ; assertz(arity(F, CompiledArity))),
-                                               append(GoalsPrefix, FinalGoals, Goals),
+                                               %declared-deterministic functions commit to the first matching
+                                               %clause (non-overlap is validated), guaranteeing no choicepoints
+                                               %and enabling last-call optimization. -[semidet]-> commits
+                                               %identically: allowing failure costs no choicepoint, so a
+                                               %semidet function is as cheap as a det one:
+                                               ( clause_commit_cut(F, Args1) -> Commit = [!] ; Commit = [] ),
+                                               append([GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
 clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
-                              catch(fn_determinism(F, N, det), _, fail).
+                              catch(( fn_determinism(F, N, D), committed_det(D) ), _, fail).
 
 %%% Late binding across files. A call to a declared function whose definition
 %%% has not arrived yet compiles as data (which is also what keeps declared
@@ -498,7 +504,7 @@ nonfunction_type(K) :- nonvar(K), ( primitive_type(K)
 translate_closure_call(HV, AVs, Inner, Goals, Out) :- var(HV), AVs \== [], known_singleton(HV, K),
                                                       length(AVs, N), N1 is N + 1,
                                                       ( var(K) -> length(Xs, N1), K = [->|Xs]
-                                                      ; K = [H|Xs], ( H == (->) ; H == '-[det]->' ; H == '-[nondet]->' ),
+                                                      ; K = [H|Xs], arrow_atom(H),
                                                         length(Xs, N1) ),
                                                       append(ArgTs, [OutT], Xs),
                                                       apply_call_args(declared, closure, AVs, ArgTs, GuardGs),
@@ -514,7 +520,7 @@ translate_closure_call(HV, AVs, Inner, Goals, Out) :- var(HV), AVs \== [], known
 %positions are checked and the result carries the remaining arrow:
 translate_closure_call(HV, AVs, Inner, Goals, Out) :- var(HV), AVs \== [], known_singleton(HV, K),
                                                       nonvar(K), K = [H|Xs],
-                                                      ( H == (->) ; H == '-[det]->' ; H == '-[nondet]->' ),
+                                                      arrow_atom(H),
                                                       length(AVs, N), length(Xs, LX), N < LX - 1,
                                                       append(ArgTs, [OutT], Xs),
                                                       length(UsedTs, N), append(UsedTs, RestTs, ArgTs),
