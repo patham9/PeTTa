@@ -779,8 +779,9 @@ build_branch(Con, Val, Out, Goal) :- var(Val) -> Val = Out, Goal = Con
 translate_case(Pairs, Kv, Out, Goal, KGo) :- translate_case(Pairs, Kv, Out, Goal, KGo, []).
 
 translate_case([[K,VExpr]|Rs], Kv, Out, Goal, KGo, Prior) :-
-                                                      ( var(Kv), known_singleton(Kv, KT)
-                                                        -> bind_pattern_typed(K, KT, Prior) ; true ),
+                                                      ( var(Kv), known_singleton(Kv, KT), nonvar(KT)
+                                                        -> bind_pattern_typed(K, KT, Prior)
+                                                         ; ctor_pattern_field_types(K) ),
                                                       translate_expr_to_conj(VExpr, ConV, VOut),
                                                       constrain_args(K, Kc, Gc),
                                                       build_branch(ConV, VOut, Out, Then),

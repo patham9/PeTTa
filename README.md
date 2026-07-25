@@ -73,6 +73,21 @@ guard, because inference already elided the checks inside the callee
 unaffected — they are checked, and rejected, exactly as before
 (`examples/fail_declared_sentinel_param.metta`).
 
+A variable bound by a *destructuring* head pattern is a parameter too, and is
+inferred the same way: `(= (tvf (stv $s $c)) (* $s $c))` infers `(-> (stv
+Number Number) Number)` and multiplies without guarding, where before only a
+plain `$s`/`$c` parameter did. The pattern's own type is rebuilt from its
+fields' — that shape is what keeps `(tvf (stv "a" "b"))` an error rather than a
+silently wrong number — and is kept only when it reads back as the shape it was
+built from, so a pattern headed by a declared *type name* (which reads
+positionally, see **Tuple types** below) simply infers nothing. A pattern
+headed by a uniquely declared constructor takes its field types straight from
+that declaration, whether it appears in a head, a `let`/`let*` binder or a
+`case` branch, and needs no type for the scrutinee to do it. See
+`examples/strict_destructured_param.metta`,
+`examples/destructured_param_shapes.metta` and
+`examples/fail_destructured_param_mismatch.metta`.
+
 **Match schemas.** Space reads are typed through declared relation schemas:
 with `(: age (-> String Number Atom))` declared, the pattern variables of
 `(match &self (age $who $n) ...)` acquire `String` and `Number`, so match

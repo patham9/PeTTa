@@ -952,11 +952,16 @@ union_side_elem(X, T) :- ( var(X) -> known_singleton(X, K), list_type(K, T)
                          ; list_elem_type(X, T) ).
 
 %Destructuring bindings: type a pattern's variables from the bound value's
-%known type, e.g. (let (Stats $sum $sq $n) (make-stats) ...):
-bind_pattern_from(Pat, Val) :- ( nonvar(Pat),
-                                 ( var(Val) -> known_singleton(Val, KT)
-                                             ; value_single_type(Val, KT) )
-                                 -> bind_pattern_typed(Pat, KT)
+%known type, e.g. (let (Stats $sum $sq $n) (make-stats) ...). With no type for
+%the value, a pattern headed by a uniquely declared constructor still knows
+%what its own fields are - that is the constructor's declaration talking, not
+%the scrutinee's:
+bind_pattern_from(Pat, Val) :- ( nonvar(Pat)
+                                 -> ( ( var(Val) -> known_singleton(Val, KT)
+                                                  ; value_single_type(Val, KT) ),
+                                      nonvar(KT)                %an open assumption type says nothing yet
+                                      -> bind_pattern_typed(Pat, KT)
+                                       ; ctor_pattern_field_types(Pat) )
                                   ; true ).
 
 %Tolerant variant used where a non-matching pattern must not fail or throw
@@ -1143,10 +1148,16 @@ strict_check_function_typed(F, Args) :- ( strict_mode(true), \+ sub_atom(F, 0, _
 % While an undeclared function's clause is translated, its variable parameters
 % carry fresh assumption type variables; typed call sites in the body bind them
 % by unification. A parameter whose assumption sees conflicting uses is tainted
-% (no knowledge is recorded for it). The harvested types live in an internal
-% store, are never asserted into &self, and are used only to *add* knowledge:
-% eliminating guards, typing call outputs, and satisfying strict mode. Call
-% sites of inferred functions never throw at compile time.
+% (no knowledge is recorded for it). This includes the variables of a
+% destructuring head pattern - they are parameters of the clause too - whose
+% assumptions are then rebuilt into the pattern's own type, the only thing a
+% call site can go on once the body has stopped guarding them.
+%
+% The harvested types live in an internal store, are never asserted into &self,
+% and are used only to *add* knowledge: eliminating guards, typing call
+% outputs, and satisfying strict mode. Call sites of inferred functions never
+% throw at compile time, and demand an inferred type only where the value is
+% visibly of another one (see check_call_arg/5).
 :- dynamic inferred_fn_type/3.     % inferred_fn_type(F, ArgTypes, OutType)
 
 inferred_decl_arity(F, N, ATs, OT) :- inferred_fn_type(F, ATs, OT), length(ATs, N).
@@ -1168,8 +1179,33 @@ begin_clause_inference(F, Args, Assume, saved(OldA, OldD, OldT)) :-
 assume_param_type(Arg, t(Ps, Ts), t(Ps1, [T|Ts])) :- ( var(Arg)
                                                        -> ( known_singleton(Arg, T) -> Ps1 = Ps
                                                           ; add_known_type(Arg, T), Ps1 = [a(Arg, T)|Ps] )
-                                                     ; value_single_type(Arg, T) -> Ps1 = Ps
+                                                     ; value_single_type(Arg, T)
+                                                       -> ctor_pattern_field_types(Arg), Ps1 = Ps
+                                                     %a variable bound by a DESTRUCTURING head pattern is
+                                                     %every bit as much a parameter of the clause, so it
+                                                     %gets the same fresh assumption (the pattern's own
+                                                     %type is rebuilt from those in infer_param_type/4):
+                                                     ; is_list(Arg) -> assume_pattern_vars(Arg, Ps, Ps1)
                                                      ; Ps1 = Ps ).
+
+assume_pattern_vars([], Ps, Ps).
+assume_pattern_vars([A|As], Ps0, Ps) :- ( var(A) -> ( known_singleton(A, _) -> Ps1 = Ps0
+                                                    ; add_known_type(A, Tv), Ps1 = [a(A, Tv)|Ps0] )
+                                        ; is_list(A) -> assume_pattern_vars(A, Ps0, Ps1)
+                                        ; Ps1 = Ps0 ),
+                                        assume_pattern_vars(As, Ps1, Ps).
+
+%A pattern headed by a uniquely declared constructor types its fields from that
+%declaration, whatever the scrutinee's type turns out to be: (: P (-> Number
+%Number Pair)) makes the $a and $b of (= (f (P $a $b)) ...) Numbers. Pure added
+%knowledge - the fields of a value carrying P's tag are what P declared them.
+%A literal field that contradicts the declaration only means this clause head
+%cannot match a well-typed value; inference stays out of that judgement.
+ctor_pattern_field_types(Arg) :- ( is_list(Arg), Arg = [Tag|Fs], atom(Tag), Fs \== [],
+                                   length(Fs, N), findall(ATs, fn_decl_arity(Tag, N, ATs, _), [ATs1])
+                                   -> catch(maplist(bind_param_type, Fs, ATs1),
+                                            error(literal_type_mismatch(_, _), typecheck), true)
+                                    ; true ).
 
 taint_assumption(AV) :- ( catch(b_getval('$assumptions', Pairs), _, fail),
                           member(a(P, _), Pairs), P == AV
@@ -1190,16 +1226,36 @@ assumed_self_decl(F, N, PTs, OutTv) :- catch(b_getval('$assume_decl', D), _, fai
 store_inferred_type(F, Pairs, Args, ExpOut) :- catch(b_getval('$assump_taint', Taints), _, Taints = []),
                                                maplist(infer_param_type(Pairs, Taints), Args, ATs0),
                                                infer_out_type(ExpOut, OT0),
-                                               maplist(normalize_inferred, ATs0, ATs),
+                                               maplist(normalize_inferred_param, ATs0, ATs1),
+                                               maplist(pattern_type_roundtrip, Args, ATs1, ATs),
                                                normalize_inferred(OT0, OT),
                                                ( member(T, [OT|ATs]), T \== '%Undefined%'
                                                  -> merge_inferred(F, ATs, OT) ; true ).
 
+%A structural parameter type is only worth storing if it still ACCEPTS the very
+%pattern it was read off. The two readings of a tuple type (see
+%tagged_tuple_type/3) do not compose freely: (Statement $s $p) under a declared
+%(: Statement Type) infers (Type Number Number), which reads back as a tagged
+%shape demanding the literal atom Type in head position - a claim no value
+%matching that pattern satisfies. Round-tripping the pattern rejects exactly
+%those, whichever way the type was built.
+pattern_type_roundtrip(Arg, T, TN) :- ( \+ is_list(Arg) -> TN = T
+                                      ; T \== '%Undefined%', \+ \+ check_value(Arg, T, ok) -> TN = T
+                                      ; TN = '%Undefined%' ).
+
+%The type of a destructuring parameter is its pattern with each field replaced
+%by the field's inferred type - (stv $s $c) with both fields used as numbers is
+%(stv Number Number). Rebuilding it is not decoration: the fields carry
+%assumption types now, so the body no longer guards them, and this is what
+%keeps a call site checking that (stv "a" "b") is not one of those.
 infer_param_type(Pairs, Taints, Arg, T) :- ( var(Arg) -> ( memberchk_eq(Arg, Taints) -> T = '%Undefined%'
                                                          ; member(a(P, Tv), Pairs), P == Arg -> T = Tv
                                                          ; known_singleton(Arg, K) -> T = K
                                                          ; T = '%Undefined%' )
                                            ; value_single_type(Arg, T0) -> T = T0
+                                           ; is_list(Arg), Arg = [Tag|Fs], atom(Tag), Fs \== [],
+                                             maplist(infer_param_type(Pairs, Taints), Fs, FTs)
+                                             -> T = [Tag|FTs]
                                            ; T = '%Undefined%' ).
 
 infer_out_type(Out, T) :- ( var(Out) -> ( known_singleton(Out, K) -> T = K ; T = '%Undefined%' )
@@ -1213,6 +1269,23 @@ normalize_inferred(T, ['List', ETN]) :- ground(T), list_type(T, ET), !,
                                         normalize_inferred(ET, ETN).
 normalize_inferred(T, T) :- ground(T), is_arrow_type(T), !.
 normalize_inferred(_, '%Undefined%').
+
+%A destructuring parameter's shape is knowledge too, so it survives instead of
+%collapsing - but only if it will be READ BACK as the tagged shape it was built
+%from. (Statement $s $p) under a declared (: Statement Type) rebuilds to
+%(Statement T1 T2), which tagged_tuple_type/3 reads positionally, as a 3-field
+%record whose first field is a Statement: a different, and false, claim about
+%the value. An undefined field collapses the whole shape as well - a partly
+%known tuple type is not a shape any call site can check. Parameters only:
+%their shapes are rebuilt from patterns this file controls and are verified
+%against those patterns afterwards (pattern_type_roundtrip/3), which is not
+%true of an output type read off an arbitrary body expression.
+normalize_inferred_param(T, TN) :- ( is_list(T), T = [Tag|Fs], atom(Tag), Fs \== [],
+                                     maplist(normalize_inferred_param, Fs, FTs),
+                                     \+ memberchk('%Undefined%', FTs),
+                                     TN0 = [Tag|FTs], tagged_tuple_type(TN0, Tag, FTs)
+                                     -> TN = TN0
+                                      ; normalize_inferred(T, TN) ).
 
 %Clauses of the same function are joined position-wise; disagreement widens:
 merge_inferred(F, ATs, OT) :- length(ATs, N),
