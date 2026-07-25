@@ -99,6 +99,24 @@ compiled function to have a declared or inferable type and rejects compilation
 if any residual runtime type guard would be emitted — a machine-checked
 guarantee that the compiled program contains no *implicit* runtime type checks.
 
+**Branches are merged conservatively.** When `if`, `case`, `let`/`let*`,
+`superpose`, `hyperpose` or `collapse` merge several alternatives into one
+value, that value's type is what **every** alternative is known to produce.
+One alternative of undetermined type — a field of an `Expression`, a call to
+an untyped function — makes the merged value undetermined, whatever the other
+alternatives contribute:
+
+```metta
+(: f (-> Expression Bool Number))
+(= (f $x $c) (need (if $c 0.1 $x)))     ; not a Number: $x is arbitrary data
+```
+
+The `0.1` branch is not evidence about the `$x` branch, so this costs a
+runtime guard where the value is used, and `--strict` rejects it. See
+`examples/fail_strict_branch_unknown_arg.metta`,
+`examples/fail_strict_branch_unknown_output.metta` and
+`examples/fail_strict_collapse_unknown_elem.metta`.
+
 **Type ascription.** Genuinely dynamic values (reads from schema-less
 relations, `catch` results, `eval`) can be given an author-stated type with
 `(the Type Expr)`: the checker treats the type as knowledge for everything
@@ -211,6 +229,31 @@ not a rubber stamp: a `superpose` body still does not fit. See
 `examples/strict_det_closure_inferred.metta`,
 `examples/strict_semidet_closure_inferred.metta` and
 `examples/fail_strict_nondet_closure_inferred.metta`.
+
+**Determinism of builtins.** A builtin — a registered symbol backed by a
+Prolog predicate rather than MeTTa equations — is deterministic only if the
+compiler's table says so, and that table was written by reading the
+predicates. Everything not in it claims nothing, so a `-[det]->` body calling
+it is rejected. `(get-atoms &self)` is the reason: it enumerates a space one
+solution per atom, and a body using it is not deterministic no matter how the
+result is discarded (`examples/fail_det_nondet_builtin.metta`,
+`examples/fail_semidet_nondet_builtin.metta`). Arithmetic, comparison,
+boolean, reflection and the total list operations are all in the table and
+carry their `det` as before (`examples/determinism_builtins.metta`);
+`match`, `get-type`, `member`, `is-member` and `callPredicate` are recorded
+nondet, and the higher-order builtins (`maplist`, `foldl`, `map-atom`,
+`filter-atom`, `foldl-atom`) claim nothing because their determinism is their
+closure's.
+
+**A determinism commitment is never deferred to a runtime check.** Nothing a
+runtime type check can inspect tells a det function from a nondet one, so
+where a `-[det]->`/`-[semidet]->` (or, under `--strict-det`, a plain `->`)
+closure is required and the compiler could not *prove* the value fits, it
+rejects at compile time rather than emitting a guard that cannot decide it —
+the same reason a conflicting newtype brand rejects instead of guarding. This
+is why an undeclared function whose clauses do not analyse as deterministic
+cannot be passed to a `-[det]->` parameter
+(`examples/fail_det_closure_unproven_builtin.metta`).
 
 **`-[semidet]->`: partial, but still committed.** `-[semidet]->` is the answer
 to "I want a function that may legitimately have no answer" — a lookup with no

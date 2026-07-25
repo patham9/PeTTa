@@ -298,20 +298,58 @@ variant_union([X|Xs], Ys, U) :- ( variant_member(X, Ys) -> variant_union(Xs, Ys,
                                                          ; variant_union(Xs, [X|Ys], U) ).
 
 %%% Translation-time known types of variables:
+add_known_type(V, T) :- nonvar(T), unknown_candidate(T), !, note_unknown_candidate(V).
 add_known_type(V, T) :- ( get_attr(V, tknown, Cs) -> ( Cs = [K], var(K) -> K = T
                                                       ; variant_member(T, Cs) -> true
                                                       ; put_attr(V, tknown, [T|Cs]) )
                                                    ; put_attr(V, tknown, [T]) ).
 
 known_candidates(V, Cs) :- get_attr(V, tknown, Cs).
-known_singleton(V, K) :- get_attr(V, tknown, [K]).
+%A candidate set containing the unknown marker is NOT a singleton type: some
+%flow into this variable carried a value of undetermined type, so nothing may
+%be discharged from the types the other flows happened to contribute.
+known_singleton(V, K) :- get_attr(V, tknown, [K]), \+ unknown_candidate(K).
 
-%Propagate Val's statically known type(s) into Out (branch and binding flows):
+%%% The unknown-branch marker.
+%
+% A construct that merges several branches into one result (if, case,
+% let/chain, sealed, superpose, hyperpose) records each branch's type as a
+% candidate of the merged variable. A branch whose type the checker cannot
+% determine used to record NOTHING, which made "some recorded candidate fits"
+% - an existential test - look like a proof about the whole disjunction: one
+% typed branch discharged the obligation for all of them, and an untyped
+% branch could then deliver a value of any type where a concrete one was
+% certified. The marker makes the untyped branch visible, so the discharge
+% tests are effectively universal again: a merged variable carrying it is
+% never a known singleton, and an output certification over it falls back to a
+% runtime guard (a hard rejection under --strict).
+unknown_marker('$unknown_branch_type').
+%Never unifies: a candidate list legitimately holds unbound declaration-instance
+%type variables, and testing them must not bind one to the marker.
+unknown_candidate(C) :- unknown_marker(M), C == M.
+
+note_unknown_candidate(V) :- ( var(V) -> unknown_marker(M),
+                                         ( get_attr(V, tknown, Cs)
+                                           -> ( variant_member(M, Cs) -> true
+                                              ; put_attr(V, tknown, [M|Cs]) )
+                                            ; put_attr(V, tknown, [M]) )
+                                       ; true ).
+
+candidates_have_unknown(Cs) :- member(C, Cs), unknown_candidate(C), !.
+
+%Drop the marker; fails if it was there at all, so callers that can make no
+%claim about a partly unknown value simply make none:
+known_candidates_certain(V, Cs) :- known_candidates(V, Cs), \+ candidates_have_unknown(Cs).
+
+%Propagate Val's statically known type(s) into Out (branch and binding flows).
+%A value whose type cannot be determined propagates the unknown marker - that
+%is knowledge too, and the only kind that keeps a merge honest:
 note_candidates(Out, Val) :- ( var(Out)
                                -> ( nonvar(Val) -> ( value_single_type(Val, VT)
-                                                     -> add_known_type(Out, VT) ; true )
+                                                     -> add_known_type(Out, VT)
+                                                      ; note_unknown_candidate(Out) )
                                   ; known_candidates(Val, Cs) -> add_known_types(Out, Cs)
-                                  ; true )
+                                  ; note_unknown_candidate(Out) )
                                 ; true ).
 
 %Explicit type ascription (the Type Expr): the author states the type of a
@@ -322,7 +360,13 @@ note_candidates(Out, Val) :- ( var(Out)
 ascribe_type(V, T, Gs) :- ( var(T) -> Gs = []
                           ; wildcard_type_t(T) -> Gs = []
                           ; var(V) ->
-                              ( known_singleton(V, K), var(K)
+                              %an unknown branch fed this value, but the
+                              %ascription's own runtime guard establishes T
+                              %where the merge could not: take the ascription
+                              %as the answer and drop the marker
+                              ( known_candidates(V, Cs0), candidates_have_unknown(Cs0), ground(T)
+                                -> put_attr(V, tknown, [T]), ascription_guard(V, T, Gs)
+                              ; known_singleton(V, K), var(K)
                                 %the value's only known type is a bare declaration-instance
                                 %variable: narrow it locally WITHOUT binding that variable, so a
                                 %parametric parameter stays universally quantified (its callers
@@ -751,11 +795,26 @@ check_call_arg(Mode, Fun, AV, T, Gs) :- ( var(AV)
 %Open structured types (e.g. (List $a)) still guard their outer shape; only a
 %fully unconstrained type variable needs no check at all:
 type_guard(Fun, AV, T, Gs) :- ( nonvar(T), \+ wildcard_type_t(T)
-                                -> ( strict_mode(true)
+                                -> ( undecidable_arrow_commitment(T)
+                                     -> throw(error(determinism_conflict(Fun, unproven_closure(AV, T)), determinism))
+                                   ; strict_mode(true)
                                      -> throw(error(strict_runtime_typecheck(Fun, typecheck_or_error(AV, T)), typecheck))
                                       ; warn_residual_check(Fun, T),
                                         guard_goal(AV, T, G), Gs = [G] )
                                  ; Gs = [] ).
+
+%A runtime type check cannot count a closure's solutions: nothing it can
+%inspect distinguishes a det function from a nondet one. So a determinism
+%COMMITMENT in a required arrow type is undischargeable at runtime and must
+%not be deferred to a guard - the same reason a conflicting newtype brand
+%rejects rather than guards (brands are erased at runtime, determinism was
+%never there in the first place). Reaching type_guard/4 with such a type means
+%the commitment could not be established statically, so it is rejected here.
+%A plain -> claims nothing unless --strict-det makes it a commitment:
+undecidable_arrow_commitment(T) :- is_arrow_type(T), T = [H|_], arrow_atom_det(H, L),
+                                   ( committed_det(L) -> true
+                                   ; L == plain -> strict_det(true)
+                                   ; fail ).
 
 %Inline the primitive fast path into the compiled goal so hot code only pays a
 %native type test; the reflective check runs only when that test fails:
@@ -1084,11 +1143,17 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
         %quoted CODE is exempt from output checking; a quoted literal is just
         %that literal and is checked like any other value:
         ; nonvar(BodyExpr), BodyExpr = [Q, QV], Q == quote, \+ atomic(QV) -> Gs = []
+        %EVERY branch feeding the result must fit the declared output type. A
+        %branch of undetermined type (the marker) is not one that fits, so it
+        %costs a runtime guard - or a rejection under --strict - exactly as an
+        %entirely untyped body does. Without this, one typed branch discharged
+        %the certification for all of them:
         ; var(ExpOut) ->
             ( known_candidates(ExpOut, Cs) ->
-                ( member(C, Cs), \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT)
+                ( member(C, Cs), \+ unknown_candidate(C),
+                  \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT)
                   -> throw(error(type_conflict(existing(C), required(OT)), typecheck))
-                ; member(C, Cs), \+ type_compat_soft(C, OT)
+                ; member(C, Cs), ( unknown_candidate(C) -> true ; \+ type_compat_soft(C, OT) )
                   -> type_guard(F, ExpOut, OT, Gs)            %possible runtime refinement
                    ; Gs = [] )
             ; type_guard(F, ExpOut, OT, Gs) )
@@ -1111,8 +1176,11 @@ oracle_check(V, T) :- copy_term(T, T2), check_value(V, T2, St),
                       ( St == mismatch
                         -> throw(error(literal_type_mismatch(V, T), typecheck)) ; true ).
 
+%The unknown marker is not a concrete result type, so it never turns a bottom
+%body into a dishonest parametric declaration:
 parametric_output_check(F, ExpOut) :- ( var(ExpOut)
-                                        -> ( known_candidates(ExpOut, Cs), member(C, Cs), nonvar(C)
+                                        -> ( known_candidates(ExpOut, Cs), member(C, Cs),
+                                             nonvar(C), \+ unknown_candidate(C)
                                              -> throw(error(non_parametric_output(F), typecheck)) ; true )
                                          ; throw(error(non_parametric_output(F), typecheck)) ).
 
@@ -1356,10 +1424,208 @@ body_commits(E) :- nonvar(E),
 clause_heads_overlap(ArgsA, ArgsB) :- copy_term((ArgsA, ArgsB), (CA, CB)),
                                       unifiable(CA, CB, _).
 
+%%% Determinism of the builtins (registered funs backed by a Prolog predicate
+%%% rather than MeTTa equations).
+%
+% This table is the ONLY determinism knowledge the checker has about them: a
+% builtin that is not listed is `unspecified`, which is what "never analysed"
+% honestly means. It used to be the opposite - any registered symbol whose
+% Prolog predicate merely existed was assumed det - and that assumed the
+% strongest possible claim about the one part of the system the analysis
+% cannot see. (get-atoms) is the counterexample that motivated the flip: it
+% enumerates a space's clauses, so a -[det]-> function bound to it produced
+% one result per atom in the space.
+%
+% Arity N is the MeTTa argument count; the Prolog predicate has N+1 arguments
+% (the result). Every entry below was read off the predicate's source
+% (src/metta.pl, src/spaces.pl, src/parser.pl, or the SWI library) - a
+% predicate qualifies as det only if it yields exactly one solution and leaves
+% no alternative for the calling convention the compiler emits: argument
+% positions carry values and the last position is a fresh output variable, and
+% a position the type system calls (List T) carries a PROPER list. That second
+% clause is load-bearing for the list builtins - append/3, reverse/2,
+% subtraction-atom and friends recurse on the first argument and would
+% enumerate if handed a partial list - and it is exactly what the (List T)
+% type promises. Nothing here relies on an argument being ground beyond that.
+
+%--- Nondeterministic: more than one solution by construction.
 builtin_call_determinism(superpose, 1, nondet).
+%(get-atoms Space) backtracks over current_predicate/1 and clause/2 -
+%one solution per atom in the space (src/spaces.pl):
+builtin_call_determinism('get-atoms', 1, nondet).
+%match/4 backtracks over the space relation the same way (src/spaces.pl):
+builtin_call_determinism(match, 3, nondet).
+%'get-type'/2 collects candidates through a SOFT cut (*->), so every
+%get_type_candidate/2 solution is offered - and it is dynamic, so user
+%refinement clauses add more (src/metta.pl):
+builtin_call_determinism('get-type', 1, nondet).
+%member(X, L, true) :- member(X, L) - one solution per matching element,
+%and 'is-member' has that same generator in its first clause (src/metta.pl):
+builtin_call_determinism(member, 2, nondet).
+builtin_call_determinism('is-member', 2, nondet).
+%callPredicate calls an arbitrary Prolog goal (src/metta.pl):
+builtin_call_determinism(callPredicate, 1, nondet).
+
+%--- Semidet: at most one solution, but the input may not match.
 %(empty) produces zero results, never two: it is the canonical semidet body,
 %and the reason a -[semidet]-> function can write its fallthrough explicitly:
 builtin_call_determinism(empty, 0, semidet).
+%Single non-total clauses: they fail on a value of the wrong shape
+%(first/2 and the pair selectors want a 2-element list, decons a non-empty
+%one), and nth0/3 fails on an out-of-range index (src/metta.pl):
+builtin_call_determinism(first, 1, semidet).
+builtin_call_determinism('first-from-pair', 1, semidet).
+builtin_call_determinism('second-from-pair', 1, semidet).
+builtin_call_determinism(decons, 1, semidet).
+builtin_call_determinism('decons-atom', 1, semidet).
+builtin_call_determinism('index-atom', 2, semidet).
+%min_list/2 and max_list/2 fail on the empty list (src/metta.pl):
+builtin_call_determinism('min-atom', 1, semidet).
+builtin_call_determinism('max-atom', 1, semidet).
+%last/2 fails on the empty list (library(lists)):
+builtin_call_determinism(last, 1, semidet).
+%nb_getval/2 fails on an unset key (src/metta.pl):
+builtin_call_determinism('get-state', 1, semidet).
+
+%--- Det: exactly one solution, no choicepoint left.
+%Arithmetic and the math builtins are a single `Out is <expr>` clause; they
+%may throw on a non-number, which is not a second solution (src/metta.pl):
+builtin_call_determinism('+', 2, det).
+builtin_call_determinism('-', 2, det).
+builtin_call_determinism('*', 2, det).
+builtin_call_determinism('/', 2, det).
+builtin_call_determinism('%', 2, det).
+builtin_call_determinism(min, 2, det).
+builtin_call_determinism(max, 2, det).
+builtin_call_determinism(exp, 1, det).
+builtin_call_determinism('pow-math', 2, det).
+builtin_call_determinism('log-math', 2, det).
+builtin_call_determinism('sqrt-math', 1, det).
+builtin_call_determinism('abs-math', 1, det).
+builtin_call_determinism('trunc-math', 1, det).
+builtin_call_determinism('ceil-math', 1, det).
+builtin_call_determinism('floor-math', 1, det).
+builtin_call_determinism('round-math', 1, det).
+builtin_call_determinism('sin-math', 1, det).
+builtin_call_determinism('cos-math', 1, det).
+builtin_call_determinism('tan-math', 1, det).
+builtin_call_determinism('asin-math', 1, det).
+builtin_call_determinism('acos-math', 1, det).
+builtin_call_determinism('atan-math', 1, det).
+builtin_call_determinism('isnan-math', 1, det).
+builtin_call_determinism('isinf-math', 1, det).
+%library(quintus) arithmetic wrappers, also a single `Y is f(X)`:
+builtin_call_determinism(sqrt, 1, det).
+builtin_call_determinism(log, 1, det).
+builtin_call_determinism(sin, 1, det).
+builtin_call_determinism(cos, 1, det).
+%Comparisons are one clause whose body is an if-then-else, so exactly one of
+%true/false comes back (src/metta.pl):
+builtin_call_determinism('<', 2, det).
+builtin_call_determinism('>', 2, det).
+builtin_call_determinism('<=', 2, det).
+builtin_call_determinism('>=', 2, det).
+builtin_call_determinism('==', 2, det).
+builtin_call_determinism('!=', 2, det).
+builtin_call_determinism('=', 2, det).
+builtin_call_determinism('=?', 2, det).
+builtin_call_determinism('=alpha', 2, det).
+builtin_call_determinism('=@=', 2, det).
+%clpfd wrappers: posting a constraint succeeds once; the reified comparisons
+%are cut-then-fallback pairs, so exactly one of true/false (src/metta.pl):
+builtin_call_determinism('#+', 2, det).
+builtin_call_determinism('#-', 2, det).
+builtin_call_determinism('#*', 2, det).
+builtin_call_determinism('#div', 2, det).
+builtin_call_determinism('#//', 2, det).
+builtin_call_determinism('#mod', 2, det).
+builtin_call_determinism('#min', 2, det).
+builtin_call_determinism('#max', 2, det).
+builtin_call_determinism('#<', 2, det).
+builtin_call_determinism('#>', 2, det).
+builtin_call_determinism('#=', 2, det).
+builtin_call_determinism('#\\=', 2, det).
+%Boolean operators: bool/1 admits only true/false, which their declared
+%(-> Bool Bool Bool) signature guarantees, and the body is an if-then-else
+%chain covering both (src/metta.pl):
+builtin_call_determinism(and, 2, det).
+builtin_call_determinism(or, 2, det).
+builtin_call_determinism(not, 1, det).
+builtin_call_determinism(xor, 2, det).
+builtin_call_determinism(implies, 2, det).
+%Reflection: one clause each, if-then-else over a mode test; get-metatype's
+%eight clauses are cut-terminated and exhaust the value domain (var, number,
+%string, bool, registered fun, list, atom) (src/metta.pl):
+builtin_call_determinism('is-var', 1, det).
+builtin_call_determinism('is-ground', 1, det).
+builtin_call_determinism('is-expr', 1, det).
+builtin_call_determinism('is-space', 1, det).
+builtin_call_determinism('get-metatype', 1, det).
+%Identity and rendering (src/metta.pl, src/parser.pl):
+builtin_call_determinism(id, 1, det).
+builtin_call_determinism(repr, 1, det).
+builtin_call_determinism(repra, 1, det).
+%Total list operations. Each is either a single always-matching clause or a
+%cut-guarded non_list/1 fallback followed by a total library call
+%(src/metta.pl); is-alpha-member commits with a cut and falls back to false:
+builtin_call_determinism(cons, 2, det).
+builtin_call_determinism('cons-atom', 2, det).
+builtin_call_determinism('car-atom', 1, det).
+builtin_call_determinism('cdr-atom', 1, det).
+builtin_call_determinism('unique-atom', 1, det).
+builtin_call_determinism('alpha-unique-atom', 1, det).
+builtin_call_determinism('sort-atom', 1, det).
+builtin_call_determinism('size-atom', 1, det).
+builtin_call_determinism('exclude-item', 2, det).
+builtin_call_determinism('subtraction-atom', 2, det).
+builtin_call_determinism('intersection-atom', 2, det).
+builtin_call_determinism('is-alpha-member', 2, det).
+%append/3 over a proper first list (src/metta.pl, library(lists)):
+builtin_call_determinism('union-atom', 2, det).
+builtin_call_determinism(append, 2, det).
+%library(lists)/system list predicates, det for a proper input list:
+builtin_call_determinism(sort, 1, det).
+builtin_call_determinism(msort, 1, det).
+builtin_call_determinism(reverse, 1, det).
+builtin_call_determinism(list_to_set, 1, det).
+builtin_call_determinism(length, 1, det).
+builtin_call_determinism(copy_term, 1, det).
+builtin_call_determinism(term_hash, 1, det).
+builtin_call_determinism(atom_chars, 1, det).
+%Effects and state: one solution, the effect is not a choicepoint
+%(src/metta.pl, src/spaces.pl - both 'add-atom'/'remove-atom' clause pairs
+%commit with a cut in the (= ...) case and end in a total fallback):
+builtin_call_determinism('add-atom', 2, det).
+builtin_call_determinism('remove-atom', 2, det).
+builtin_call_determinism('change-state!', 2, det).
+builtin_call_determinism('bind!', 2, det).
+builtin_call_determinism('println!', 1, det).
+builtin_call_determinism('readln!', 0, det).
+builtin_call_determinism(test, 2, det).
+builtin_call_determinism(assert, 1, det).
+builtin_call_determinism('current-time', 0, det).
+builtin_call_determinism('format-time', 1, det).
+builtin_call_determinism('add-translator-rule!', 1, det).
+builtin_call_determinism('remove-translator-rule!', 1, det).
+builtin_call_determinism(import_prolog_function, 1, det).
+builtin_call_determinism('Predicate', 1, det).
+builtin_call_determinism(assertaPredicate, 1, det).
+builtin_call_determinism(assertzPredicate, 1, det).
+builtin_call_determinism(retractPredicate, 1, det).
+%Random draws are impure but single-solution (src/metta.pl):
+builtin_call_determinism('random-int', 2, det).
+builtin_call_determinism('random-float', 2, det).
+%
+%Deliberately NOT listed, and therefore unspecified:
+%  atom_concat/2, concat/2 - atom_concat/3 with both inputs unbound is a
+%    generator over every split of the result, and no declared type rules
+%    that mode out the way (List T) rules out a partial list.
+%  foldl/3, maplist/2..4, 'foldl-atom', 'map-atom', 'filter-atom' - their
+%    determinism is that of the closure they are given, which this table
+%    cannot express.
+%  'py-call', 'import!', eval, reduce, argv, library, exists_file,
+%    'get-mettatype', 'mm2-exec', set_hook - foreign, dynamic, or absent
+%    predicates whose result count is not established here.
 
 function_call_determinism(F, N, Det) :- builtin_call_determinism(F, N, Det), !.
 function_call_determinism(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
@@ -1370,8 +1636,11 @@ function_call_determinism(F, N, Det) :- body_determinism(F, N, Det).
 %without a determinism arrow are analyzed from their translated clauses
 %(bodies deterministic, heads non-overlapping), memoized, and treated as det
 %on cycles (a recursive call cannot introduce what the rest disproves).
-%A registered predicate with no MeTTa clauses is a Prolog builtin: det
-%unless listed in builtin_call_determinism.
+%A registered symbol with no MeTTa clauses is a Prolog builtin, and the only
+%thing known about it is what builtin_call_determinism/3 records: everything
+%else is `unspecified`. Assuming det for a predicate nobody analysed is the
+%strongest claim available about the least visible code in the system, and it
+%certified -[det]-> functions whose bodies backtrack (see (get-atoms ...)).
 :- dynamic det_analysis_cache/3.
 
 body_determinism(F, N, Det) :- det_analysis_cache(F, N, Det0), !, Det = Det0.
@@ -1380,9 +1649,8 @@ body_determinism(F, _, det) :- catch(b_getval('$det_stack', St), _, St = []),
 body_determinism(F, N, Det) :- catch(nb_getval(F, Metas0), _, Metas0 = []),
                                include(arity_meta(N), Metas0, Metas),
                                ( Metas == []
-                                 -> Arity is N + 1,
-                                    ( functor(H, F, Arity), predicate_property(H, defined)
-                                      -> Det = det ; Det = unspecified )
+                                 -> ( builtin_call_determinism(F, N, Det0)
+                                      -> Det = Det0 ; Det = unspecified )
                                   ; catch(b_getval('$det_stack', St), _, St = []),
                                     b_setval('$det_stack', [F|St]),
                                     type_meta_params(F, N, Metas, Metas1),

@@ -204,8 +204,13 @@ translate_expr([H0|T0], Goals, Out) :-
                                      %always a list; a single element type is carried, several
                                      %become a union (an open variable would later unify with a
                                      %concrete requirement and wrongly certify a mixed list):
-                                     collapse_elem_type(EV, ET),
+                                     %an element type that is not certain leaves ET open, which
+                                     %would unify with ANY required element type: record the
+                                     %ignorance explicitly so the (List T) claim is not discharged
+                                     %by the open variable alone
+                                     collapse_elem_type(EV, ET, ElemKnown),
                                      set_out_type(Out, ['List', ET]),
+                                     ( ElemKnown == true -> true ; note_unknown_candidate(Out) ),
                                      append(GsH, [findall(EV, Conj, Out)], Goals)
         ; HV == cut, T = [] -> append(GsH, [(!)], Goals),
                                Out = true
@@ -766,8 +771,17 @@ translate_pattern([H|T], [P|Ps]) :- !, translate_pattern(H, P),
                                        translate_pattern(T, Ps).
 
 % Constructs the goal for a single branch of an if-then-else/case.
+% A branch whose result variable carries no type knowledge is aliased straight
+% onto the shared Out, which would otherwise let it inherit an EARLIER
+% branch's candidates and vanish from the merge. Its ignorance is recorded
+% first (see note_unknown_candidate/1) so the merged variable stays honest:
 build_branch(true, Val, Out, (Out = Val)) :- !, note_candidates(Out, Val).
-build_branch(Con, Val, Out, Goal) :- var(Val) -> Val = Out, Goal = Con
+build_branch(Con, Val, Out, Goal) :- var(Val) -> ( known_candidates(Val, _) -> true
+                                                                             ; Unknown = yes ),
+                                                 Val = Out,
+                                                 ( Unknown == yes -> note_unknown_candidate(Out)
+                                                                   ; true ),
+                                                 Goal = Con
                                                ; note_candidates(Out, Val),
                                                  Goal = (Val = Out, Con).
 
@@ -811,10 +825,16 @@ foldall_out_type(AFV, Init, Out) :- ( atom(AFV),
                                       -> set_out_type(Out, OT1)
                                        ; true ).
 
-collapse_elem_type(EV, ET) :- ( var(EV), known_candidates(EV, Cs)
-                                -> ( Cs = [C1] -> ET = C1 ; ET = ['|'|Cs] )
-                              ; nonvar(EV), value_single_type(EV, ET0) -> ET = ET0
-                              ; true ).
+%known_candidates_certain/2 refuses a candidate set containing the unknown
+%marker: one alternative of undetermined type makes the whole element type
+%unknown, and a (List T) claim over it would be exactly the certification the
+%unknown alternative can break:
+collapse_elem_type(EV, ET, Known) :- ( var(EV), known_candidates_certain(EV, Cs)
+                                       -> ( Cs = [C1] -> ET = C1 ; ET = ['|'|Cs] ),
+                                          Known = true
+                                     ; nonvar(EV), value_single_type(EV, ET0) -> ET = ET0,
+                                                                                 Known = true
+                                     ; Known = false ).
 
 %Build A ; B ; C ... from a list:
 disj_list([G], G).
