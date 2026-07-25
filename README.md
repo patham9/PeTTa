@@ -166,6 +166,21 @@ nondeterminism. Result cardinality is a total order: `-[det]->` (exactly one)
 < `-[semidet]->` (zero or one) < `-[nondet]->` (any), and a closure fits an
 arrow that allows at least as many results as it can produce.
 
+**Inferred closure determinism (in every mode).** A closure over an *undeclared*
+function — an inline `|->` lambda, or a bare/underapplied reference to a function
+with no arrow declaration — has no written arrow, so the compiler derives one
+from the same clause-set analysis: a body that provably yields exactly one result
+gets `-[det]->`, one that may fail but never branch gets `-[semidet]->`, and
+anything unproven claims nothing. That proof is worth the same in every mode:
+`--strict-det` exists to force a determinism claim out of code that made none,
+not to be a precondition for checking one you already wrote. So passing an inline
+det lambda to a `-[det]->` parameter resolves at compile time under plain
+`--strict` — no residual runtime check for `--strict` to reject. It is a proof,
+not a rubber stamp: a `superpose` body still does not fit. See
+`examples/strict_det_closure_inferred.metta`,
+`examples/strict_semidet_closure_inferred.metta` and
+`examples/fail_strict_nondet_closure_inferred.metta`.
+
 **`-[semidet]->`: partial, but still committed.** `-[semidet]->` is the answer
 to "I want a function that may legitimately have no answer" — a lookup with no
 entry, a division by zero, a parse that does not apply. Its body is checked

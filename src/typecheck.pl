@@ -572,13 +572,23 @@ tuple_fields_status([F|Fs], [T|Ts], St) :- elem_status(F, T, S1),
                                              ; St = S2 ) ).
 
 %Arrow types of closures over inferred (undeclared) functions:
-%Inference itself makes no determinism claim; under --strict-det an inferred
-%arrow is det only when the clause-set analysis proves it (the same
-%transitive-evidence rule calls use), otherwise conservatively nondet:
-inferred_arrow_head(F, N, H) :- ( strict_det(true)
-                                  -> ( catch((body_determinism(F, N, D), D == det), _, fail)
-                                       -> H = (->) ; det_arrow_head(nondet, H) )
-                                   ; H = (->) ).
+%Inference makes no determinism claim by itself, but the clause-set analysis
+%(the same transitive-evidence rule calls use) may PROVE one. That proof is
+%worth exactly as much in every mode - --strict-det exists to force a
+%determinism claim out of you, not to be a precondition for checking one you
+%already wrote - so it runs unconditionally and, when it commits to det or
+%semidet, the inferred arrow carries that real head. A committed head fits
+%every slot a plain -> fits (see det_level_fits/2), so this only ever admits
+%more. With no committed proof the old behaviour stands: conservatively
+%nondet under --strict-det, an uncommitted plain -> otherwise.
+committed_determinism(det).
+committed_determinism(semidet).
+
+inferred_arrow_head(F, N, H) :-
+    ( catch(( body_determinism(F, N, D), committed_determinism(D) ), _, fail)
+      -> det_arrow_head(D, H)
+    ; strict_det(true) -> det_arrow_head(nondet, H)
+    ; H = (->) ).
 
 inferred_value_candidates(V, Cs) :- atom(V), !,
                                     findall([H|Xs], ( inferred_fn_type(V, ATs, OT),
