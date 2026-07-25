@@ -765,14 +765,21 @@ build_branch(Con, Val, Out, Goal) :- var(Val) -> Val = Out, Goal = Con
                                                ; note_candidates(Out, Val),
                                                  Goal = (Val = Out, Con).
 
-%Translate case expression recursively into nested if:
-translate_case([[K,VExpr]|Rs], Kv, Out, Goal, KGo) :- ( var(Kv), known_singleton(Kv, KT)
-                                                        -> bind_pattern_typed(K, KT) ; true ),
+%Translate case expression recursively into nested if. The branches are
+%compiled to a nested if-then-else, so case is first-match/COMMITTED: a value
+%matched by an earlier branch never reaches a later one. Prior carries the
+%earlier branches' patterns (source order) so the typechecker may use that
+%exclusion when narrowing a union - see narrowing_sound/4.
+translate_case(Pairs, Kv, Out, Goal, KGo) :- translate_case(Pairs, Kv, Out, Goal, KGo, []).
+
+translate_case([[K,VExpr]|Rs], Kv, Out, Goal, KGo, Prior) :-
+                                                      ( var(Kv), known_singleton(Kv, KT)
+                                                        -> bind_pattern_typed(K, KT, Prior) ; true ),
                                                       translate_expr_to_conj(VExpr, ConV, VOut),
                                                       constrain_args(K, Kc, Gc),
                                                       build_branch(ConV, VOut, Out, Then),
                                                       ( Rs == [] -> Goal = ((Kv = Kc) -> Then), KGi=[]
-                                                                  ; translate_case(Rs, Kv, Out, Next, KGi),
+                                                                  ; translate_case(Rs, Kv, Out, Next, KGi, [K|Prior]),
                                                                     Goal = ((Kv = Kc) -> Then ; Next) ),
                                                       append([Gc,KGi], KGo).
 

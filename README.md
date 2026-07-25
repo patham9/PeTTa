@@ -87,12 +87,50 @@ the containing function and the checked type. Combined with `--strict` (which
 already forbids the implicit ones) a warning-free compile certifies that the
 program contains no runtime type checks at all.
 
+**Structural tuple types.** A parenthesized type describes an expression, in
+one of two readings — and which one you get is decided by the *declaration* of
+its head atom, not by how the atom is spelled:
+
+- **Tagged** — the value must carry the head as a literal atom. Chosen when the
+  head is a declared constructor of matching arity, or when it has no type
+  declaration at all. `(STV Number Number)` with `(: STV (-> Number Number TV))`
+  declared, and `(Stats Number Number Number)` with `Stats` undeclared, both
+  describe the three-element expressions `(STV 0.5 0.8)` and `(Stats 1.0 2.0 3)`.
+- **Positional** — an n-element record whose i-th element has the i-th listed
+  type, head included. Chosen when the head is not an atom (`($value Number)`),
+  is a primitive or wildcard type (`(Number Number)`), or is an atom declared as
+  something *other* than a constructor of that arity — typically a type name:
+
+```metta
+(: Statement Type)   (: KBContext Type)   (: TV Type)
+
+(: fact-conf (-> (Statement KBContext TV) Number))   ; three fields
+(= (fact-conf ($_statement $_context $tv)) (tv-conf $tv))
+```
+
+So: declare the field types of a positional tuple, and leave a tag undeclared
+(or declare it as a constructor). See `examples/strict_tuple_types.metta` and
+`examples/strict_positional_tuple_types.metta`.
+
 **Union types.** A heterogeneous position can declare its alternatives with
 `(| T1 T2 ...)` — for example `(List (| (CPU %Undefined% %Undefined%
 %Undefined%) (: %Undefined% %Undefined% %Undefined% TV)))` for a mixed
 execution list. A value fits a union if it fits some member, and `case` or
 clause-head patterns narrow to the member their shape selects, typing the
 pattern's variables. Unions are declared, never inferred.
+
+A *tagged* pattern narrows by its tag. An *untagged* one — `($type $ctx $prf
+$tv)` — only counts elements, which by itself proves nothing: another member's
+constructor may build a value of exactly that width. Such a pattern narrows
+only when every other member is ruled out, either because no constructor of it
+has that width, or because an earlier branch of the same `case` already
+consumed all of them (`case` is first-match: the branches compile to a nested
+if-then-else, so a value matched earlier never reaches a later branch). Move
+the untagged branch first and the narrowing is refused. Both directions are
+pinned by `examples/strict_union_prior_branch_narrowing.metta` and
+`examples/fail_strict_union_var_branch_first.metta`. The exclusion reads the
+constructor set as it stands at that point in the compilation, so declare a
+type's constructors before the code that matches on it.
 
 **Erased nominal newtypes.** `(: KB (Newtype Expression))` declares a
 distinct compile-time role over an existing representation: nothing is

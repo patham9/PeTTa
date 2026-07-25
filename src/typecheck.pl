@@ -458,8 +458,9 @@ check_value(V, T, St) :- is_arrow_type(T), !,
 %Structural tuple types (Tag T1 ... Tn): the value must carry the same tag
 %and arity, and its fields check recursively. A primitive or wildcard atom in
 %head position is a type, not a tag - ($a Number) unified to (Number Number)
-%is an untagged pair, handled by the next clause:
-check_value(V, T, St) :- T = [Tag|FieldTs], user_atom_type(Tag), !,
+%is an untagged pair, handled by the next clause. See tagged_tuple_type/3 for
+%when a head atom is a tag and when it is the first field's type:
+check_value(V, T, St) :- tagged_tuple_type(T, Tag, FieldTs), !,
                          ( is_list(V) -> ( V = [VTag|Fields], VTag == Tag, same_length(Fields, FieldTs)
                                            -> tuple_fields_status(Fields, FieldTs, St)
                                             ; St = mismatch )
@@ -564,6 +565,38 @@ primitive_type('Bool').
 user_atom_type(T) :- atom(T), \+ primitive_type(T), \+ wildcard_type(T).
 tuple_type(C) :- is_list(C), C \= [->|_], C \= ['List', _].
 
+%%% Tagged vs positional structural tuple types.
+%
+% A type of shape (H T1 ... Tn) is read in one of two ways, and the reading is
+% driven by H's DECLARATION rather than by "H looks like a name":
+%
+%   TAGGED - the value must be the expression (H V1 ... Vn), carrying the
+%   literal atom H, with Vi : Ti. Chosen when H is a declared constructor of
+%   exactly n arguments - fn_decl_arity(H, n, _, _), the same discipline
+%   structural_pattern_fields/4 uses - or when H carries NO type declaration
+%   at all (an anonymous structural tag: (Stats Number Number Number)).
+%
+%   POSITIONAL - the value is any n+1 element expression whose i-th element
+%   has the i-th listed type, H included. Chosen when the head is not an atom
+%   (($v Number)), is a primitive or wildcard type ((Number Number)), or is an
+%   atom DECLARED as something other than an n-ary constructor - typically a
+%   type name, (: Statement Type). Naming a declared type in head position can
+%   only mean "field 1 has this type", so (Statement KBContext Proof TV) is a
+%   4-field record, not a tuple tagged with the atom Statement.
+%
+% Consequence for users: declare the field types of a positional tuple. An
+% undeclared head atom keeps the legacy tagged reading.
+tagged_tuple_type(T, Tag, FieldTs) :- nonvar(T), T = [Tag|FieldTs],
+                                      atom(Tag), user_atom_type(Tag),
+                                      \+ is_arrow_type(T), \+ is_union(T), \+ list_type(T, _),
+                                      length(FieldTs, N),
+                                      ( fn_decl_arity(Tag, N, _, _) -> true
+                                                                     ; \+ type_name_declared(Tag) ).
+
+type_name_declared(Tag) :- ( declared_value_type(Tag, _) -> true
+                           ; declared_newtype(Tag, _) -> true
+                           ; declared_fn_type(Tag, _, _, _) ).
+
 %With an unresolved element type variable, a heterogeneous list is legal: the
 %element type resolves to the common element type, or stays unconstrained.
 list_elems_status(Es, ET, St) :- var(ET), !, St = ok,
@@ -662,7 +695,7 @@ runtime_type_ok(V, T) :- is_union(T), !, T = ['|'|Ms],
                          member(M, Ms), runtime_type_ok(V, M), !.
 %Newtypes are erased: at runtime only the representation exists.
 runtime_type_ok(V, T) :- atom(T), declared_newtype(T, R), !, runtime_type_ok(V, R).
-runtime_type_ok(V, T) :- T = [Tag|FieldTs], user_atom_type(Tag), !,
+runtime_type_ok(V, T) :- tagged_tuple_type(T, Tag, FieldTs), !,
                          is_list(V), V = [VTag|Fields], VTag == Tag,
                          same_length(Fields, FieldTs),
                          runtime_tuple_ok(Fields, FieldTs).
@@ -755,7 +788,7 @@ pattern_selects_member(P, M) :- nonvar(M), nonvar(P),
                                 ( list_type(M, _) -> ( P == [] ; P = [C|_], C == cons ; is_list(P) )
                                 ; atom(M) -> \+ \+ structural_pattern_fields(P, M, _, _)
                                 ; is_list(M), is_list(P)
-                                  -> ( M = [Tag|FTs], user_atom_type(Tag)
+                                  -> ( tagged_tuple_type(M, Tag, FTs)
                                        -> P = [Tag2|Fs], Tag2 == Tag, same_length(Fs, FTs)
                                         ; same_length(P, M) )
                                 ; fail ).
@@ -766,13 +799,13 @@ pattern_selects_member(P, M) :- nonvar(M), nonvar(P),
 %union discriminator (see strict_tuple_types.metta):
 pattern_selects_member_tagged(P, M) :- nonvar(M), nonvar(P), P = [Tag|Fs], atom(Tag),
                                        ( atom(M) -> \+ \+ structural_pattern_fields(P, M, _, _)
-                                       ; is_list(M), M = [Tag2|FTs], Tag2 == Tag,
-                                         user_atom_type(Tag), same_length(Fs, FTs) ).
+                                       ; tagged_tuple_type(M, Tag2, FTs), Tag2 == Tag,
+                                         same_length(Fs, FTs) ).
 
 %A tagged pattern (Tag P1 ... Pn) against either the structural tuple type
 %(Tag T1 ... Tn) or a nominal type produced by Tag's constructor declaration:
 structural_pattern_fields(Arg, T, Fields, FieldTs) :- is_list(Arg), Arg = [Tag|Fields], atom(Tag), nonvar(T),
-                                                      ( T = [Tag2|FieldTs], Tag2 == Tag,
+                                                      ( tagged_tuple_type(T, Tag2, FieldTs), Tag2 == Tag,
                                                         same_length(Fields, FieldTs) -> true
                                                       ; atom(T), length(Fields, N),
                                                         findall(ATs-OT, fn_decl_arity(Tag, N, ATs, OT), [FieldTs-OT1]),
@@ -828,12 +861,22 @@ bind_pattern_from(Pat, Val) :- ( nonvar(Pat),
 
 %Tolerant variant used where a non-matching pattern must not fail or throw
 %(case branches: a wrong pattern just never matches at runtime):
-bind_pattern_typed(P, T) :- ( var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
+bind_pattern_typed(P, T) :- bind_pattern_typed(P, T, []).
+
+%bind_pattern_typed(+Pattern, +Type, +PriorPatterns). PriorPatterns are the
+%patterns of EARLIER branches of the same case, in source order, and are empty
+%for every other caller (clause heads, let destructuring, meta typing) - those
+%are not first-match. They are consulted only for the top-level pattern; field
+%patterns recurse with [], since what an earlier branch matched at the top says
+%nothing about a nested field.
+bind_pattern_typed(P, T, Prior) :-
+                            ( var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
                             ; is_union(T), T = ['|'|Ms]        %a pattern narrows to the member it selects
-                              -> ( findall(M, ( member(M, Ms), pattern_selects_member(P, M) ), [M1])
-                                   -> bind_pattern_typed(P, M1)
+                              -> ( findall(M, ( member(M, Ms), pattern_selects_member(P, M) ), [M1]),
+                                   narrowing_sound(P, Ms, M1, Prior)
+                                   -> bind_pattern_typed(P, M1, Prior)
                                  ; findall(M, ( member(M, Ms), pattern_selects_member_tagged(P, M) ), [M2])
-                                   -> bind_pattern_typed(P, M2) ; true )
+                                   -> bind_pattern_typed(P, M2, Prior) ; true )
                             ; list_type(T, ET), P = [C, H, R], C == cons
                               -> bind_pattern_typed(H, ET),    %source-form (cons H R) destructuring
                                  bind_pattern_typed(R, ['List', ET])
@@ -846,6 +889,70 @@ bind_pattern_typed(P, T) :- ( var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> ad
                               \+ is_arrow_type(T)
                               -> maplist(bind_pattern_typed, P, T)
                             ; true ).
+
+%%% Soundness gate on union narrowing by shape.
+%
+%A pattern that carries TAG evidence for the member it selected - its head is
+%that member's tag, or a declared constructor of it - says something real
+%about the value, and narrows as it always has.
+%
+%Without that evidence (a variable head: ($_type ($_kbid $_ctx $_vars) $prf
+%$tv), or an atom head that is nobody's constructor) the pattern selected the
+%member purely by element count, which alone is unsound: another member's
+%constructor may build a value of exactly that count (a Goal is
+%(CPU $f $a $r), also four elements). Narrowing is then admissible only when
+%every OTHER member is ruled out - see union_member_excluded/3.
+narrowing_sound(P, _, M1, _) :- pattern_selects_member_tagged(P, M1), !.
+narrowing_sound(P, Ms, _, Prior) :- is_list(P), length(P, N),
+                                    forall( ( member(M, Ms), \+ pattern_selects_member(P, M) ),
+                                            union_member_excluded(M, N, Prior) ).
+
+%union_member_excluded(+Member, +N, +PriorPatterns): no value of Member can be
+%an N-element expression here. Either
+%  (a) by ARITY - Member has no constructor that builds N elements, or
+%  (b) because every constructor of Member that does was already consumed by an
+%      EARLIER branch of the same case. case is first-match/committed
+%      (translate_case compiles to nested if-then-else), so such a value can
+%      never reach this branch.
+%LIMITATION: (a) reads the constructor set as it stands right now. A
+%constructor for Member declared in a LATER file (or a later form) would
+%invalidate an exclusion already made; unlike get-type extensions there is no
+%single hook to gate on, and the already-compiled clause is not revisited.
+%Declare a type's constructors before the code that matches on it.
+union_member_excluded(M, _, _) :- var(M), !, fail.
+union_member_excluded(M, _, _) :- is_arrow_type(M), !.       %a closure is not an expression
+union_member_excluded(M, _, _) :- list_type(M, _), !, fail.  %(List T) admits every length
+union_member_excluded(M, N, Prior) :- is_union(M), !, M = ['|'|Ms],
+                                      forall(member(M2, Ms), union_member_excluded(M2, N, Prior)).
+union_member_excluded(M, N, Prior) :- is_list(M), !,
+        ( tagged_tuple_type(M, Tag, FieldTs)
+          -> ( length(M, N) -> length(FieldTs, K), prior_consumed_ctor(Prior, Tag, K) ; true )
+           ; length(M, LM), LM =\= N ).      %positional member of a different width
+union_member_excluded(M, N, Prior) :- atom(M), !,
+        ( wildcard_type(M) -> fail           %Atom/Expression admit anything
+        ; declared_newtype(M, R) -> union_member_excluded(R, N, Prior)
+        ; primitive_type(M) -> true          %an expression is not a Number/String/Bool
+        ; N =:= 0 -> true                    %() is no constructor application
+        ; K is N - 1,
+          forall(member_ctor(M, K, C), prior_consumed_ctor(Prior, C, K)) ).
+union_member_excluded(_, _, _) :- fail.
+
+%A declared function whose result is (an instance of) the nominal type M and
+%whose application therefore has K+1 elements. Deliberately over-approximate:
+%defined functions reduce away and never survive as values, but counting them
+%only ever BLOCKS an exclusion. A wildcard output claims nothing, so it does
+%not block:
+member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
+                        nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).
+
+%An earlier branch consumed EVERY (Ctor V1 ... Vk) value: its pattern is
+%headed by Ctor at that arity and its arguments are distinct variables, so the
+%match cannot fail. A pattern like (CPU foo $a $r) constrains a field and
+%consumes nothing.
+prior_consumed_ctor(Prior, Ctor, K) :- member(P0, Prior), nonvar(P0), is_list(P0),
+                                       P0 = [H|As], H == Ctor,
+                                       length(As, K), maplist(var, As),
+                                       sort(As, Distinct), length(Distinct, K), !.
 
 %Check the clause body's inferred output type against the declared output type:
 clause_output_goals(_, none, _, _, []) :- !.
