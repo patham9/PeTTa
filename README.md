@@ -128,9 +128,21 @@ consumed all of them (`case` is first-match: the branches compile to a nested
 if-then-else, so a value matched earlier never reaches a later branch). Move
 the untagged branch first and the narrowing is refused. Both directions are
 pinned by `examples/strict_union_prior_branch_narrowing.metta` and
-`examples/fail_strict_union_var_branch_first.metta`. The exclusion reads the
-constructor set as it stands at that point in the compilation, so declare a
-type's constructors before the code that matches on it.
+`examples/fail_strict_union_var_branch_first.metta`.
+
+*Constructor* here means what it means everywhere else in PeTTa: a declared
+symbol with **no** equations, which therefore stays literal data. A declared
+symbol that has equations is a function — `(make-goal $f $a $r)` is rewritten
+at the call site and no such expression ever survives as a value — so a helper
+that merely *returns* the type does not count as one of its constructors and
+does not block an exclusion. Give that same helper a declaration but no
+equation and it becomes a genuine constructor that does block. See
+`examples/strict_union_reducible_helper_not_ctor.metta` and
+`examples/fail_strict_union_undefined_second_ctor.metta`. Definition order
+inside one file is irrelevant (definedness is recorded in the parse prepass),
+but the exclusion otherwise reads the constructor set as it stands at that
+point in the compilation, so declare a type's constructors before the code
+that matches on it.
 
 **Erased nominal newtypes.** `(: KB (Newtype Expression))` declares a
 distinct compile-time role over an existing representation: nothing is

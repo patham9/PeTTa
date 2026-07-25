@@ -937,12 +937,24 @@ union_member_excluded(M, N, Prior) :- atom(M), !,
           forall(member_ctor(M, K, C), prior_consumed_ctor(Prior, C, K)) ).
 union_member_excluded(_, _, _) :- fail.
 
-%A declared function whose result is (an instance of) the nominal type M and
-%whose application therefore has K+1 elements. Deliberately over-approximate:
-%defined functions reduce away and never survive as values, but counting them
-%only ever BLOCKS an exclusion. A wildcard output claims nothing, so it does
-%not block:
+%A CONSTRUCTOR of the nominal type M taking K arguments, so its applications
+%have K+1 elements. PeTTa's constructor convention is the one
+%declared_undefined_atom/2 (translator.pl) already implements: a declared
+%symbol with NO equations stays literal data, one with equations is always
+%rewritten at the call site and never survives as a value. So a declaration
+%alone is not enough - \+ fun(C) is what makes C data. Counting reducible
+%helpers here would only ever BLOCK an exclusion, never grant a wrong one, but
+%it blocks far too much: any (= (make-goal $f $a $r) (CPU $f $a $r)) would
+%stop CPU/3 from being Goal's only constructor. A wildcard output claims
+%nothing, so it does not block either.
+%The definedness flag is set early enough: parse_form/2 (filereader.pl)
+%register_fun's every (= (F ...) ...) of a file in the parse prepass, before
+%any clause of that file is compiled, so definition-below-use is fine. A
+%definition arriving from a LATER file only ever unblocks an exclusion that
+%was conservatively refused, and recompile_late_uses/1 revisits the clauses
+%that saw the symbol as data.
 member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
+                        \+ fun(C),
                         nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).
 
 %An earlier branch consumed EVERY (Ctor V1 ... Vk) value: its pattern is
