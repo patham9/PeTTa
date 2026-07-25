@@ -691,27 +691,61 @@ arg_statically_ok(AV, T) :- \+ \+ ( var(AV) -> ( known_singleton(AV, K) -> type_
                                                ; ( var(T) -> true ; wildcard_type_t(T) ) )
                                              ; check_value(AV, T, ok) ).
 
-%%% Effectful call-site argument checking, one arg. Mode 'declared' throws on
-%%% literal mismatches; mode 'inferred' only ever adds knowledge and guards:
+%%% Effectful call-site argument checking, one arg.
+%
+% The Mode is the PROVENANCE of the required type, and it decides what failing
+% to establish that type at the call site may cost:
+%
+%   declared - the type is a promise the author wrote down, so it is a
+%   requirement: a static mismatch is a compile error and anything unresolved
+%   becomes a runtime guard.
+%
+%   inferred - the type was reconstructed from how the callee's body happens
+%   to USE the parameter, which is not the same thing as what the callee
+%   REQUIRES of it. In
+%
+%       (= (score $current $cand) (if (== $current none) $cand (max $cand $current)))
+%
+%   $current is inferred Number from the else branch, but the function
+%   explicitly handles none and (score none 0.42) is a correct program. A
+%   requirement is therefore only imposed where the compiler can see the value
+%   is definitely of an incompatible type; where it merely cannot tell - an
+%   undeclared atom like none, an untyped variable - inference stays silent
+%   rather than demanding a type the callee never asked for. This is the
+%   README's contract: inferred types add knowledge, they do not reject
+%   programs that would otherwise run.
+%
+%   The definite-conflict guard is kept deliberately. It is what still catches
+%   (f "a") against an inferred (= (f $x) (+ $x 1)): inference ELIDED the
+%   guard inside f's body, so with no check at all that call quietly computes
+%   98 (SWI reads a one-character string as its character code) instead of
+%   raising a type error. Dropping a false rejection must not buy a silent
+%   wrong answer.
 check_call_arg(Mode, Fun, AV, T, Gs) :- ( var(AV)
                                           -> ( known_singleton(AV, K)
                                                -> ( nonvar(T), wildcard_type_t(T) -> Gs = []  %wildcards carry no knowledge
                                                   ; type_unify(K, T) -> Gs = []
                                                   %conflicting brands cannot be deferred to a runtime
-                                                  %guard - newtypes are erased there - so they reject now:
+                                                  %guard - newtypes are erased there - so they reject
+                                                  %now, but only on a promised type:
                                                   ; atom(T), declared_newtype(T, _), atom(K), declared_newtype(K, _)
-                                                    -> throw(error(type_conflict(existing(K), required(T)), typecheck))
+                                                    -> ( Mode == declared
+                                                         -> throw(error(type_conflict(existing(K), required(T)), typecheck))
+                                                          ; taint_assumption(AV), Gs = [] )
                                                   ; taint_assumption(AV),  %known conflict: runtime error carries the value
                                                     type_guard(Fun, AV, T, Gs) )
                                              ; var(T) -> Gs = []
                                              ; wildcard_type_t(T) -> Gs = []
+                                             %an untyped value is not evidence of a wrong one:
+                                             ; Mode == inferred -> Gs = []
                                              ; type_guard(Fun, AV, T, Gs) )
-                                        ; check_value(AV, T, St),
+                                        ; check_value(AV, T, St),   %also binds an open T: knowledge
                                           ( St == ok -> Gs = []
                                           ; St == mismatch
                                             -> ( Mode == declared
                                                  -> throw(error(literal_type_mismatch(AV, T), typecheck))
                                                   ; type_guard(Fun, AV, T, Gs) )
+                                          ; Mode == inferred -> Gs = []
                                           ; type_guard(Fun, AV, T, Gs) ) ).
 
 %Open structured types (e.g. (List $a)) still guard their outer shape; only a
@@ -730,7 +764,9 @@ guard_goal(AV, 'String', ( string(AV) -> true ; typecheck_or_error(AV, 'String')
 guard_goal(AV, 'Bool', ( ( AV == true ; AV == false ) -> true ; typecheck_or_error(AV, 'Bool') )) :- !.
 guard_goal(AV, T, typecheck_or_error(AV, T)).
 
-apply_call_args(Mode, Fun, AVs, ATs, Gs) :- ( same_call_var_conflict(AVs, ATs) -> Gs = [fail]
+%Compiling a call to `fail` is a rejection too - a silent one - so it also
+%needs a type the author actually promised (see check_call_arg/5):
+apply_call_args(Mode, Fun, AVs, ATs, Gs) :- ( Mode == declared, same_call_var_conflict(AVs, ATs) -> Gs = [fail]
                                             ; maplist(check_call_arg(Mode, Fun), AVs, ATs, Gss),
                                               append(Gss, Gs) ).
 

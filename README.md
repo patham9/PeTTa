@@ -53,9 +53,25 @@ by hand — about twice as fast as the untyped translation was before.
 **Inference.** Undeclared functions get local type inference (parameters are
 inferred from how the body uses them, including through self-recursion).
 Inferred types only ever *add* knowledge — they eliminate guards, type call
-outputs, and enable the fused code generation — but never reject a program:
-a call that statically mismatches an inferred type fails at run time exactly
-as it would have without inference.
+outputs, and enable the fused code generation — and, unlike a declaration,
+they are never *demanded* of callers. How a body uses a parameter is not what
+it requires of one: in
+
+```metta
+(= (score $current $cand) (if (== $current none) $cand (max $cand $current)))
+```
+
+`$current` is inferred `Number` from the branch the sentinel test rules out,
+so `(score none 0.42)` is a correct program and runs — a declared parameter
+type would (rightly) reject it. Inference stays silent wherever the compiler
+cannot see that a value is definitely of another type: no compile error, no
+strict-mode rejection and no runtime guard, so nothing fails that would not
+have failed without inference (`examples/inferred_sentinel_param.metta`). An
+argument it *can* see is definitely mismatched still fails, at the call site's
+guard, because inference already elided the checks inside the callee
+(`examples/fail_inferred_literal_mismatch.metta`). Declared types are
+unaffected — they are checked, and rejected, exactly as before
+(`examples/fail_declared_sentinel_param.metta`).
 
 **Match schemas.** Space reads are typed through declared relation schemas:
 with `(: age (-> String Number Atom))` declared, the pattern variables of
