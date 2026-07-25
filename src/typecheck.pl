@@ -1590,6 +1590,12 @@ combine_pattern_list([E|Es], Result) :- deterministic_pattern(E, R1),
 %%% rather than a per-function promise, and holding every -> to totality would
 %%% reject most partial helpers in the standard library.
 %%%
+%%% Because the promise is per-function and written down, it is checked in
+%%% EVERY mode - like the overlap and body-determinism checks an explicit
+%%% -[det]-> already gets flaglessly. --strict-det forces you to make the
+%%% determinism claim; it is not what makes a claim you already made mean
+%%% something. If you did not mean det, write -> and nothing is checked.
+%%%
 %%% This runs as a per-file PREPASS over the parsed forms (filereader.pl), for
 %%% the same reason type declarations are pre-cached there: exhaustiveness is a
 %%% property of the WHOLE clause set, and clauses arrive one form at a time -
@@ -1598,15 +1604,13 @@ combine_pattern_list([E|Es], Result) :- deterministic_pattern(E, R1),
 %%% files count too (stored_clause_head/3), but a function whose clauses are
 %%% split across files is still judged on what the current file can see.
 det_exhaustiveness_prepass(ParsedForms) :-
-    ( strict_det(true)
-      -> findall(F/N, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N) ), Keys0),
-         sort(Keys0, Keys),
-         %value declarations are order-sensitive knowledge atoms, so unlike
-         %arrow declarations they are NOT pre-cached - the file's own nullary
-         %constructors are read straight from its forms instead:
-         findall(C-T, parsed_value_decl(ParsedForms, C, T), Consts),
-         forall(member(F/N, Keys), check_det_exhaustive_group(ParsedForms, Consts, F, N))
-       ; true ).
+    findall(F/N, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N) ), Keys0),
+    sort(Keys0, Keys),
+    %value declarations are order-sensitive knowledge atoms, so unlike
+    %arrow declarations they are NOT pre-cached - the file's own nullary
+    %constructors are read straight from its forms instead:
+    findall(C-T, parsed_value_decl(ParsedForms, C, T), Consts),
+    forall(member(F/N, Keys), check_det_exhaustive_group(ParsedForms, Consts, F, N)).
 
 parsed_clause_head(ParsedForms, Line, Str, F, Args) :-
     member(parsed(function, Str, Line, Form), ParsedForms),

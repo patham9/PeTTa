@@ -197,10 +197,13 @@ there. A `-[det]->` function may not call a `-[semidet]->` one — that is
 precisely the promise `-[det]->` makes — so partiality is visible in the types
 all the way up. See `examples/strictdet_semidet_arrow.metta`.
 
-**Exhaustiveness of `-[det]->` (under `--strict-det`).** Under `--strict-det`
-only, a `-[det]->` function whose clauses PROVABLY cannot match some input of
-its declared argument types is a compile error naming the unmatched case and
-suggesting `-[semidet]->`. Two things are provable: an argument position every
+**Exhaustiveness of `-[det]->`.** A `-[det]->` function whose clauses PROVABLY
+cannot match some input of its declared argument types is a compile error naming
+the unmatched case and suggesting `-[semidet]->`. This applies in **every mode**,
+flags or not, like the overlap and body-determinism checks an explicit
+`-[det]->` already gets: `--strict-det` forces you to make a determinism claim,
+it is not what makes a claim you already wrote mean something. Writing `->`
+claims nothing and is checked for nothing. Two things are provable: an argument position every
 clause pins to a literal of an uncoverable domain (`(= (lookup 1) 10)`,
 `(= (lookup 2) 20)` over `Number`), and a position discriminating on the
 constructors of a nominal type whose constructor set is known in full, with one
@@ -216,8 +219,8 @@ with no way out. What the check reports is therefore a lower bound on
 incompleteness, never a totality guarantee: it can only see the constructors
 declared before it, and it judges a function on the clauses visible in the file
 being loaded. `examples/strictdet_det_exhaustive_limits.metta` pins the
-conservative side; `examples/fail_strictdet_nonexhaustive_det.metta` and
-`fail_strictdet_nonexhaustive_ctor.metta` pin the two provable ones. Only an
+conservative side; `examples/fail_nonexhaustive_det.metta` and
+`fail_nonexhaustive_ctor.metta` pin the two provable ones. Only an
 explicit `-[det]->` is checked — under `--strict-det` a plain `->` reads as
 deterministic too, but that is a mode-wide default rather than a per-function
 promise of totality.
@@ -231,8 +234,7 @@ error is either an accidental source of multiple results or a missing
 `-[nondet]->`. Closure parameters carry the same commitment: a
 `(-> $a $b)`-typed parameter may be applied inside a deterministic body,
 a `-[nondet]->` one may not. A clause that commits with `(cut)` may overlap
-with later clauses. See `examples/strictdet_basics.metta`. This flag also
-turns on the `-[det]->` exhaustiveness check described above.
+with later clauses. See `examples/strictdet_basics.metta`.
 
 Notes and caveats:
 
