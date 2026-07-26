@@ -397,6 +397,19 @@ unknown_marker('$unknown_branch_type').
 %Never unifies: a candidate list legitimately holds unbound declaration-instance
 %type variables, and testing them must not bind one to the marker.
 unknown_candidate(C) :- unknown_marker(M), C == M.
+%A wrapped GROUND data literal a merge could not assign a single type to - (a b)
+%fed to a (| Number (List Atom)) output. value_single_type/2 fails on it (its
+%bare-atom elements carry no declared type), so an ordinary merge would record
+%the plain unknown marker. The literal is instead recorded wrapped: it counts as
+%unknown_candidate/1 EVERYWHERE (a merged variable carrying it is never a known
+%singleton, arg passing and parametric checks stay conservative), and is only
+%read specially at the output certification (output_candidate_fits/2), where the
+%concrete target type is in hand and check_value/3 can certify the actual value.
+unknown_candidate(C) :- certifiable_literal_candidate(C, _).
+%nonvar guard is load-bearing: unknown_candidate/1 and the output-check discharge
+%are called with candidates that may be unbound type variables (param promises),
+%and this must TEST such a candidate, never bind it to the wrapper.
+certifiable_literal_candidate(C, V) :- nonvar(C), C = '$certifiable_literal'(V).
 
 %%% Indefinite evidence: a PROMISED type variable.
 %
@@ -450,10 +463,23 @@ known_candidates_certain(V, Cs) :- known_candidates(V, Cs), \+ candidates_have_u
 note_candidates(Out, Val) :- ( var(Out)
                                -> ( nonvar(Val) -> ( value_single_type(Val, VT)
                                                      -> add_known_type(Out, VT)
+                                                      ; ground(Val), is_list(Val)
+                                                        -> note_certifiable_literal(Out, Val)
                                                       ; note_unknown_candidate(Out) )
                                   ; known_candidates(Val, Cs) -> add_known_types(Out, Cs)
                                   ; note_unknown_candidate(Out) )
                                 ; true ).
+
+%Record a ground literal a merge could not type as a certifiable-literal
+%candidate (see unknown_candidate/1). Mirrors note_unknown_candidate/1 but keeps
+%the value so the output certification can check it against the concrete target.
+note_certifiable_literal(V, Val) :- ( var(V)
+                                      -> M = '$certifiable_literal'(Val),
+                                         ( get_attr(V, tknown, Cs)
+                                           -> ( variant_member(M, Cs) -> true
+                                              ; put_attr(V, tknown, [M|Cs]) )
+                                            ; put_attr(V, tknown, [M]) )
+                                       ; true ).
 
 %Explicit type ascription (the Type Expr): the author states the type of a
 %dynamically typed value. The type becomes knowledge for the checker, and a
@@ -1429,10 +1455,9 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
         %rejection under --strict, exactly as an entirely untyped body does:
         ; var(ExpOut) ->
             ( known_candidates(ExpOut, Cs) ->
-                ( member(C, Cs), \+ indefinite_candidate(C),
-                  \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT)
-                  -> throw(error(type_conflict(existing(C), required(OT)), typecheck))
-                ; member(C, Cs), ( indefinite_candidate(C) -> true ; \+ type_compat_soft(C, OT) )
+                ( member(C, Cs), output_candidate_conflict(C, OT, Bad)
+                  -> throw(error(type_conflict(existing(Bad), required(OT)), typecheck))
+                ; member(C, Cs), \+ output_candidate_fits(C, OT)
                   -> type_guard(F, ExpOut, OT, Gs)            %possible runtime refinement
                    ; Gs = [] )
             ; type_guard(F, ExpOut, OT, Gs) )
@@ -1440,6 +1465,24 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
           ( St == mismatch -> throw(error(literal_type_mismatch(ExpOut, OT), typecheck))
           ; St == unknown -> type_guard(F, ExpOut, OT, Gs)
           ; Gs = [] ) ).
+
+%A merge candidate certifies against the declared output type. A wrapped ground
+%literal is discharged by running check_value/3 on the concrete value itself -
+%the strongest evidence there is - so (a b) fits (| Number (List Atom)). Every
+%other candidate uses the type-level compatibility test, and an INDEFINITE one
+%(the unknown marker, or a promised type variable) is never a fit.
+output_candidate_fits(C, OT) :- certifiable_literal_candidate(C, V), !, check_value(V, OT, ok).
+output_candidate_fits(C, OT) :- \+ indefinite_candidate(C),
+                                ( type_compat_soft(C, OT) ; refinement_pair(C, OT) ).
+
+%A DEFINITE contradiction between a merge candidate and the output type: a
+%concrete literal check_value/3 rules out, or a non-indefinite type candidate
+%with no compatibility or refinement path. Binds Bad to the offending value/type
+%for the diagnostic. An indefinite candidate is never a conflict - it costs a
+%guard, not a rejection.
+output_candidate_conflict(C, OT, V) :- certifiable_literal_candidate(C, V), !, check_value(V, OT, mismatch).
+output_candidate_conflict(C, OT, C) :- \+ indefinite_candidate(C),
+                                       \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT).
 
 %Under --oracle a statically discharged output certification is re-verified
 %at runtime with the checker's OWN value relation (check_value): a definite
@@ -1790,9 +1833,24 @@ fn_determinism(F, N, Det) :- findall(D, ( declared_fn_type(F, ATs, _, D), length
 validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
     length(Args, N),
     fn_determinism(F, N, Det),
-    ( committed_det(Det) -> ensure_deterministic_expr(Det, BodyExpr, F),
+    ( committed_det(Det) -> with_det_head_vars(Args, ensure_deterministic_expr(Det, BodyExpr, F)),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
                           ; true ).
+
+%Publish the clause's HEAD variables for the duration of a body determinism
+%analysis. A head variable is a parameter: it can arrive bound to anything the
+%caller chose, functions included, whatever its declared type says - and a
+%wildcard-typed parameter carries no type attribute at all (bind_param_type
+%records nothing for Atom/%Undefined%), so identity is the only reliable test.
+%unify_head_is_data/1 consults this to tell a parameter from a fresh local.
+with_det_head_vars(Args, Goal) :- catch(b_getval('$det_head_vars', Saved), _, Saved = []),
+                                  term_variables(Args, HVs),
+                                  setup_call_cleanup(b_setval('$det_head_vars', HVs),
+                                                     Goal,
+                                                     b_setval('$det_head_vars', Saved)).
+
+det_head_var(H) :- catch(b_getval('$det_head_vars', HVs), _, fail),
+                   member(V, HVs), V == H, !.
 
 %A det body must neither branch nor fail; a semidet body is the same analysis
 %minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are
@@ -2161,6 +2219,19 @@ builtin_call_determinism_args('max-atom', 1, [A], det) :- manifest_nonempty_list
 %semidet (out of range fails, and the range is not manifest).
 builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), manifest_proper_list(A).
 
+%--- Strengthened by a manifest expression ARGUMENT.
+%'add-atom'/3 and 'remove-atom'/3 (src/spaces.pl) are keyed semidet because
+%their second clause reads Term as a list - add_sexp/remove_sexp do
+%Term =.. [Space,Rel|Args], which FAILS on a non-list argument (an atom or an
+%unbound variable), so a call whose argument shape is unknown may fail. When
+%the argument is a manifest non-empty expression the =.. succeeds, assertz /
+%retractall are det, and the function-equation first clause (guarded by cut on
+%[=,_,_]) is equally det - so exactly one clause commits: the call is det.
+%A DECLARED type never qualifies (see manifest_proper_list's note); only a
+%literal spine built at the call site does.
+builtin_call_determinism_args('add-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
+builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
+
 %--- Strengthened by manifestly bound boolean operands.
 %and/2, or/2, not/1, xor/2 and implies/2 are nondet because bool/1 INVENTS a
 %boolean it was not given. Where every operand is manifestly one already, that
@@ -2285,7 +2356,11 @@ clause_set_determinism(Metas, Det) :- clause_bodies_determinism(Metas, R),
 %attributes type_meta_params/4 attached to the head vars stay visible in the
 %bodies they are shared with:
 clause_bodies_determinism([], ok).
-clause_bodies_determinism([fun_meta(_, B)|Ms], R) :- deterministic_expr(B, R1),
+%Each meta's Args are published as the head-variable set for its body's
+%analysis (see with_det_head_vars/2): a wildcard-typed parameter has no type
+%attribute, so identity against the head is what tells it from a fresh local.
+clause_bodies_determinism([fun_meta(Args, B)|Ms], R) :-
+                                                     with_det_head_vars(Args, deterministic_expr(B, R1)),
                                                      ( det_result_final(R1) -> R = R1
                                                      ; clause_bodies_determinism(Ms, R2),
                                                        combine_det_results(R1, R2, R) ).
@@ -2309,7 +2384,11 @@ deterministic_expr([Head|Args], Result) :- var(Head), !,
            -> combine_determinism_list(Args, R0),
               combine_det_results(may_fail(semidet_closure), R0, Result)
          ; arrow_head_level(K, nondet) -> Result = nondeterministic(nondet_closure)
-         ; \+ is_arrow_type(K) -> combine_determinism_list(Args, Result)  %non-arrow head: data construction
+         %non-arrow head: data construction - but NOT through a wildcard.
+         %Atom/%Undefined%/Expression admit function symbols, and a var of
+         %such a type bound to one at runtime makes reduce/2 DISPATCH the
+         %"data" this analysis said it was building:
+         ; \+ is_arrow_type(K), \+ wildcard_type_t(K) -> combine_determinism_list(Args, Result)
          ; Result = unknown(dynamic_head(Head)) )
        ; Result = unknown(dynamic_head(Head)) ).
 deterministic_expr([collapse, _], ok) :- !.
@@ -2323,6 +2402,17 @@ deterministic_expr([superpose|_], nondeterministic(superpose)) :- !.
 deterministic_expr([match|_], nondeterministic(match)) :- !.
 deterministic_expr([hyperpose|_], nondeterministic(hyperpose)) :- !.
 deterministic_expr([translatePredicate|_], nondeterministic(translatePredicate)) :- !.
+%The structural (dis)equality tests unify their operands as DATA. A var-headed
+%operand like ($name $index $vars) is a PATTERN built and unified, never
+%dispatched: reduce/2 leaves a var-headed term unevaluated (src/translator.pl),
+%so it contributes no dynamic-head uncertainty and the whole test stays det.
+%A FUN-headed operand IS evaluated first and still contributes its determinism,
+%so the reading only differs from the generic call path at a variable head -
+%exactly the pattern case the honest dynamic_head verdict is too weak for.
+deterministic_expr([Op, A, B], Result) :- unify_test_op(Op), !,
+                                          unify_operand_determinism(A, RA),
+                                          unify_operand_determinism(B, RB),
+                                          combine_det_results(RA, RB, Result).
 %A two-argument if has no else branch: when the condition is false the whole
 %expression produces NOTHING. That is a failure path of the construct itself,
 %invisible to an analysis of the parts, so it is may_fail unconditionally -
@@ -2332,8 +2422,8 @@ deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Con
 deterministic_expr([if, Cond, Then, Else], Result) :- !, combine_determinism_list([Cond, Then, Else], Result).
 deterministic_expr([progn|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
 deterministic_expr([prog1|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
-deterministic_expr([let, Pat, Val, In], Result) :- !, pattern_then_exprs(Pat, [Val, In], Result).
-deterministic_expr([chain, Pat, Val, In], Result) :- !, pattern_then_exprs(Pat, [Val, In], Result).
+deterministic_expr([let, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
+deterministic_expr([chain, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
 deterministic_expr(['let*', Binds, Body], Result) :- !, binds_and_body_determinism(Binds, Body, Result).
 deterministic_expr([sealed, _, Expr], Result) :- !, deterministic_expr(Expr, Result).
 deterministic_expr(['forall', _, _], ok) :- !.
@@ -2403,6 +2493,44 @@ deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                ; underapplied_closure(Fun, N) -> combine_determinism_list(Args, Result)
                                                ; Result = unknown(undetermined_call(Fun)) ).
 deterministic_call_expr(Expr, unknown(dynamic_call(Expr))).
+
+%Structural equality/unification builtins whose operands are DATA PATTERNS.
+%These take their arguments unevaluated-as-data (a var head is unified, not
+%dispatched), so a var-headed operand does not make the test unknown.
+unify_test_op('=').
+unify_test_op('=?').
+unify_test_op('=alpha').
+unify_test_op('=@=').
+
+%Determinism of one operand of a structural test. A var-headed compound is a
+%unification pattern: its head is data (never dispatched) and its arguments are
+%themselves operands, so the pattern is det unless a nested fun-headed sub-call
+%is not. A fun-headed (or atomic/var) operand is read exactly as anywhere else.
+unify_operand_determinism(E, ok) :- ( var(E) ; atomic(E) ), !.
+unify_operand_determinism([H|Args], R) :- var(H), unify_head_is_data(H), !,
+                                          combine_unify_operands(Args, R).
+unify_operand_determinism(E, R) :- deterministic_expr(E, R).
+
+%A var head is data only when it provably CANNOT be a function at the reduce
+%that builds the term. Two proofs exist: its known type rules functions out
+%(non-arrow and non-wildcard - Atom/%Undefined%/Expression admit function
+%symbols), or it is a fresh local: not a HEAD variable of the clause under
+%analysis (det_head_var/1 - identity, because a wildcard-typed parameter
+%carries no type attribute at all) and carrying no knowledge of any kind (a
+%let/chain field is marked by let_determinism/4 exactly so it fails this
+%test). A fresh local is bound by nothing when reduce/2 reaches it, and an
+%unevaluated var-headed term is one solution of data. Without this test,
+%(= 1 ($f 0)) with $f an Atom-typed parameter read as data while the compiled
+%reduce dispatched whatever function the caller passed.
+unify_head_is_data(H) :- ( known_singleton(H, K), nonvar(K)
+                           -> \+ is_arrow_type(K), \+ wildcard_type_t(K)
+                         ; det_head_var(H) -> fail
+                         ; \+ get_attr(H, tknown, _) ).
+
+combine_unify_operands([], ok).
+combine_unify_operands([A|As], R) :- unify_operand_determinism(A, R1),
+                                     combine_unify_operands(As, R2),
+                                     combine_det_results(R1, R2, R).
 
 %%% Argument-aware transitive determinism through higher-order functions.
 %A function whose declared arrow is a plain -> (no det commitment outside
@@ -2641,6 +2769,50 @@ pattern_then_exprs(Pat, Exprs, Result) :- deterministic_pattern(Pat, R0),
                                           ( det_result_final(R0) -> Result = R0
                                           ; combine_determinism_list(Exprs, R2),
                                             combine_det_results(R0, R2, Result) ).
+
+%(let Pat Val In) / (chain Pat Val In). Same worst-of composition as
+%pattern_then_exprs, but a DESTRUCTURING pattern's field variables are bound to
+%FIELDS of Val's result, and when Val's declared output type fixes a field to a
+%concrete NON-arrow type that field can never be a function symbol (a well-typed
+%(Number Number) tuple holds numbers). So a body expression HEADED by such a
+%field - the (let ($l $r) (add-pair ..) ($l $r)) reconstruction - is data, not
+%a dynamic dispatch: reduce/2 leaves a non-function (or unbound) head
+%unevaluated, exactly one solution. We give the body analysis that knowledge by
+%binding the field types onto COPIES of the pattern/body variables (never the
+%shared source term), so the var-head clause reads them as data construction.
+let_determinism(Pat, Val, In, Result) :-
+    deterministic_pattern(Pat, R0),
+    ( det_result_final(R0) -> Result = R0
+    ; deterministic_expr(Val, RVal),
+      ( det_result_final(RVal) -> Result = RVal
+      ; copy_term(Pat-In, PatC-InC),
+        ignore(bind_destructured_field_types(PatC, Val)),
+        %fields whose type stayed unknown (arrow, wildcard, no declared tuple
+        %type at all) can arrive bound to anything, functions included - mark
+        %the copies so they read as parameters, not as fresh locals:
+        term_variables(PatC, FVs),
+        maplist(mark_field_unless_typed, FVs),
+        deterministic_expr(InC, RIn),
+        combine_det_results(RVal, RIn, RVI),
+        combine_det_results(R0, RVI, Result) ) ).
+
+%Bind each destructuring field variable to its concrete non-arrow field type,
+%read off Val's declared tuple output type. Non-arrow, non-wildcard only: an
+%arrow or Atom field could legitimately carry a function, so it stays unknown.
+bind_destructured_field_types(Pat, Val) :-
+    is_list(Pat), Pat = [_|_],
+    call_output_type(Val, OT),
+    is_list(OT), same_length(Pat, OT),
+    bind_pat_field_types(Pat, OT).
+
+bind_pat_field_types([], []).
+bind_pat_field_types([P|Ps], [T|Ts]) :- ( var(P), nonvar(T), \+ is_arrow_type(T), \+ wildcard_type_t(T)
+                                          -> add_known_type(P, T) ; true ),
+                                        bind_pat_field_types(Ps, Ts).
+
+mark_field_unless_typed(V) :- ( get_attr(V, tknown, _) -> true ; note_unknown_candidate(V) ).
+
+call_output_type([F|Args], OT) :- atom(F), length(Args, N), fn_decl_arity(F, N, _, OT), nonvar(OT).
 
 deterministic_pattern(P, ok) :- ( var(P) ; atomic(P) ; P = partial(_, _) ), !.
 deterministic_pattern([H|T], Result) :- atom(H), fun(H), !, deterministic_expr([H|T], Result).
