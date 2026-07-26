@@ -222,8 +222,15 @@ manifest_bool(X) :- X == false, !.
 %enumerate. A Bool-typed destructured FIELD does NOT qualify - enforced_bound_param/1
 %tests direct params only, and a field is skipped by the spine-level boundary check.
 manifest_bool(X) :- var(X), !, enforced_bound_param(X), known_singleton(X, 'Bool').
+%The determinism asked for is the CALL-SITE verdict, not the flat table's
+%worst case: (not X) is nondet in the table (bool/1 generates), but with X
+%itself a manifest bool the argument-aware entry makes it det - and a det
+%sole-Bool-output call delivers a bound boolean. The mutual recursion with
+%builtin_call_determinism_args (its boolean entries test manifest_bool on
+%their operands) is well-founded: operands are strict subterms.
 manifest_bool([F|As]) :- atom(F), is_list(As), length(As, N),
-                         builtin_call_determinism(F, N, det),
+                         ( builtin_call_determinism_args(F, N, As, det) -> true
+                         ; builtin_call_determinism(F, N, det) ),
                          findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool'.
 %A USER function call whose bound_bool certificate holds: every clause of it
 %provably results in a bound boolean, so the call cannot deliver the unbound
