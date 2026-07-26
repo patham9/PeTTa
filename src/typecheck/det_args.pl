@@ -99,7 +99,19 @@ data_headed(H) :- atom(H), !, \+ fun(H).
 %applied closure returns - possibly (), possibly open - and no part of its
 %spine is built at this call site. The old catch-all read every compound head
 %as data, which strengthened min-atom to det over an application's result.
-data_headed(H) :- is_list(H), H = [F|_], !, data_headed(F).
+%A fun-headed compound is still a DATA head when the function's unique
+%declared output type is a non-function type: ((identity-number $a) $b $c)
+%evaluates its head to a Number, and a Number cannot dispatch - the
+%translator compiles the spine as data for exactly that reason
+%(nonfunction_type at translate_expr/3), so the manifest judgement asks the
+%same question. A call returning an arrow (or a wildcard, which admits
+%function symbols) stays an application: ((foo) 2 3) with foo returning a
+%closure is exactly the case this predicate exists to exclude.
+data_headed(H) :- is_list(H), H = [F|Fargs], !,
+                  ( data_headed(F) -> true
+                  ; atom(F), fun(F), length(Fargs, N),
+                    findall(OT, fn_decl_arity(F, N, _, OT), [OT1]),
+                    nonvar(OT1), nonfunction_type(OT1) ).
 data_headed(_).
 
 %Manifestly a proper list: the literal (), a literal expression whose head is
