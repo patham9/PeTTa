@@ -366,6 +366,25 @@ verdicts. A declared builtin now takes its arrow head from the table in both
 places, which is what an *undeclared* builtin always did. See
 `examples/fail_strictdet_nondet_builtin_closure.metta`.
 
+**Argument-aware verdicts.** A (name, arity) table has to give one worst-case
+answer for every call site, and most of the weak entries above are weak for a
+*shape* reason: `length/2` and `append/3` invert over an open list, `min_list/2`
+has no answer for `()`, `bool/1` invents a boolean it was not given. Where the
+shape is manifest in the source, the reason does not apply and the call site
+gets the stronger verdict — `(min-atom ($a $b))` is `det` because a
+two-element list literal cannot be empty, and `(and (> $x 0) (< $x 10))` is
+`det` because both operands are already booleans. What counts as manifest is
+deliberately narrow: a list literal, a `cons` onto a manifestly proper tail, or
+a parameter whose declared type is a fixed-width tuple like `(Number Number)`
+— **not** `(List T)`, which is exactly the open list these predicates invert
+over. Anything else falls back to the flat table, the same provable-only
+discipline the `-[det]->` exhaustiveness check uses. This strengthens
+`min-atom`, `max-atom`, `size-atom`, `length`, `reverse`, `last`, `append`,
+`union-atom`, `subtraction-atom`, `intersection-atom`, `exclude-item`,
+`alpha-unique-atom`, `index-atom` and the five boolean operators.
+`examples/strictdet_builtin_arg_shapes.metta` pins the strengthened cases and
+`examples/fail_strictdet_min_atom_unknown_shape.metta` pins the fallback.
+
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so
 where a `-[det]->`/`-[semidet]->` (or, under `--strict-det`, a plain `->`)

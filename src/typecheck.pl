@@ -2114,6 +2114,99 @@ function_call_determinism(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fai
                                         Det0 \== unspecified, !, Det = Det0.
 function_call_determinism(F, N, Det) :- body_determinism(F, N, Det).
 
+%%% Argument-aware determinism for builtins.
+%
+%builtin_call_determinism/3 is keyed on (name, arity) only, so one worst-case
+%verdict has to cover every call site. Most of the weak verdicts above are
+%weak for a SHAPE reason - the argument may be unbound, or an open list - and
+%at a call site where the shape is manifest in the source the reason does not
+%apply. This relation is consulted BEFORE the flat table and may only ever
+%return a verdict at least as strong; where the shape cannot be established it
+%simply fails and the flat table answers, the same provable-only discipline
+%the -[det]-> exhaustiveness check uses.
+%
+%The judgements are about the SPINE, never the elements: a manifest list may
+%hold unbound elements, and a builtin that raises on one (min_list/2 on a
+%non-number) is still det, because an exception is not a solution.
+call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
+call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
+
+%--- Strengthened by a manifest list SPINE.
+%length/2, reverse/2, append/3 and friends invert over an open list; over a
+%proper one they answer exactly once. The properness is read off the source.
+builtin_call_determinism_args('size-atom', 1, [A], det) :- manifest_proper_list(A).
+builtin_call_determinism_args(length, 1, [A], det) :- manifest_proper_list(A).
+builtin_call_determinism_args(reverse, 1, [A], det) :- manifest_proper_list(A).
+builtin_call_determinism_args('alpha-unique-atom', 1, [A], det) :- manifest_proper_list(A).
+%append/3 and its aliases only need their FIRST list proper: the recursion is
+%driven by it and the second operand is copied through untouched.
+builtin_call_determinism_args('union-atom', 2, [A, _], det) :- manifest_proper_list(A).
+builtin_call_determinism_args(append, 2, [A, _], det) :- manifest_proper_list(A).
+%The multiset operations recurse on their first argument and commit to
+%select/3's first solution with -> ; the second operand's shape is irrelevant.
+builtin_call_determinism_args('subtraction-atom', 2, [A, _], det) :- manifest_proper_list(A).
+builtin_call_determinism_args('intersection-atom', 2, [A, _], det) :- manifest_proper_list(A).
+%exclude/3 walks its LIST argument, which is the second one here.
+builtin_call_determinism_args('exclude-item', 2, [_, L], det) :- manifest_proper_list(L).
+%last/2 and min/max_list/2 need the list NON-empty as well: they have no
+%answer for (), and min-atom's non_list/1 guard does not catch it.
+builtin_call_determinism_args(last, 1, [A], det) :- manifest_nonempty_list(A).
+builtin_call_determinism_args('min-atom', 1, [A], det) :- manifest_nonempty_list(A).
+builtin_call_determinism_args('max-atom', 1, [A], det) :- manifest_nonempty_list(A).
+%nth0/3 enumerates only when the index is unbound; with a literal index it is
+%semidet (out of range fails, and the range is not manifest).
+builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), manifest_proper_list(A).
+
+%--- Strengthened by manifestly bound boolean operands.
+%and/2, or/2, not/1, xor/2 and implies/2 are nondet because bool/1 INVENTS a
+%boolean it was not given. Where every operand is manifestly one already, that
+%generator is a test and the if-then-else below it yields exactly one answer.
+builtin_call_determinism_args(and, 2, Args, det) :- maplist(manifest_bool, Args).
+builtin_call_determinism_args(or, 2, Args, det) :- maplist(manifest_bool, Args).
+builtin_call_determinism_args(xor, 2, Args, det) :- maplist(manifest_bool, Args).
+builtin_call_determinism_args(implies, 2, Args, det) :- maplist(manifest_bool, Args).
+builtin_call_determinism_args(not, 1, Args, det) :- maplist(manifest_bool, Args).
+
+%A source expression whose head is DATA rather than a function being applied.
+%For a variable head this is the translator's own test (nonfunction_type/1 at
+%translate_expr/3): anything else compiles to reduce/2 or apply_fn/3, i.e. an
+%application whose result shape is not known here. An untyped variable head is
+%therefore conservatively read as a call.
+data_headed(H) :- var(H), !, known_singleton(H, K), nonfunction_type(K).
+data_headed(H) :- atom(H), !, \+ fun(H).
+data_headed(_).
+
+%Manifestly a proper list: the literal (), a literal expression whose head is
+%data, or a cons onto a manifestly proper tail. In every case the SPINE is
+%built by the compiler at the call site, which is what makes it a fact rather
+%than a claim.
+%
+%A DECLARED type never qualifies, not even a fixed-width tuple like
+%(Number Number). That looks like it fixes the spine and does not: the residual
+%guard is typecheck_or_error/2, which succeeds on an unbound variable, so a
+%(Number Number) parameter can arrive unbound out of ordinary well-typed code
+%- (B $u) leaves its field unfilled - and min_list/2 on an unbound argument
+%answers once and then raises. That is exactly the assumption commit 6996b5b
+%removed from the flat table, and re-admitting it here would put it back.
+manifest_proper_list(X) :- X == [], !.
+manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
+manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
+                           manifest_proper_list(Tl).
+
+manifest_nonempty_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
+manifest_nonempty_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
+                             manifest_proper_list(Tl).
+
+%Manifestly a bound boolean: a literal, or a call to a det builtin whose only
+%declared output type is Bool - such a call cannot answer with an unbound
+%result, because the predicate builds true/false itself ('>'/3 is a single
+%if-then-else over a comparison, and raises rather than guessing).
+manifest_bool(X) :- X == true, !.
+manifest_bool(X) :- X == false, !.
+manifest_bool([F|As]) :- atom(F), is_list(As), length(As, N),
+                         builtin_call_determinism(F, N, det),
+                         findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool'.
+
 %A deterministic caller needs positive evidence about its callees. Functions
 %without a determinism arrow are analyzed from their translated clauses
 %(bodies deterministic, heads non-overlapping), memoized, and treated as det
@@ -2287,7 +2380,7 @@ closure_builtin_determinism(Name, F, M, DataArgs, Result) :-
 
 deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),
-                                               function_call_determinism(Fun, N, Det),
+                                               call_site_determinism(Fun, N, Args, Det),
                                                ( Det == nondet -> Result = nondeterministic(call(Fun))
                                                ; Det == semidet
                                                  -> combine_determinism_list(Args, R0),
