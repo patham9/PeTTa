@@ -102,3 +102,12 @@
 ;; Type definitions of random generators (3-argument forms)
 (: random-int (-> Number Number Number))
 (: random-float (-> Number Number Number))
+
+;; Trusted foreign promises: determinism arrows for Prolog predicates called
+;; through (callPredicate (Predicate (g ...))). No MeTTa clauses exist for
+;; these symbols, so the arrows are BELIEVED, not validated - the same
+;; standing a -[nondet]-> on a reflective wrapper has. Declare further
+;; Prolog predicates the same way in user code when callPredicate needs
+;; their determinism.
+(: assertz (-[det]-> $clause $ref Bool))
+(: erase (-[det]-> $ref Bool))

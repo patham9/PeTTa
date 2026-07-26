@@ -345,6 +345,20 @@ determinism is their closure's and a (name, arity) table cannot say so.
 `examples/determinism_builtins.metta` pins the honest arrow for each family;
 the `fail_det_*` examples pin one rejection per cause.
 
+**Foreign promises.** A determinism arrow declared for a symbol with **no
+MeTTa clauses** — a Prolog predicate — is a *trusted promise* about code the
+analysis cannot read, the same standing `-[nondet]->` on a reflective wrapper
+has. `callPredicate` stays nondet by default, but with a manifest goal —
+`(callPredicate (Predicate (g A1 .. An)))` — it reads `g`'s declared arrow at
+that arity: `lib_builtin_types` ships `(: assertz (-[det]-> $c $r Bool))` and
+`(: erase (-[det]-> $r Bool))`, and user code declares further predicates the
+same way (`examples/strictdet_callpredicate_declared.metta`; an undeclared
+goal keeps the honest nondet,
+`examples/fail_strictdet_callpredicate_undeclared.metta`). These promises are
+believed, not validated, and the cardinality oracle does not wrap inner
+Prolog goals — a wrong arrow here is the author's, exactly as in the flat
+table.
+
 **Higher-order builtins take it from the closure.** `map-atom`, `filter-atom`
 and `foldl-atom` come in two forms and both are live: the *pseudo-lambda* form
 `(map-atom $l $x Body)`, which the translator rewrites inline, and the

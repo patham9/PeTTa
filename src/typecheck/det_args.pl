@@ -116,6 +116,22 @@ builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), m
 %literal spine built at the call site does.
 builtin_call_determinism_args('add-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
 builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
+%--- callPredicate: argument-sensitive via DECLARED foreign promises.
+%callPredicate calls an arbitrary Prolog goal and stays nondet by default.
+%But when the goal is built in place - (callPredicate (Predicate (g A1..An)))
+%- its head is manifest at the call site, and an explicit determinism arrow
+%DECLARED for g at that arity is a trusted promise about the foreign
+%predicate, exactly like -[nondet]-> on get-type-space: no MeTTa clauses
+%exist for it and the analysis cannot read Prolog, so the declaration is
+%believed rather than validated (lib_builtin_types ships assertz/2 and
+%erase/1; user code declares its own the same way). Not audited by
+%--oracle-det, which wraps registered functions, not inner Prolog goals -
+%the promise is the author's, as every foreign claim here is.
+builtin_call_determinism_args(callPredicate, 1, [Arg], Det) :-
+    nonvar(Arg), Arg = [P, Goal], P == 'Predicate',
+    nonvar(Goal), Goal = [G|GArgs], atom(G), is_list(GArgs),
+    length(GArgs, N),
+    explicit_committed_decl(G, N, Det).
 %The same reasoning, unlocked at a call site whose argument is not a manifest
 %literal but a DIRECT parameter under an explicit committed arrow whose declared
 %type is NOMINAL: every value of a nominal type is a constructor application, a
