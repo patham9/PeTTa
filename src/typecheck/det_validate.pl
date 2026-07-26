@@ -20,7 +20,7 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
     fn_determinism(F, N, Det),
     ( committed_det(Det) -> det_enforced_flag(F, N, Enf),
                             with_det_enforced(Enf,
-                                with_det_head_vars(Args, ensure_deterministic_expr(Det, BodyExpr, F))),
+                                with_det_head_vars(Args, BodyExpr, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
                           ; true ).
 
@@ -35,12 +35,38 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
 %only reliable test. unify_head_is_data/1 consults this to tell a parameter from
 %a fresh local. (The commitment gate $det_enforced is deliberately NOT folded in
 %here: it has a coarser lifetime - see the context inventory in flags_arrows.pl.)
-with_det_head_vars(Args, Goal) :- catch(b_getval('$det_head_scope', Saved), _, Saved = scope([], [])),
+%The direct-parameter subset excludes is-var-EXEMPT parameters (see
+%det_enforced_params/3): a parameter the body tests with is-var gets no
+%boundary check, so nothing downstream may treat it as bound either.
+with_det_head_vars(Args, Body, Goal) :- catch(b_getval('$det_head_scope', Saved), _, Saved = scope([], [])),
                                   term_variables(Args, HVs),
-                                  include(var, Args, DPs),
+                                  det_enforced_params(Args, Body, DPs),
                                   setup_call_cleanup(b_setval('$det_head_scope', scope(HVs, DPs)),
                                                      Goal,
                                                      b_setval('$det_head_scope', Saved)).
+
+%%% The is-var exemption: the ONE list both the check emission and the
+%%% strengthenings read, so they cannot disagree.
+%
+% A clause that applies is-var to a parameter has HANDLED the unbound case -
+% the author wrote exactly the branch a boundary check would preempt, so
+% throwing before their handler runs would be the compiler overruling them.
+% Such a parameter is exempt from the boundness check, and symmetrically it
+% never counts as enforced-bound for the call-site strengthenings: the
+% analysis must then prove the body deterministic WITH a possibly-unbound
+% value, which the is-var branch structure is precisely equipped to do.
+% Detection is a syntactic walk of the source body; over-detection (an
+% is-var under quote, say) only costs the friendlier boundary error, never
+% soundness, because both consumers weaken together.
+det_enforced_params(Args, Body, DPs) :- include(var, Args, Vs),
+                                        exclude(boundness_exempt_param(Body), Vs, DPs).
+
+boundness_exempt_param(Body, V) :- body_applies_is_var(Body, V).
+
+body_applies_is_var(E, V) :- nonvar(E), E = [H, X], H == 'is-var', X == V, !.
+body_applies_is_var(E, V) :- nonvar(E), E = [X|Xs],
+                             ( body_applies_is_var(X, V) -> true
+                             ; body_applies_is_var(Xs, V) ).
 
 det_head_var(H) :- catch(b_getval('$det_head_scope', scope(HVs, _)), _, fail),
                    member(V, HVs), V == H, !.

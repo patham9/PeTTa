@@ -427,6 +427,16 @@ does **not** count as bound: `(= (f (P $u)) (and $u true))` under `-[det]->`
 still rejects, because `$u` can arrive unbound even though `(P $u)` did not
 (`examples/fail_det_field_in_and.metta`). The strengthenings mirror the check
 exactly — they key on *direct* parameters, never fields.
+
+**The `is-var` exemption.** A parameter the body tests with `is-var` gets no
+boundary check: the author wrote exactly the branch the check would preempt,
+and throwing before their handler runs would be the compiler overruling them
+(`examples/isvar_det_param.metta` — a `-[det]->` function that answers `0` for
+an unbound argument instead of throwing). The exemption cuts both ways, from
+one shared list: such a parameter also stops counting as enforced-bound, so
+the body must prove its determinism *with* a possibly-unbound value —
+`(and $b True)` behind an `is-var` test is the `bool/1` generator again and
+rejects (`examples/fail_det_isvar_unenforced_bool.metta`).
 `examples/strictdet_det_bool_ops.metta`,
 `examples/strictdet_remove_atom_nominal.metta`,
 `examples/strictdet_is_member_literal.metta` and

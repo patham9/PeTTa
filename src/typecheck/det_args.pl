@@ -255,7 +255,7 @@ clause_bodies_determinism([], ok).
 %analysis (see with_det_head_vars/2): a wildcard-typed parameter has no type
 %attribute, so identity against the head is what tells it from a fresh local.
 clause_bodies_determinism([fun_meta(Args, B)|Ms], R) :-
-                                                     with_det_head_vars(Args, deterministic_expr(B, R1)),
+                                                     with_det_head_vars(Args, B, deterministic_expr(B, R1)),
                                                      ( det_result_final(R1) -> R = R1
                                                      ; clause_bodies_determinism(Ms, R2),
                                                        combine_det_results(R1, R2, R) ).

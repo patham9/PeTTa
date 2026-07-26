@@ -37,7 +37,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %arrow promises, in EVERY mode, that it is called with bound
                                                %arguments. Emit the runtime boundness checks now, while the param
                                                %vars are still fresh, and splice them in before the commit cut below.
-                                               det_boundness_checks(F, Args1, DetChecks),
+                                               det_boundness_checks(F, Args1, BodyExpr, DetChecks),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
                                                parametric_param_snapshot(DeclOut, ParamVars),
@@ -113,18 +113,17 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
 %%% Specialized clause copies (ConstrainArgs == false) get the same checks -
 %%% calls route directly to them - and the late-declaration recompile re-emits
 %%% them when a det arrow arrives in a later file than the definition.
-det_boundness_checks(F, Args, Checks) :-
+%The parameters checked are exactly det_enforced_params/3's list - the same
+%one the call-site strengthenings read - so a parameter the body tests with
+%is-var loses its boundary check AND its enforced-bound status together:
+det_boundness_checks(F, Args, Body, Checks) :-
     ( length(Args, N), explicit_committed_decl(F, N, Det)
-      -> det_param_checks(Args, F, Det, Checks)
+      -> det_enforced_params(Args, Body, DPs),
+         maplist(det_param_check(F, Det), DPs, Checks)
        ; Checks = [] ).
 
-det_param_checks([], _, _, []).
-det_param_checks([A|As], F, Det, Checks) :-
-    det_param_checks(As, F, Det, Rest),
-    ( var(A)
-      -> Checks = [ ( nonvar(A) -> true
-                    ; throw(error(unbound_det_argument(F, Det), determinism)) ) | Rest ]
-       ; Checks = Rest ).
+det_param_check(F, Det, A, ( nonvar(A) -> true
+                           ; throw(error(unbound_det_argument(F, Det), determinism)) )).
 
 clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
