@@ -126,6 +126,39 @@ runtime guard where the value is used, and `--strict` rejects it. See
 `examples/fail_strict_branch_unknown_output.metta` and
 `examples/fail_strict_collapse_unknown_elem.metta`.
 
+**A type variable in a declaration is a promise.** `(: sumh (-> (List $a)
+Number))` says *sumh works for a list of any element type* — so no call site is
+checked on the element, at any depth. A body that needs a particular element
+type has therefore not proved anything: every call site gets a fresh copy of
+the declaration, so a binding the body makes reaches nobody. It does not
+*check* the element type, it *elides* the check.
+
+```metta
+(: sumh (-> (List $a) Number))
+(= (sumh (cons $h $t)) (+ $h 1))   ; rejected: $a is used as Number here
+```
+
+Such a body is a compile error naming the type it actually needs — write
+`(-> (List Number) Number)` and the call sites are checked again. This applies
+to every type variable in the argument types, nested ones included: before, a
+variable buried in `(List $a)` or in a closure parameter `(-> $a Number)` was
+exempt, and `(sumh (cons "x" ()))` compiled to zero runtime checks under
+`--strict` and printed `121` — SWI reads a one-character string as its
+character code. See `examples/fail_nested_parametric_param.metta` and
+`examples/fail_parametric_closure_arg.metta`.
+
+The reading side follows: a promised variable is not evidence *about* a value
+either. The result of applying a `(-> Number $b)` closure parameter has type
+`$b`, which is whatever the caller's function returns, so certifying it as the
+declared `Number` output is the same "I don't know" read as "compatible with
+everything" that the branch merge above rules out. It costs a runtime guard,
+and `--strict` rejects it
+(`examples/fail_strict_closure_output_promise.metta`). A type variable that is
+genuinely universal — an output variable occurring in no argument type, which
+by parametricity only a bottom function like `(: empty (-> $a))` can produce —
+is unaffected, and so is a bare `(-> $a $b)` closure applied inside a
+polymorphic function.
+
 **Type ascription.** Genuinely dynamic values (reads from schema-less
 relations, `catch` results, `eval`) can be given an author-stated type with
 `(the Type Expr)`: the checker treats the type as knowledge for everything
@@ -408,6 +441,15 @@ constrains) exist only across a file boundary. None of them needs an oracle
 flag any more — they are rejected at compile time, which is the goal state; a
 counterexample that only fails under an oracle is a hole that has been
 instrumented rather than closed.
+
+Specialization is audited by the same certifications. A specialized copy of a
+clause (`f_Spec_[g]`, with a higher-order argument fixed) is an instance, so
+its output certification can only come out more specific — it either discharges
+statically, reproduces the general clause's guard, or finds a definite conflict,
+and a typecheck error while specializing simply means "do not specialize", so
+the call falls back to the general, guarded clause. Skipping it let the
+specializer drop a guard the general clause had been compiled with
+(`examples/fail_specialized_output_guard.metta`).
 
 The oracles adjudicate with the checker's own value relation, so they audit the
 checker's *certifications*, not its type model: where the model itself is too

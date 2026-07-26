@@ -398,6 +398,39 @@ unknown_marker('$unknown_branch_type').
 %type variables, and testing them must not bind one to the marker.
 unknown_candidate(C) :- unknown_marker(M), C == M.
 
+%%% Indefinite evidence: a PROMISED type variable.
+%
+% An obligation may only be discharged by EVIDENCE, and one particular kind of
+% unbound type variable is not evidence: one this clause's own declaration
+% promised to its callers (see param_promise_var/1). Its value is whatever the
+% CALLER chose, so answering a concrete requirement by unifying with it is the
+% same confusion the unknown marker was introduced to fix for branch merges -
+% "I don't know" read as "compatible with everything":
+%
+%     (: g (-> (-> Number $b) Number))
+%     (= (g $f) ($f 1))                    % result type is $b, unbound
+%
+% $b is whatever the caller's closure returns, yet type_compat_soft($b,
+% 'Number') succeeded and certified the clause's output as Number with no
+% guard, under --strict. (g h) with (: h (-> Number String)) then handed a
+% string to arithmetic.
+%
+% NOT every unbound candidate is indefinite. An output type variable occurring
+% in none of its function's argument types is universally quantified, so by
+% parametricity only a bottom implementation can produce it - (: empty (-> $a))
+% is the one in the standard library - and a value that is never produced fits
+% every requirement. set_call_out_type/3 already makes exactly that
+% distinction; this is its counterpart on the reading side.
+%
+% The var is deliberately NOT replaced by the marker: its identity is
+% load-bearing (it aliases the declaration instance shared with the context -
+% map-flat's element type - and known_singleton/2 with a var K is consulted on
+% purpose by ascribe_type/3). Nor does type_compat_soft/2 change: it is also
+% the definite-CONFLICT test, where refusing a var would turn "unknown" into
+% "wrong". The distinction belongs at the discharge test, so it lives here.
+indefinite_candidate(C) :- var(C), !, param_promise_var(C).
+indefinite_candidate(C) :- unknown_candidate(C).
+
 note_unknown_candidate(V) :- ( var(V) -> unknown_marker(M),
                                          ( get_attr(V, tknown, Cs)
                                            -> ( variant_member(M, Cs) -> true
@@ -1351,12 +1384,16 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
         %costs a runtime guard - or a rejection under --strict - exactly as an
         %entirely untyped body does. Without this, one typed branch discharged
         %the certification for all of them:
+        %An INDEFINITE branch - the unknown marker, or a candidate still an
+        %unbound declaration-instance type variable - is not one that fits
+        %(see indefinite_candidate/1), so it costs a runtime guard, or a
+        %rejection under --strict, exactly as an entirely untyped body does:
         ; var(ExpOut) ->
             ( known_candidates(ExpOut, Cs) ->
-                ( member(C, Cs), \+ unknown_candidate(C),
+                ( member(C, Cs), \+ indefinite_candidate(C),
                   \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT)
                   -> throw(error(type_conflict(existing(C), required(OT)), typecheck))
-                ; member(C, Cs), ( unknown_candidate(C) -> true ; \+ type_compat_soft(C, OT) )
+                ; member(C, Cs), ( indefinite_candidate(C) -> true ; \+ type_compat_soft(C, OT) )
                   -> type_guard(F, ExpOut, OT, Gs)            %possible runtime refinement
                    ; Gs = [] )
             ; type_guard(F, ExpOut, OT, Gs) )
@@ -1466,14 +1503,55 @@ parametric_output_check(F, ExpOut) :- ( var(ExpOut)
                                              -> throw(error(non_parametric_output(F), typecheck)) ; true )
                                          ; throw(error(non_parametric_output(F), typecheck)) ).
 
-%A declared arg type that is a bare type variable claims parametric universality
-%over that position: callers passing any value are unchecked. Snapshot the
-%positions that are still entirely var AFTER head-pattern binding (clause_param_types
-%may already have instantiated some via head literals); a var buried inside a
-%compound type like (List $a) is NOT recorded, since element typing may legitimately
-%bind it:
-parametric_param_snapshot(out(_, ATs), Vars) :- !, include(var, ATs, Vars).
+%A declared arg type variable claims parametric universality over the position
+%it occupies: callers passing any value are unchecked there. Snapshot EVERY
+%type variable still unbound AFTER head-pattern binding (clause_param_types may
+%already have instantiated some via head literals), including the ones buried
+%inside a compound type.
+%
+%The nested ones used to be excluded, on the theory that "element typing may
+%legitimately bind it". It does not: fn_decl_arity/4 hands every call site a
+%FRESH COPY of the declaration, so a binding made while compiling the body
+%touches only this clause's instance and nothing re-establishes it for callers.
+%The binding therefore does not check anything - it silently ELIDES the check:
+%
+%    (: sumh (-> (List $a) Number))
+%    (= (sumh (cons $h $t)) (+ $h 1))       % $a := Number, only here
+%    !(sumh (cons "x" ()))                  % fresh $a := String, accepted
+%
+%compiled with zero runtime checks under --strict and printed 121 (SWI reads a
+%one-character string as its character code). A body that pins a nested type
+%variable is exactly as dishonest as one that pins a top-level one, and is
+%rejected the same way: the declaration has to name the type the body needs.
+parametric_param_snapshot(out(_, ATs), Vars) :- !, term_variables(ATs, Vars).
 parametric_param_snapshot(_, []).
+
+%%% The promised type variables of the clause currently being compiled.
+%
+% The snapshot above is a promise the declaration made to every caller, and
+% two rules follow from that, both of which need to know the set while the
+% BODY is being compiled (translate_clause/3 publishes it here):
+%
+%   1. Nothing the body reads may be discharged against one - it stands for a
+%      type the caller picked, not one this clause knows (indefinite_candidate/1).
+%   2. Nothing the compiler GUESSES may pin one. translate_closure_call/5
+%      assumes an unknown head is a function and binds its type to an arrow
+%      shape; that is sound inference about an undeclared function's own
+%      parameter, but on a promised variable it is the compiler inventing a
+%      fact about a position the declaration quantifies universally over -
+%      and it costs nothing to skip, since a non-function head still reduces
+%      to data exactly as before.
+%
+% Set with b_setval/2 so a nested compile (specialization, eval) that is later
+% abandoned by backtracking cannot leak its set into the outer clause.
+param_promises_scope(Promises, Outer) :- catch(b_getval('$param_promises', Outer), _, Outer = []),
+                                         b_setval('$param_promises', Promises).
+
+param_promises_restore(Outer) :- b_setval('$param_promises', Outer).
+
+param_promise_var(V) :- var(V),
+                        catch(b_getval('$param_promises', Vs), _, fail),
+                        memberchk_eq(V, Vs).
 
 %After the body is translated, every snapshotted position must still be unbound
 %(var-var aliasing to another polymorphic function) or a wildcard. If the body

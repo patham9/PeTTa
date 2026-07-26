@@ -36,6 +36,12 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
                                                parametric_param_snapshot(DeclOut, ParamVars),
+                                               %...and publish them for the body compile: they are
+                                               %promises to the caller, so neither a discharge nor a
+                                               %compiler guess may treat one as knowledge. A specialized
+                                               %copy promises nothing new (it is an instance):
+                                               ( ConstrainArgs == false -> Promises = [] ; Promises = ParamVars ),
+                                               param_promises_scope(Promises, OuterPromises),
                                                %Specialized clause copies (ConstrainArgs == false) are instances of
                                                %already-validated clauses: bind their (more specific) param types for
                                                %guard elimination, but skip the determinism/strict/output checks.
@@ -57,9 +63,17 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                   end_clause_inference(F, Args1, none, none, SavedInf)
                                                ; FinalGoals= GoalsBody , HeadArgs = Args1, Out = ExpOut,
                                                  end_clause_inference(F, Args1, ExpOut, Assume, SavedInf),
-                                                 ( ConstrainArgs == false -> OutChecks = []
-                                                 ; clause_output_goals(F, DeclOut, ExpOut, BodyExpr, OutChecks0),
-                                                   oracle_output_check(DeclOut, Out, OutChecks0, OutChecks) ) ),
+                                                 %The output certification runs for a SPECIALIZED copy too.
+                                                 %It is an instance, so it can only make the result type more
+                                                 %specific - it either discharges statically (one guard less),
+                                                 %reproduces the general clause's guard, or finds a definite
+                                                 %conflict, in which case the typecheck error means "do not
+                                                 %specialize" and the call falls back to the general, guarded
+                                                 %clause. Skipping it let the specializer DROP a guard the
+                                                 %general clause was compiled with, which is the one outcome
+                                                 %that is not sound:
+                                                 clause_output_goals(F, DeclOut, ExpOut, BodyExpr, OutChecks0),
+                                                 oracle_output_check(DeclOut, Out, OutChecks0, OutChecks) ),
                                                ( ConstrainArgs == false -> true
                                                                          ; strict_check_function_typed(F, Args1) ),
                                                append(HeadArgs, [Out], FinalArgs),
@@ -72,6 +86,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %identically: allowing failure costs no choicepoint, so a
                                                %semidet function is as cheap as a det one:
                                                ( clause_commit_cut(F, Args1) -> Commit = [!] ; Commit = [] ),
+                                               param_promises_restore(OuterPromises),
                                                append([GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
@@ -550,9 +565,16 @@ nonfunction_type(K) :- nonvar(K), ( primitive_type(K)
 %whose type is still an unbound assumption tells us it is a function.
 translate_closure_call(HV, AVs, Inner, Goals, Out) :- var(HV), AVs \== [], known_singleton(HV, K),
                                                       length(AVs, N), N1 is N + 1,
-                                                      ( var(K) -> length(Xs, N1), K = [->|Xs]
+                                                      %The arrow shape is a GUESS when K is unbound. On an
+                                                      %inference assumption it is a good one and gets
+                                                      %recorded; on a variable the declaration promised to
+                                                      %callers it must not be, so the shape stays local and
+                                                      %the result is honestly unknown (param_promise_var/1):
+                                                      ( var(K) -> length(Xs, N1),
+                                                                  ( param_promise_var(K) -> Guessed = true
+                                                                                          ; K = [->|Xs], Guessed = false )
                                                       ; K = [H|Xs], arrow_atom(H),
-                                                        length(Xs, N1) ),
+                                                        length(Xs, N1), Guessed = false ),
                                                       append(ArgTs, [OutT], Xs),
                                                       apply_call_args(declared, closure, AVs, ArgTs, GuardGs),
                                                       append(Inner, GuardGs, Inner1),
@@ -561,7 +583,8 @@ translate_closure_call(HV, AVs, Inner, Goals, Out) :- var(HV), AVs \== [], known
                                                       %a variable arrow output is knowledge too: it is the
                                                       %declaration-instance type var shared with the context
                                                       %(e.g. map-flat's element type), not an unknown:
-                                                      ( var(Out), var(OutT) -> add_known_type(Out, OutT)
+                                                      ( Guessed == true -> note_unknown_candidate(Out)
+                                                      ; var(Out), var(OutT) -> add_known_type(Out, OutT)
                                                                              ; set_out_type(Out, OutT) ).
 %Underapplying a typed closure parameter builds a partial: the used argument
 %positions are checked and the result carries the remaining arrow:
