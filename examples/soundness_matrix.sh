@@ -49,11 +49,12 @@ mode_arg_for() {
     esac
 }
 
-for f in "$ROOT_DIR"/examples/*.metta; do
+# Phases A-C for one example. Failure is signalled through $TMP_DIR/failed
+# (this runs inside a pooled background worker, where a shell variable would
+# be lost - the same convention Phase D already uses):
+run_oracle_phases() {
+    f=$1
     base=$(basename "$f")
-    case "$base" in
-        fail_*.metta|repl.metta|llm_cities.metta|torch.metta|greedy_chess.metta|git_import2.metta) continue ;;
-    esac
     mode=$(mode_arg_for "$f")
 
     # Phase A: forced certification guards must never fire.
@@ -64,7 +65,7 @@ for f in "$ROOT_DIR"/examples/*.metta; do
     elif [ $st -ne 0 ] || echo "$out" | grep -q "❌"; then
         echo "[FAIL oracle] $base: certified type contradicted at runtime (or run broke under --oracle)"
         echo "$out" | grep -E "❌|ERROR" | head -3
-        FAILED=1
+        : > "$TMP_DIR/failed"
     fi
 
     # Phase B: removing det commits must not change any test result.
@@ -91,9 +92,35 @@ for f in "$ROOT_DIR"/examples/*.metta; do
     elif [ $st -ne 0 ] || echo "$out" | grep -q "❌"; then
         echo "[FAIL oracle-det] $base: declared determinism contradicted at runtime"
         echo "$out" | grep -E "❌|ERROR" | head -3
-        FAILED=1
+        : > "$TMP_DIR/failed"
     fi
+}
+
+# The per-file phases run in a BOUNDED pool of PETTA_TEST_JOBS workers
+# (default 8), each taking a chunk of the file list sequentially - this loop
+# is ~3 swipl runs per example and used to be the bulk of the suite's wall
+# clock. The stack cap keeps pool x worst-case memory bounded.
+NJOBS=${PETTA_TEST_JOBS:-8}
+export PETTA_STACK_LIMIT=${PETTA_STACK_LIMIT:-3g}
+i=0
+for f in "$ROOT_DIR"/examples/*.metta; do
+    base=$(basename "$f")
+    case "$base" in
+        fail_*.metta|repl.metta|llm_cities.metta|torch.metta|greedy_chess.metta|git_import2.metta) continue ;;
+    esac
+    echo "$f" >> "$TMP_DIR/chunk$((i % NJOBS))"
+    i=$((i+1))
 done
+for c in "$TMP_DIR"/chunk*; do
+    (
+        while IFS= read -r f; do
+            run_oracle_phases "$f"
+        done < "$c"
+        exit 0
+    ) > "$c.log" 2>&1 &
+done
+wait
+cat "$TMP_DIR"/chunk*.log
 
 # Phase D. One case per line:
 #

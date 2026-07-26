@@ -62,43 +62,58 @@ run_expected_fail_test() {
     return 0
 }
 
-pids=""
-pidfile="/tmp/metta_pid_map.$$"
-: > "$pidfile"
+# The examples run in a BOUNDED pool: PETTA_TEST_JOBS chunks (default 8), each
+# a background worker running its share sequentially. Unbounded fan-out - one
+# swipl per example, ~290 at once - could exhaust RAM and take the machine
+# down; the pool keeps peak memory at jobs x stack cap by construction, which
+# is also why the harness lowers run.sh's stack limit here (override either
+# knob in the environment). Failures are collected and reported at the end
+# instead of killing the run: verdicts are unchanged, only scheduling is.
+run_one_example() {
+    case "$(basename "$1")" in
+        fail_*.metta) run_expected_fail_test "$1" ;;
+        *)            run_test "$1" ;;
+    esac
+}
 
+NJOBS=${PETTA_TEST_JOBS:-8}
+# 3g: the smallest cap the heaviest example (matespacefast) fits in, and
+# 8 x 3g bounds the pool's worst case below the machine:
+export PETTA_STACK_LIMIT=${PETTA_STACK_LIMIT:-3g}
+TMPD=$(mktemp -d /tmp/petta_test_XXXX)
+i=0
 for f in ./examples/*.metta; do
     base=$(basename "$f")
     case "$base" in repl.metta|llm_cities.metta|torch.metta|greedy_chess.metta|git_import2.metta)
         continue ;;
     esac
-    case "$base" in fail_*.metta)
-        run_expected_fail_test "$f" &
-        ;;
-    *)
-        run_test "$f" &
-        ;;
-    esac
-    pid=$!
-    pids="$pids $pid"
-    echo "$pid $f" >> "$pidfile"
+    echo "$f" >> "$TMPD/chunk$((i % NJOBS))"
+    i=$((i+1))
 done
 
+for c in "$TMPD"/chunk*; do
+    (
+        while IFS= read -r f; do
+            if ! run_one_example "$f"; then
+                echo "$f" >> "$TMPD/failed"
+            fi
+        done < "$c"
+        exit 0
+    ) > "$c.log" 2>&1 &
+done
+wait
+
+cat "$TMPD"/chunk*.log
 status=0
-for pid in $pids; do
-    if ! wait "$pid"; then
-        failed_file=$(grep "^$pid " "$pidfile" | cut -d' ' -f2-)
-        echo ""
-        echo "==============================="
-        echo "Stopping tests due to failure:"
-        echo "❌ Failed test: $failed_file"
-        echo "==============================="
-        kill $pids 2>/dev/null
-        status=1
-        break
-    fi
-done
-
-rm -f "$pidfile"
+if [ -f "$TMPD/failed" ]; then
+    echo ""
+    echo "==============================="
+    echo "Failed tests:"
+    sed 's/^/❌ /' "$TMPD/failed"
+    echo "==============================="
+    status=1
+fi
+rm -rf "$TMPD"
 
 if [ $status -eq 0 ]; then
     echo ""
