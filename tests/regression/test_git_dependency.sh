@@ -59,6 +59,15 @@ test "$(git -C "$proj/repos/b" rev-parse HEAD)" = "$b1"
 test "$(git -C "$proj/repos/a" symbolic-ref -q HEAD || true)" = ""
 test "$(cat "$proj/repos/a/.build-count")" = 1
 
+# A tracked modification is rejected even when HEAD already equals the pin and
+# the build stamp is otherwise valid.
+printf 'dirty exact head\n' >> "$proj/repos/a/mylib.metta"
+if run_prog "$proj/prog.metta" "$fixture/run2-dirty.log"; then
+    echo "dirty exact-SHA checkout unexpectedly succeeded"; cat "$fixture/run2-dirty.log"; exit 1
+fi
+grep -q dirty_git_checkout "$fixture/run2-dirty.log"
+git -C "$proj/repos/a" checkout -q -- mylib.metta
+
 # A second run in the same directory reuses the checkout and produces identical
 # program output; only acquisition progress lines differ between fresh and reuse.
 run_prog "$proj/prog.metta" "$fixture/run2.log" ||
@@ -100,6 +109,11 @@ if run_prog "$proj/conflict.metta" "$fixture/run6.log"; then
 fi
 grep -q conflicting_git_dependency "$fixture/run6.log"
 
+# URL spellings normalized to the same origin also share dependency identity.
+ln -s "$fixture/a.git" "$fixture/a"
+alias_base="$fixture/alias-base"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$alias_base'),(catch(acquire_git_dependency('file://$fixture/a','$a2','','$alias_base'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_url_alias_conflict,none))),halt"
+
 # Reusing one URL/revision with a different build command or base directory is
 # rejected explicitly instead of silently treating the second specification as
 # already satisfied.
@@ -110,6 +124,12 @@ spec_base_a="$fixture/spec-base-a"
 spec_base_b="$fixture/spec-base-b"
 swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_a'),(catch(acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_b'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_base_spec_conflict,none))),halt"
 test ! -e "$spec_base_b/a"
+
+# Git metadata paths retain internal whitespace when locating the build stamp.
+space_base="$fixture/base  with  spaces"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','build.sh','$space_base'),halt"
+test "$(cat "$space_base/a/.build-count")" = 1
+test -f "$space_base/a/.git/petta-build-stamp"
 
 # A failed transitive acquisition must not mark its parent as loaded.  Make the
 # leaf remote available only after the first attempt, then retry in the same

@@ -55,9 +55,9 @@ note_symbol_head(_).
 %Translate an expression that executes immediately, marking its data uses as unrepairable.
 %once/1 closes the translation before the goals run, so nested imports triggered by the
 %execution compile their definitions under the clause context again:
-translate_runnable_expr(C, Goals, Out) :- setup_call_cleanup(assertz(translating_runnable),
+translate_runnable_expr(C, Goals, Out) :- setup_call_cleanup(assertz(translating_runnable, Ref),
                                                              once(translate_expr(C, Goals, Out)),
-                                                             retractall(translating_runnable)).
+                                                             erase(Ref)).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.

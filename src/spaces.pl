@@ -1,6 +1,7 @@
 %Since both normal add-attom call and function additions needs to add the S-expression:
-add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                               assertz(Term).
+add_sexp(Space, Term) :- add_sexp(Space, Term, _).
+add_sexp(Space, [Rel|Args], Ref) :- Term =.. [Space, Rel | Args],
+                                    assertz(Term, Ref).
 
 %Same but for removal:
 remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],

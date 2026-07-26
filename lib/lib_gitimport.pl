@@ -46,8 +46,13 @@ acquire_git_declaration(Args) :-
 % prevents manifests from silently changing revision, build, or checkout root
 % beneath already-loaded code.
 acquire_git_dependency(Url, Rev, Build, Base) :-
+    with_mutex(git_dependencies,
+               acquire_git_dependency_impl(Url, Rev, Build, Base)).
+
+acquire_git_dependency_impl(Url, Rev, Build, Base) :-
     absolute_file_name(Base, CanonBase, [file_errors(fail)]),
-    ( git_dependency(Url, PreviousRev, PreviousBuild, PreviousBase)
+    normalize_git_url(Url, IdentityUrl),
+    ( git_dependency(IdentityUrl, PreviousRev, PreviousBuild, PreviousBase)
       -> ( PreviousRev == Rev,
            PreviousBuild == Build,
            PreviousBase == CanonBase
@@ -58,15 +63,15 @@ acquire_git_dependency(Url, Rev, Build, Base) :-
                                       dependency(PreviousRev, PreviousBuild,
                                                  PreviousBase),
                                       dependency(Rev, Build, CanonBase))))) )
-       ; assertz(git_dependency(Url, Rev, Build, CanonBase)),
-         run_new_git_dependency(Url, Rev, Build, CanonBase) ).
+       ; assertz(git_dependency(IdentityUrl, Rev, Build, CanonBase)),
+         run_new_git_dependency(IdentityUrl, Url, Rev, Build, CanonBase) ).
 
-run_new_git_dependency(Url, Rev, Build, Base) :-
+run_new_git_dependency(IdentityUrl, Url, Rev, Build, Base) :-
     catch(( once(acquire_git_dependency_body(Url, Rev, Build, Base))
             -> true
-             ; retractall(git_dependency(Url, Rev, Build, Base)), fail ),
+             ; retractall(git_dependency(IdentityUrl, Rev, Build, Base)), fail ),
           Error,
-          ( retractall(git_dependency(Url, Rev, Build, Base)),
+          ( retractall(git_dependency(IdentityUrl, Rev, Build, Base)),
             throw(Error) )).
 
 acquire_git_dependency_body(Url, Rev, Build, Base) :-
@@ -147,7 +152,8 @@ acquire_pinned_locked(Context, Url, Build, Base, Name, LocalDir, Rev) :-
          git_output(Context, 'resolve current HEAD', LocalDir,
                     ['rev-parse', '--verify', 'HEAD^{commit}'], Head),
          ( Head == Rev
-           -> ensure_git_build(Context, LocalDir, Rev, Build)
+           -> ensure_tracked_checkout_clean(Context, LocalDir),
+              ensure_git_build(Context, LocalDir, Rev, Build)
             ; ensure_clean_checkout(Context, LocalDir),
               fetch_git_commit(Context, LocalDir, Rev),
               checkout_git_commit(Context, LocalDir, Rev),
@@ -238,6 +244,14 @@ ensure_clean_checkout(Context, LocalDir) :-
        ; throw(error(permission_error(modify, dirty_git_checkout, LocalDir),
                      context(Context, Status))) ).
 
+ensure_tracked_checkout_clean(Context, LocalDir) :-
+    git_output(Context, 'check tracked checkout cleanliness', LocalDir,
+               [status, '--porcelain', '--untracked-files=no'], Status),
+    ( Status == ''
+      -> true
+       ; throw(error(permission_error(modify, dirty_git_checkout, LocalDir),
+                     context(Context, Status))) ).
+
 fetch_git_commit(Context, LocalDir, Rev) :-
     git_process(Context, 'fetch requested commit', path(git),
                 [fetch, '--no-tags', origin, Rev], [cwd(LocalDir)]),
@@ -299,7 +313,8 @@ write_git_build_stamp(Context, LocalDir, Rev, Build) :-
 git_output(Context, Operation, LocalDir, Args, OutputAtom) :-
     git_process_output(Context, Operation, path(git), Args,
                        [cwd(LocalDir)], Output),
-    normalize_space(atom(OutputAtom), Output).
+    split_string(Output, "", "\r\n", [TrimmedOutput]),
+    atom_string(OutputAtom, TrimmedOutput).
 
 git_process(Context, Operation, Executable, Args, Options) :-
     git_process_output(Context, Operation, Executable, Args, Options, _).

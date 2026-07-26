@@ -39,6 +39,31 @@ def test_failed_import_can_be_retried(petta_instance, tmp_path):
     assert "retry-ok" in results
 
 
+def test_failed_import_rolls_back_partial_definitions(
+    petta_instance, petta_module, tmp_path
+):
+    module_name = f"petta_partial_{uuid.uuid4().hex}"
+    function_name = f"partial_definition_{uuid.uuid4().hex}"
+    dependency_file = tmp_path / "dependency.metta"
+    python_file = tmp_path / f"{module_name}.py"
+    dependency_file.write_text(
+        f"(= ({function_name}) retry-ok)\n"
+        f'!(import! &self "{module_name}.py")\n'
+    )
+    python_file.write_text('raise RuntimeError("partial import fails")\n')
+
+    with pytest.raises(Exception, match="partial import fails"):
+        petta_instance.load_metta_file(str(dependency_file))
+
+    python_file.write_text("RETRY_SUCCEEDED = True\n")
+    petta_instance.load_metta_file(str(dependency_file))
+    result = petta_module.janus.query_once(
+        f"aggregate_all(count, clause('{function_name}'(_), _), Count)"
+    )
+
+    assert result["Count"] == 1
+
+
 def test_entry_file_breaks_direct_import_cycle(
     petta_instance, petta_module, tmp_path
 ):
@@ -149,6 +174,34 @@ def test_python_import_uses_canonical_path(petta_instance, tmp_path):
         delattr(builtins, event_name)
 
 
+def test_python_calls_remain_bound_to_canonical_module(petta_instance, tmp_path):
+    module_name = f"bound_module_{uuid.uuid4().hex}"
+    left_function = f"left_call_{uuid.uuid4().hex}"
+    right_function = f"right_call_{uuid.uuid4().hex}"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+
+    for directory, value, function_name in (
+        (left, "left", left_function),
+        (right, "right", right_function),
+    ):
+        (directory / f"{module_name}.py").write_text(
+            f"def origin(): return {value!r}\n"
+        )
+        (directory / "root.metta").write_text(
+            f'!(import! &self "{module_name}.py")\n'
+            f"(= ({function_name}) (py-call ({module_name}.origin)))\n"
+        )
+
+    petta_instance.load_metta_file(str(left / "root.metta"))
+    petta_instance.load_metta_file(str(right / "root.metta"))
+
+    assert "left" in petta_instance.process_metta_string(f"!({left_function})")
+    assert "right" in petta_instance.process_metta_string(f"!({right_function})")
+
+
 def test_python_import_can_load_sibling_module(petta_instance, tmp_path):
     module_name = f"python_sibling_{uuid.uuid4().hex}"
     helper_name = f"python_helper_{uuid.uuid4().hex}"
@@ -175,6 +228,39 @@ def test_python_import_can_load_sibling_module(petta_instance, tmp_path):
     finally:
         sys.modules.pop(module_name, None)
         sys.modules.pop(helper_name, None)
+
+
+def test_python_sibling_modules_do_not_collide(petta_instance, tmp_path):
+    helper_name = f"shared_helper_{uuid.uuid4().hex}"
+    left_module = f"left_module_{uuid.uuid4().hex}"
+    right_module = f"right_module_{uuid.uuid4().hex}"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+
+    for directory, module_name, value in (
+        (left, left_module, "left"),
+        (right, right_module, "right"),
+    ):
+        (directory / f"{helper_name}.py").write_text(f"VALUE = {value!r}\n")
+        (directory / f"{module_name}.py").write_text(
+            f"import {helper_name}\n"
+            f"def sibling_value(): return {helper_name}.VALUE\n"
+        )
+        (directory / "root.metta").write_text(
+            f'!(import! &self "{module_name}.py")\n'
+            f"!(py-call ({module_name}.sibling_value))\n"
+        )
+
+    try:
+        assert "left" in petta_instance.load_metta_file(str(left / "root.metta"))
+        assert "right" in petta_instance.load_metta_file(str(right / "root.metta"))
+        assert helper_name not in sys.modules
+    finally:
+        sys.modules.pop(helper_name, None)
+        sys.modules.pop(left_module, None)
+        sys.modules.pop(right_module, None)
 
 
 def test_all_overloads_are_registered_before_repair(petta_instance, tmp_path):

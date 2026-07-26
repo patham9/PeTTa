@@ -242,6 +242,23 @@ py_bool_norm(R, R).
 :- dynamic python_import_alias/2.
 python_call_module(Name, ModuleKey) :- python_import_alias(Name, ModuleKey), !.
 python_call_module(Name, Name).
+bind_python_calls(Term, Term) :- var(Term), !.
+bind_python_calls(Term, Term) :- atomic(Term), !.
+bind_python_calls([Call, [Spec|Args]], ['py-call', [BoundSpec|BoundArgs]]) :-
+    Call == 'py-call', !,
+    bind_python_call_spec(Spec, BoundSpec),
+    maplist(bind_python_calls, Args, BoundArgs).
+bind_python_calls(Terms, BoundTerms) :-
+    maplist(bind_python_calls, Terms, BoundTerms).
+
+bind_python_call_spec(Spec, BoundSpec) :-
+    atom(Spec),
+    atomic_list_concat([Module, Function], '.', Spec),
+    Module \== '',
+    python_import_alias(Module, ModuleKey), !,
+    atomic_list_concat([ModuleKey, Function], '.', BoundSpec).
+bind_python_call_spec(Spec, Spec).
+
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
 'py-call'([Spec|Args], Result, Opts) :- ( string(Spec) -> atom_string(A, Spec) ; A = Spec ),
                                         must_be(atom, A),
@@ -369,11 +386,31 @@ python_module_names(CanonPath, ModuleKey, ModuleName) :-
     file_base_name(CanonPath, BaseName),
     file_name_extension(ModuleName, _, BaseName).
 
+python_sibling_module_names(ParentDir, ModuleNames) :-
+    directory_files(ParentDir, Entries),
+    findall(ModuleName,
+            ( member(Entry, Entries),
+              file_name_extension(ModuleName, py, Entry) ),
+            Names),
+    sort(Names, ModuleNames).
+
+save_python_module(Name, module_state(Name, true, Module)) :-
+    py_call(sys:modules:'__contains__'(Name), @(true)), !,
+    py_call(sys:modules:get(Name), Module),
+    py_call(sys:modules:pop(Name), _).
+save_python_module(Name, module_state(Name, false, @(none))).
+
+restore_python_module(module_state(Name, true, Module)) :- !,
+    py_call(sys:modules:'__setitem__'(Name, Module), _).
+restore_python_module(module_state(Name, false, _)) :-
+    catch(py_call(sys:modules:pop(Name), _), _, true).
+
 load_python_source(CanonPath) :-
     python_module_names(CanonPath, ModuleKey, ModuleName),
-    py_call(sys:modules:get(ModuleName), PreviousModule),
     py_call(sys:path:copy(), PreviousPath),
     file_directory_name(CanonPath, ParentDir),
+    python_sibling_module_names(ParentDir, SiblingNames),
+    maplist(save_python_module, SiblingNames, ModuleStates),
     py_call(importlib:util:spec_from_file_location(ModuleKey, CanonPath), Spec),
     py_call(importlib:util:module_from_spec(Spec), Module),
     py_call(sys:modules:'__setitem__'(ModuleKey, Module), _),
@@ -382,25 +419,24 @@ load_python_source(CanonPath) :-
     catch(setup_call_cleanup(
               true,
               py_call(Spec:loader:exec_module(Module), _),
-              restore_python_import_context(ModuleName, PreviousModule,
-                                            PreviousPath)),
+              restore_python_import_context(ModuleStates, PreviousPath)),
           Error,
           ( catch(py_call(sys:modules:pop(ModuleKey), _), _, true),
             throw(Error) )),
     retractall(python_import_alias(ModuleName, _)),
     assertz(python_import_alias(ModuleName, ModuleKey)).
 
-restore_python_import_context(ModuleName, PreviousModule, PreviousPath) :-
+restore_python_import_context(ModuleStates, PreviousPath) :-
     catch(( py_call(sys:path:clear(), _),
             py_call(sys:path:extend(PreviousPath), _) ),
           _,
           true),
-    ( PreviousModule == @(none)
-      -> catch(py_call(sys:modules:pop(ModuleName), _), _, true)
-       ; py_call(sys:modules:'__setitem__'(ModuleName, PreviousModule), _) ).
+    maplist(restore_python_module, ModuleStates).
 
 'import!'(Space, File, true) :- importer_helper(Space, File).
 importer_helper(Space, File) :-
+    with_mutex(metta_loader, importer_helper_impl(Space, File)).
+importer_helper_impl(Space, File) :-
     ( python_import_file(File)
       -> resolve_python_import_path(File, CanonPath),
          import_once('$python', CanonPath, load_python_source(CanonPath))
