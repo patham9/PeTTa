@@ -1107,6 +1107,31 @@ untyped_call_out('union-atom', [A, B], Out) :- union_atom_out_type(A, B, Out).
 untyped_call_out(append, [A, B], Out) :- union_atom_out_type(A, B, Out).
 untyped_call_out('subtraction-atom', [A, _], Out) :- first_list_out_type(A, Out).
 untyped_call_out(list_to_set, [A], Out) :- first_list_out_type(A, Out).
+%The ACCESSORS, which nobody typed: only the constructors above were here, so
+%a (List Choice) went in and an untyped value came out. That is what forced a
+%runtime guard on every element use and made --strict reject
+%(probe (car-atom $xs)) - the loss was at the accessor, not at match or
+%collapse. first/2 is a lib_roman pair helper, a different function; only the
+%one-argument builtin is typed here.
+untyped_call_out('car-atom', [A], Out) :- list_elem_out_type(A, Out).
+untyped_call_out(first, [A], Out) :- list_elem_out_type(A, Out).
+untyped_call_out(last, [A], Out) :- list_elem_out_type(A, Out).
+untyped_call_out('cdr-atom', [A], Out) :- cdr_atom_out_type(A, Out).
+
+%(List T) -> T. The element type is what the accessor projects; whether the
+%call SUCCEEDS is a separate question and belongs to the determinism table
+%(where car-atom is det because its second clause answers () for anything the
+%first does not match, and last is semidet-or-worse for the empty list).
+list_elem_out_type(A, Out) :- ( var(Out), union_side_elem(A, T), nonvar(T),
+                                \+ wildcard_type_t(T)
+                                -> set_out_type(Out, T) ; true ).
+
+%An expression's tail is always a sequence, so cdr-atom keeps the (List ...)
+%floor its old declaration gave it, and narrows the element type whenever the
+%argument's own type supplies one:
+cdr_atom_out_type(A, Out) :- ( var(Out), union_side_elem(A, T), nonvar(T)
+                               -> set_out_type(Out, ['List', T])
+                                ; set_out_type(Out, ['List', '%Undefined%']) ).
 
 %Element-filtering builtins preserve their first argument's list type; the
 %other operand may be any expression:

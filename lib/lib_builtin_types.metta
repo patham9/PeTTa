@@ -69,9 +69,17 @@
 (: copy_term (-> $a $a))
 (: println! (-> $a Bool))
 
-;; Expression tails are always sequences, but their elements may be
-;; heterogeneous source atoms.
-(: cdr-atom (-> $expression (List %Undefined%)))
+;; The list ACCESSORS - car-atom, cdr-atom, first, last - stay undeclared for
+;; the same reason the list constructors do, and with a sharper consequence.
+;; (: cdr-atom (-> $expression (List %Undefined%))) used to live here, and a
+;; declaration is consulted BEFORE the contextual typing in untyped_call_out/3,
+;; so it did not merely fail to help: it replaced whatever the argument knew
+;; with (List %Undefined%). (cdr-atom $xs) on a (List Choice) came back as a
+;; list of nothing in particular, every later use of an element needed a
+;; runtime guard, and --strict rejected the guard it could not discharge. The
+;; checker now derives (List T) -> T for car-atom/first/last and (List T) for
+;; cdr-atom, keeping the (List %Undefined%) floor when the element type is not
+;; known.
 
 ;; Collection operators always return sequences.  `collapse` may collect
 ;; heterogeneous alternatives.  `union-atom`, `append`, `subtraction-atom` and

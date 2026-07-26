@@ -178,6 +178,22 @@ the containing function and the checked type. Combined with `--strict` (which
 already forbids the implicit ones) a warning-free compile certifies that the
 program contains no runtime type checks at all.
 
+**The list builtins are typed contextually, not declared.** A global
+signature for `cons`, `append` or `car-atom` would have to name an element
+type, and that would reject the legal heterogeneous expressions MeTTa is built
+out of. So they carry no declaration and the checker derives their result from
+the argument at each call site instead: the constructors (`cons`, `cons-atom`,
+`union-atom`, `append`, `subtraction-atom`, `list_to_set`) yield the list type
+their operands agree on, and the accessors (`car-atom`, `first`, `last`) yield
+that list's **element** type, with `cdr-atom` yielding the list type again. A
+declaration would defeat this rather than help it: it is consulted *first*, so
+`(: cdr-atom (-> $expression (List %Undefined%)))` did not merely fail to
+narrow, it replaced what the argument knew — `(car-atom (cdr-atom $xs))` on a
+`(List Choice)` came back untyped, needed a runtime guard on every later use,
+and `--strict` rejected the guard it could not discharge. Whether an accessor
+*succeeds* is a separate question, and belongs to the determinism table. See
+`examples/strict_list_accessor_types.metta`.
+
 **Structural tuple types.** A parenthesized type describes an expression, in
 one of two readings — and which one you get is decided by the *declaration* of
 its head atom, not by how the atom is spelled:
