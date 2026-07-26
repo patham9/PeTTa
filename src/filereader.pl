@@ -51,23 +51,27 @@ load_imported_metta_file(Filename, Results, Space) :-
 load_imported_metta_file_impl(Filename, Results, Space) :-
     ( compiled_metta_source(Filename)
       -> load_metta_file_impl(Filename, Results, Space, populate)
-       ; assertz(compiled_metta_source(Filename)),
-         run_new_source_load(Filename, Results, Space) ).
+       ; run_with_loading_marker(
+             compiled_metta_source(Filename),
+             run_new_source_load(Filename, Results, Space)) ).
 
 run_new_source_load(Filename, Results, Space) :-
     gensym(source_load_, LoadId),
-    setup_call_cleanup(
+    setup_call_catcher_cleanup(
         asserta(active_source_load(LoadId), ContextRef),
-        catch(( once(load_metta_file_impl(Filename, Results, Space, compile))
-                -> retractall(source_load_assertion(LoadId, _))
-                 ; rollback_source_load(LoadId),
-                   retractall(compiled_metta_source(Filename)),
-                   fail ),
-              Error,
-              ( rollback_source_load(LoadId),
-                retractall(compiled_metta_source(Filename)),
-                throw(Error) )),
-        erase(ContextRef)).
+        once(load_metta_file_impl(Filename, Results, Space, compile)),
+        Catcher,
+        ( erase(ContextRef),
+          ( Catcher == exit
+            -> retractall(source_load_assertion(LoadId, _))
+             ; rollback_source_load(LoadId) ) )).
+
+run_with_loading_marker(Marker, Goal) :-
+    setup_call_catcher_cleanup(
+        assertz(Marker, Ref),
+        once(Goal),
+        Catcher,
+        ( Catcher == exit -> true ; erase(Ref) )).
 
 record_source_assertion(Ref) :-
     active_source_load(LoadId), !,

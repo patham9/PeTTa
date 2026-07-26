@@ -369,16 +369,8 @@ resolve_python_import_path(File, CanonPath) :-
 import_once(Space, CanonPath, Goal) :-
     ( imported_metta_source(Space, CanonPath)
       -> true
-       ; assertz(imported_metta_source(Space, CanonPath)),
-         run_new_import(Space, CanonPath, Goal) ).
-
-run_new_import(Space, CanonPath, Goal) :-
-    catch(( once(Goal)
-            -> true
-             ; retractall(imported_metta_source(Space, CanonPath)), fail ),
-          Error,
-          ( retractall(imported_metta_source(Space, CanonPath)),
-            throw(Error) )).
+       ; run_with_loading_marker(
+             imported_metta_source(Space, CanonPath), Goal) ).
 
 python_module_names(CanonPath, ModuleKey, ModuleName) :-
     crypto_data_hash(CanonPath, Hash, [algorithm(sha256)]),

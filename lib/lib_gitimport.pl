@@ -2,7 +2,7 @@
 :- use_module(library(process)).
 :- use_module(library(random)).
 
-:- dynamic git_dependency/4.
+:- dynamic git_dependency/2.
 :- dynamic git_library_path/2.
 
 % Runtime git-import! is a core primitive.  Declarative git-dependency forms use
@@ -52,27 +52,16 @@ acquire_git_dependency(Url, Rev, Build, Base) :-
 acquire_git_dependency_impl(Url, Rev, Build, Base) :-
     absolute_file_name(Base, CanonBase, [file_errors(fail)]),
     normalize_git_url(Url, IdentityUrl),
-    ( git_dependency(IdentityUrl, PreviousRev, PreviousBuild, PreviousBase)
-      -> ( PreviousRev == Rev,
-           PreviousBuild == Build,
-           PreviousBase == CanonBase
+    Spec = dependency(Rev, Build, CanonBase),
+    ( git_dependency(IdentityUrl, PreviousSpec)
+      -> ( PreviousSpec == Spec
            -> true
             ; throw(error(domain_error(conflicting_git_dependency, Url),
                           context('git-dependency',
-                                  conflicting_specs(
-                                      dependency(PreviousRev, PreviousBuild,
-                                                 PreviousBase),
-                                      dependency(Rev, Build, CanonBase))))) )
-       ; assertz(git_dependency(IdentityUrl, Rev, Build, CanonBase)),
-         run_new_git_dependency(IdentityUrl, Url, Rev, Build, CanonBase) ).
-
-run_new_git_dependency(IdentityUrl, Url, Rev, Build, Base) :-
-    catch(( once(acquire_git_dependency_body(Url, Rev, Build, Base))
-            -> true
-             ; retractall(git_dependency(IdentityUrl, Rev, Build, Base)), fail ),
-          Error,
-          ( retractall(git_dependency(IdentityUrl, Rev, Build, Base)),
-            throw(Error) )).
+                                  conflicting_specs(PreviousSpec, Spec)))) )
+       ; run_with_loading_marker(
+             git_dependency(IdentityUrl, Spec),
+             acquire_git_dependency_body(Url, Rev, Build, CanonBase)) ).
 
 acquire_git_dependency_body(Url, Rev, Build, Base) :-
     acquire_pinned_repository('git-dependency', Url, Build, Base, Rev,
@@ -152,13 +141,12 @@ acquire_pinned_locked(Context, Url, Build, Base, Name, LocalDir, Rev) :-
          git_output(Context, 'resolve current HEAD', LocalDir,
                     ['rev-parse', '--verify', 'HEAD^{commit}'], Head),
          ( Head == Rev
-           -> ensure_tracked_checkout_clean(Context, LocalDir),
-              ensure_git_build(Context, LocalDir, Rev, Build)
+           -> ensure_tracked_checkout_clean(Context, LocalDir)
             ; ensure_clean_checkout(Context, LocalDir),
               fetch_git_commit(Context, LocalDir, Rev),
               checkout_git_commit(Context, LocalDir, Rev),
-              verify_git_head(Context, LocalDir, Rev),
-              ensure_git_build(Context, LocalDir, Rev, Build) )
+              verify_git_head(Context, LocalDir, Rev) ),
+         ensure_git_build(Context, LocalDir, Rev, Build)
        ; exists_file(LocalDir)
       -> throw(error(permission_error(create, git_checkout, LocalDir),
                      context(Context, 'target exists and is not a directory')))
@@ -271,7 +259,6 @@ verify_git_head(Context, LocalDir, Rev) :-
        ; throw(error(consistency_error(git_head, Rev, Head),
                      context(Context, LocalDir))) ).
 
-run_git_build(_, _, Build) :- Build == '', !.
 run_git_build(Context, LocalDir, Build) :-
     format("Running build: ~w in ~w~n", [Build, LocalDir]),
     git_process(Context, 'build imported repository', path(sh),
