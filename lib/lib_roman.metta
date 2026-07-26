@@ -129,7 +129,12 @@
 (: init (-[nondet]-> (List $a) %Undefined%))
 (= (init $xs) (union-atom $xs ($x)))
 
-(: rcons (-> (List $a) $a (List $a)))
+;union-atom is append, and append INVERTS: with an unbound first list it
+;enumerates every split, which is exactly what makes (let (rcons $xs $x)
+;(1 2 3) ...) solve for the front and the last element. So rcons is nondet
+;for the same reason mylast and init above are, and says so - a plain ->
+;reads as a determinism commitment under --strict-det.
+(: rcons (-[nondet]-> (List $a) $a (List $a)))
 (= (rcons $xs $x) (union-atom $xs ($x)))
 
 ;Utils

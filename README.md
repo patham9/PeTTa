@@ -286,13 +286,42 @@ predicates. Everything not in it claims nothing, so a `-[det]->` body calling
 it is rejected. `(get-atoms &self)` is the reason: it enumerates a space one
 solution per atom, and a body using it is not deterministic no matter how the
 result is discarded (`examples/fail_det_nondet_builtin.metta`,
-`examples/fail_semidet_nondet_builtin.metta`). Arithmetic, comparison,
-boolean, reflection and the total list operations are all in the table and
-carry their `det` as before (`examples/determinism_builtins.metta`);
-`match`, `get-type`, `member`, `is-member` and `callPredicate` are recorded
-nondet, and the higher-order builtins (`maplist`, `foldl`, `map-atom`,
+`examples/fail_semidet_nondet_builtin.metta`).
+
+Each entry is read under the calling convention that actually holds, which
+assumes **nothing** about the arguments: any of them may be unbound, and any
+may be of the wrong type. Nothing the compiler emits rules either out — the
+residual guard is `typecheck_or_error/2`, whose variable branch *records* a
+requirement rather than testing one, so it succeeds on an unbound variable. A
+declared `Bool` therefore never implies a bound boolean, and a declared
+`(List T)` never implies a proper list; an unbound argument of a declared type
+comes straight out of well-typed code, e.g. the unfilled field of `(B $u)`.
+An exception is not a solution, so a predicate that *raises* on a mode it
+cannot serve is still `det`; one that *fails* is at best `semidet`, and one
+that enumerates is `nondet`.
+
+Read that way, arithmetic, comparison, reflection, the cell operations
+(`cons`, `car-atom`, `cdr-atom`) and `sort-atom`/`unique-atom`/`sort`/`msort`
+are `det` — each raises rather than guessing. But the operations that
+**invert** are not, and there are more of them than the table used to admit:
+`and`/`or`/`not`/`xor`/`implies` enumerate a boolean they were not given
+(`bool/1` is two facts), `index-atom` enumerates when the index is unbound,
+and `size-atom`, `union-atom`, `subtraction-atom`, `intersection-atom`,
+`exclude-item`, `alpha-unique-atom`, `append`, `reverse`, `last` and `length`
+all enumerate over an open list — `(size-atom $u)` does not terminate. Those
+modes are used deliberately (`examples/booleansolver.metta`,
+`examples/logicprogset.metta`, `lib_roman`'s `mylast`/`init`/`rcons`), so they
+are recorded `nondet` rather than suppressed. `random-int`, `bind!`,
+`get-metatype`, `add-atom` and `remove-atom` can produce **zero** results —
+`random_between/3` fails when `Max < Min`, `bind!` only matches a
+`(new-state ...)` second argument, `get-metatype`'s clauses do not cover a
+partial application, and `add-atom` needs an expression — so they are
+`semidet`, and a `-[det]->` body promising exactly one result may not call
+them either. `match`, `get-type`, `member`, `is-member` and `callPredicate`
+stay nondet, and the higher-order builtins (`maplist`, `foldl`, `map-atom`,
 `filter-atom`, `foldl-atom`) claim nothing because their determinism is their
-closure's.
+closure's. `examples/determinism_builtins.metta` pins the honest arrow for
+each family; the `fail_det_*` examples pin one rejection per cause.
 
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so
