@@ -284,6 +284,11 @@ clause_result_proper_list(Body) :- nonvar(Body), Body = [G|GArgs], atom(G),
                                    \+ ( G == cons ; G == 'cons-atom' ),
                                    length(GArgs, N), proper_list_output(G, N).
 
+%The same recognizer serves let_determinism/4: a let value of one of these
+%shapes guarantees the bound variable holds a proper list, which is what the
+%(== $v ()) nonemptiness narrowing needs to fire on a let-introduced var:
+val_guaranteed_proper_list(Val) :- clause_result_proper_list(Val).
+
 %A literal proper-list spine, built at the clause site: the empty list, a
 %data-headed list literal, or a cons onto a literal spine. Mirrors
 %manifest_proper_list's literal clauses without the var/enforced-tuple case -

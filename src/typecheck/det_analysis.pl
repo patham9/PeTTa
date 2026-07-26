@@ -254,6 +254,18 @@ let_determinism(Pat, Val, In, Result) :-
       ( det_result_final(RVal) -> Result = RVal
       ; copy_term(Pat-In, PatC-InC),
         ignore(bind_destructured_field_types(PatC, Val)),
+        %A PLAIN-var pattern bound to a value that is GUARANTEED a proper
+        %list - a collapse form (findall/3 output) or a call to a
+        %proper_list_output-certified function - carries that knowledge into
+        %the body analysis, so the (== $v ()) nonemptiness narrowing can fire
+        %on a let-introduced variable exactly as it does on a declared list
+        %parameter. The guarantee is load-bearing: the narrowing's coverage
+        %leg assumes the runtime value IS a list (a cons head cannot match a
+        %Number, and a miss is a failure under det), and collapse is what
+        %makes that unconditional. A declared (List _) output does NOT
+        %qualify - typed is not bound, so no certificate, no knowledge:
+        ( var(PatC), val_guaranteed_proper_list(Val)
+          -> add_known_type(PatC, ['List', '%Undefined%']) ; true ),
         %fields whose type stayed unknown (arrow, wildcard, no declared tuple
         %type at all) can arrive bound to anything, functions included - mark
         %the copies so they read as parameters, not as fresh locals:
