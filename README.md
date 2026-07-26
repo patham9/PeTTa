@@ -15,6 +15,15 @@ Example run:
 
 `time sh run.sh ./examples/nars_tuffy.metta`
 
+Several `.metta` files may be named, and they are loaded in exactly the order
+given, followed by any flags:
+
+`sh run.sh ./examples/a.metta ./examples/b.metta --strict`
+
+Load order is semantically significant — a declaration or a constructor that
+arrives in a later file cannot retroactively inform code already compiled from
+an earlier one.
+
 ### MORK and FAISS spaces
 
 If MORK and FAISS is installed, execute `sh build.sh` to support MORK-based atom spaces and FAISS-based atom-vector spaces.
@@ -310,6 +319,40 @@ error is either an accidental source of multiple results or a missing
 a `-[nondet]->` one may not. A clause that commits with `(cut)` may overlap
 with later clauses. See `examples/strictdet_basics.metta`.
 
+**Soundness oracles.** The checker discharges obligations statically and then
+emits nothing — which means a wrong certification leaves no trace at run time.
+Three flags turn the certifications back into runtime checks so the checker can
+be audited against real executions. All three are pure additions: they change
+only what a program verifies as it runs, never which programs compile.
+
+- `--oracle` re-emits every statically discharged type certification as a
+  runtime check — both clause outputs and the argument obligations discharged
+  at call sites. If the checker certified a type the value does not have, the
+  call site that certified it throws, instead of the program limping on to some
+  unrelated Prolog error.
+- `--oracle-det` counts the solutions of every call to a `-[det]->` or
+  `-[semidet]->` function and throws on zero (for `det`) or on two or more (for
+  either). This is the only check on a determinism *claim*: nothing else in the
+  compiled program verifies it, and the clause-entry commit actively prunes the
+  choicepoints that would reveal a violation. Zero-solution violations are
+  adjudicated only where the call site left the result unbound — a call whose
+  result is already bound is being used as a filter, and is allowed to fail.
+- `--no-det-cut` suppresses the determinism commit itself, exposing
+  clause-selection alternatives.
+
+`examples/soundness_matrix.sh` runs the first three over the whole example
+suite, plus a set of counterexample programs in `examples/soundness/` that are
+*known* to violate a certification and are pinned to the flag and the finding
+that must catch each one. Several of those are multi-file: `run.sh` accepts
+more than one `.metta` file and loads them in the order given, and some holes
+(a constructor declared in a later file than the code that matched on it, a
+determinism declaration arriving after the definition it constrains) exist only
+across a file boundary.
+
+The oracles adjudicate with the checker's own value relation, so they audit the
+checker's *certifications*, not its type model: where the model itself is too
+permissive, the oracle agrees with the certification it should contradict.
+
 Notes and caveats:
 
 - Function type declarations are pre-cached per file, so helpers may be
@@ -324,8 +367,14 @@ Notes and caveats:
   each time — that pattern was always slow and types do not change it.
 - The executable specification lives in `examples/type_*.metta`,
   `examples/fail_*.metta` (must fail compilation), `examples/strict_*.metta`,
-  and `examples/type_dispatch_matrix.sh`, which asserts properties of the
+  `examples/soundness/` (must be caught by an oracle), and
+  `examples/type_dispatch_matrix.sh`, which asserts properties of the
   generated code itself.
+- Known holes the oracles document rather than fix: a `(Newtype T)` whose
+  representation is a wildcard (`(: Proof (Newtype Expression))`) is compatible
+  with everything in both directions, and `once`, a two-argument `if` and a
+  `case` with no catch-all do not contribute `may_fail`, so a `-[det]->` body
+  built from them can have zero solutions. See `examples/soundness/`.
 
 ## Notebooks, Servers, Browser
 

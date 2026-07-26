@@ -1,16 +1,33 @@
 #!/bin/sh
 # Soundness oracles for the typechecker, run over the whole example suite.
 #
-# Phase A (--oracle): every statically discharged output certification is
-# re-emitted as a runtime guard. If the checker certified a type the runtime
-# value does not have, the guard throws and the example fails.
+# Phase A (--oracle): every statically discharged certification - clause
+# OUTPUTS and call-site ARGUMENTS alike - is re-emitted as a runtime check. If
+# the checker certified a type the runtime value does not have, the check
+# throws and the example fails. Argument certifications are the half that used
+# to go unaudited, and call sites are where the interesting holes live.
 #
-# Phase B (--no-det-cut): the determinism commit is suppressed. A function
-# declared/validated det that is semantically nondeterministic then produces
-# extra results, visible as a diff of the test output against the normal run.
+# Phase B (--no-det-cut): the determinism commit is suppressed, exposing
+# CLAUSE-SELECTION alternatives. A narrow instrument: the ! sits at clause
+# entry and overlapping heads are already a hard static error, so in practice
+# it almost never differs. Kept because it is cheap and it is the only phase
+# that tests the commit itself.
 #
-# Both phases only make sense for examples that normally pass; fail_* and
-# the standing skip list are excluded. Timeouts are reported, not hidden.
+# Phase C (--oracle-det): every call to a -[det]-> / -[semidet]-> function
+# counts its solutions and throws on zero (det) or on two or more (either).
+# This is what catches BODY-level determinism violations, which Phase B is
+# blind to.
+#
+# Phase D (counterexample cases): programs KNOWN to violate a certification,
+# each pinned to the oracle flag and the exact finding that must catch it.
+# Unlike phases A-C these are expected to fail, and the test is that they fail
+# for the stated reason. A case may be MULTI-FILE with a defined load order -
+# some holes (a constructor declared in a later file, a determinism
+# declaration arriving after the definition it constrains) exist only across a
+# file boundary and cannot be expressed in a single file at all.
+#
+# Phases A-C only make sense for examples that normally pass; fail_* and the
+# standing skip list are excluded. Timeouts are reported, not hidden.
 set -u
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -59,7 +76,58 @@ for f in "$ROOT_DIR"/examples/*.metta; do
             FAILED=1
         fi
     fi
+
+    # Phase C: every committed call must really have the cardinality it claims.
+    out=$(timeout -k 5 600 sh "$ROOT_DIR/run.sh" "$f" $mode --oracle-det -s 2>&1)
+    st=$?
+    if [ $st -eq 124 ] || [ $st -eq 137 ]; then
+        echo "[SKIP-TIMEOUT oracle-det] $base"
+    elif [ $st -ne 0 ] || echo "$out" | grep -q "❌"; then
+        echo "[FAIL oracle-det] $base: declared determinism contradicted at runtime"
+        echo "$out" | grep -E "❌|ERROR" | head -3
+        FAILED=1
+    fi
 done
+
+# Phase D. One case per line:
+#
+#     <oracle flags>|<substring the finding must contain>|<file> [<file> ...]
+#
+# Paths are relative to examples/ and are loaded IN THE ORDER GIVEN - run.sh
+# passes several .metta files straight through to the loader, and load order is
+# precisely what some of these cases are about. The case must fail, and it must
+# fail with the named finding: a case that dies of something else (the raw
+# Prolog error the hole would otherwise produce, say) means the oracle stopped
+# catching it, which is a regression, not a pass.
+counterexample_cases() {
+    cat <<'CASES'
+--oracle|Type mismatch: got "oops" but expected 'Number'|soundness/ctor_snapshot_1_goal.metta soundness/ctor_snapshot_2_gpu.metta
+--oracle|Type mismatch: got "not a number" but expected 'Number'|soundness/newtype_wildcard_leak.metta
+--oracle-det|pick is declared -[det]-> but this call produced 2 solutions|soundness/late_det_decl_1_defs.metta soundness/late_det_decl_2_decl.metta
+--oracle-det|f is declared -[det]-> but this call produced 0 solutions|soundness/det_case_no_catchall.metta
+--oracle-det|g is declared -[det]-> but this call produced 0 solutions|soundness/det_two_arg_if.metta
+--oracle-det|h is declared -[det]-> but this call produced 0 solutions|soundness/det_once_semidet.metta
+CASES
+}
+
+counterexample_cases | while IFS='|' read -r flags want files; do
+    [ -n "$files" ] || continue
+    paths=""
+    for rel in $files; do paths="$paths $ROOT_DIR/examples/$rel"; done
+    # shellcheck disable=SC2086
+    out=$(timeout -k 5 240 sh "$ROOT_DIR/run.sh" $paths $flags -s 2>&1)
+    st=$?
+    if [ $st -eq 0 ]; then
+        echo "[FAIL counterexample] $files: expected $flags to catch it, it ran clean"
+        : > "$TMP_DIR/failed"
+    elif ! echo "$out" | grep -qF "$want"; then
+        echo "[FAIL counterexample] $files: failed, but not with the expected finding"
+        echo "  wanted: $want"
+        echo "$out" | grep -E "ERROR" | head -2
+        : > "$TMP_DIR/failed"
+    fi
+done
+if [ -f "$TMP_DIR/failed" ]; then FAILED=1; fi
 
 if [ $FAILED -eq 0 ]; then
     echo "OK: soundness_matrix.sh"

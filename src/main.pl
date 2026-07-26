@@ -31,6 +31,8 @@ prolog:error_message(infix_arrow_syntax(Name, Type)) -->
     [ 'Arrows are prefix - write (-[det]-> A B), not (A -[det]-> B) - in the declaration of ~p: ~p'-[Name, Type] ].
 prolog:error_message(strict_runtime_typecheck(Context, Goal)) -->
     [ 'Strict mode rejected residual runtime type goal in ~p: ~p'-[Context, Goal] ].
+prolog:error_message(determinism_cardinality(Fun, Det, N)) -->
+    [ 'Determinism cardinality violated: ~p is declared -[~w]-> but this call produced ~w solutions'-[Fun, Det, N] ].
 prolog:error_message(strict_missing_function_type(Fun, Arity)) -->
     [ 'Strict mode requires a declared or inferable type for ~p/~p'-[Fun, Arity] ].
 
@@ -59,10 +61,25 @@ main :- current_prolog_flag(argv, RawArgs),
         ( Args = [] -> prolog_interop_example
         ; Args = [mork] -> prolog_interop_example,
                            mork_test
-        ; Args = [File|_] -> load_metta_file(File,Results),
-                             maplist(swrite,Results,ResultsR),
-                             maplist(format("~w~n"), ResultsR)
+        ; leading_metta_files(Args, Files), Files = [First|_]
+          -> file_directory_name(First, Dir),
+             assertz(working_dir(Dir)),
+             maplist(load_metta_file, Files, ResultsList),
+             append(ResultsList, Results),
+             maplist(swrite,Results,ResultsR),
+             maplist(format("~w~n"), ResultsR)
         ),
         halt.
+
+% Several .metta files may be named, and they are loaded in exactly the order
+% given. Load ORDER is semantically significant - a declaration or a
+% constructor that arrives in a later file cannot retroactively inform code
+% already compiled from an earlier one - so some soundness properties can only
+% be exercised by a multi-file program (see examples/soundness/ and Phase D of
+% examples/soundness_matrix.sh). Leading arguments ending in .metta are files;
+% everything from the first non-file argument on is flags.
+leading_metta_files([A|As], [A|Fs]) :- atom(A), file_name_extension(_, metta, A), !,
+                                       leading_metta_files(As, Fs).
+leading_metta_files(_, []).
 
 :- initialization(main, main).

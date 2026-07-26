@@ -18,14 +18,30 @@
    ; memberchk('--strict', Argv) -> assertz(strict_mode(true)), assertz(strict_det(false))
                                   ; assertz(strict_mode(false)), assertz(strict_det(false)) ).
 
-%Soundness oracles (see examples/soundness_matrix.sh): --oracle re-emits the
-%output guard even where the checker discharged it statically, so a wrong
-%certification fails at runtime; --no-det-cut suppresses the determinism
-%commit, so a semantically nondeterministic det function shows extra results.
+%Soundness oracles (see examples/soundness_matrix.sh). Three independent
+%switches, each a pure ADDITION of runtime checking - none of them changes
+%which programs compile, only what the compiled program verifies as it runs:
+%
+%  --oracle      re-emits every statically discharged certification as a
+%                runtime check: clause OUTPUTS (oracle_output_check/4) and
+%                call-site ARGUMENTS (oracle_arg_check/3) alike.
+%  --oracle-det  counts the solutions of every committed (-[det]-> /
+%                -[semidet]->) call, so a function that is declared
+%                deterministic but semantically is not - zero results for det,
+%                two or more for either - throws instead of quietly under- or
+%                over-producing. This is what --no-det-cut cannot see:
+%                clause_commit_cut/2 puts its ! at clause ENTRY, so removing it
+%                only exposes CLAUSE-SELECTION alternatives, and overlapping
+%                heads are already a hard static error. Every determinism hole
+%                found so far lives in the BODY, where --no-det-cut is blind.
+%  --no-det-cut  suppresses the determinism commit itself (kept: it is the only
+%                switch that shows clause-selection alternatives directly).
 :- dynamic oracle_mode/1.
+:- dynamic oracle_det_mode/1.
 :- dynamic suppress_det_cut/1.
 :- current_prolog_flag(argv, Argv),
    ( memberchk('--oracle', Argv) -> assertz(oracle_mode(true)) ; assertz(oracle_mode(false)) ),
+   ( memberchk('--oracle-det', Argv) -> assertz(oracle_det_mode(true)) ; assertz(oracle_det_mode(false)) ),
    ( memberchk('--no-det-cut', Argv) -> assertz(suppress_det_cut(true)) ; assertz(suppress_det_cut(false)) ).
 
 %--warn-runtime-checks reports every runtime type check the compiler emits -
@@ -768,7 +784,7 @@ arg_statically_ok(AV, T) :- \+ \+ ( var(AV) -> ( known_singleton(AV, K) -> type_
 check_call_arg(Mode, Fun, AV, T, Gs) :- ( var(AV)
                                           -> ( known_singleton(AV, K)
                                                -> ( nonvar(T), wildcard_type_t(T) -> Gs = []  %wildcards carry no knowledge
-                                                  ; type_unify(K, T) -> Gs = []
+                                                  ; type_unify(K, T) -> oracle_arg_check(AV, T, Gs)
                                                   %conflicting brands cannot be deferred to a runtime
                                                   %guard - newtypes are erased there - so they reject
                                                   %now, but only on a promised type:
@@ -784,7 +800,7 @@ check_call_arg(Mode, Fun, AV, T, Gs) :- ( var(AV)
                                              ; Mode == inferred -> Gs = []
                                              ; type_guard(Fun, AV, T, Gs) )
                                         ; check_value(AV, T, St),   %also binds an open T: knowledge
-                                          ( St == ok -> Gs = []
+                                          ( St == ok -> oracle_arg_check(AV, T, Gs)
                                           ; St == mismatch
                                             -> ( Mode == declared
                                                  -> throw(error(literal_type_mismatch(AV, T), typecheck))
@@ -1172,9 +1188,85 @@ oracle_output_check(DeclOut, Out, Gs0, Gs) :-
       -> Gs = [oracle_check(Out, OT)]
        ; Gs = Gs0 ).
 
-oracle_check(V, T) :- copy_term(T, T2), check_value(V, T2, St),
-                      ( St == mismatch
-                        -> throw(error(literal_type_mismatch(V, T), typecheck)) ; true ).
+%The same treatment for the OTHER half of the certification story: an argument
+%obligation that check_call_arg/5 discharged statically (the callee's declared
+%parameter type was proved compatible, so no guard was emitted) is re-verified
+%at runtime under --oracle. Output certifications alone left every call-site
+%obligation unaudited, which is precisely where the constructor-snapshot and
+%brand-erasure holes live. A pure addition: no compile-time decision consults
+%these goals, they are appended after the branch has already been chosen.
+%
+%acyclic_term/1: an inferred self-referential type (examples/matespacefast.metta
+%builds one) is a rational tree the compiler can hold but assertz/1 cannot store,
+%so such a certification is simply not auditable this way and is skipped rather
+%than crashing the compile. Reported here so it is not mistaken for a pass.
+oracle_arg_check(AV, T, Gs) :- ( oracle_mode(true), nonvar(T), \+ wildcard_type_t(T),
+                                 acyclic_term(T), acyclic_term(AV)
+                                 -> Gs = [oracle_check(AV, T)]
+                                  ; Gs = [] ).
+
+%%% --oracle-det: the CARDINALITY oracle.
+%
+%A determinism declaration is a claim about how many solutions a call has:
+%det = exactly one, semidet = zero or one. Nothing in the compiled program
+%checks that claim, and the clause-entry ! actively hides violations by
+%pruning the choicepoints that would reveal them. Under --oracle-det a call to
+%a committed function is compiled to oracle_det_call/4, which enumerates the
+%call's solutions, adjudicates the count, and then re-establishes the single
+%solution's bindings. The callee is executed exactly ONCE (findall/3 drives it
+%to exhaustion), so side effects are not duplicated - but last-call
+%optimization is gone for wrapped calls, which is the price of counting.
+oracle_det_wrap(Fun, NArgs, Out, Goal, Wrapped) :-
+    ( oracle_det_mode(true), atom(Fun),
+      oracle_det_believed(Fun, NArgs, Det), committed_det(Det)
+      -> Wrapped = oracle_det_call(Fun, Det, Out, Goal)
+       ; Wrapped = Goal ).
+
+%What is audited is a PROMISE, so only a declared determinism selects a call
+%for wrapping - inferred determinism (body_determinism/3) is nobody's promise,
+%and the builtin table is the checker's own bookkeeping rather than a claim the
+%program made. But where that table exists it OVERRIDES the declaration, just
+%as function_call_determinism/3 does: (: empty (-> $a)) reads as det under
+%--strict-det while the checker knows empty is the canonical semidet bottom,
+%and auditing that call against the declaration would make the oracle stricter
+%than the thing it audits - a false positive by construction.
+oracle_det_believed(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
+                                  Det0 \== unspecified,
+                                  ( builtin_call_determinism(F, N, DetB) -> Det = DetB ; Det = Det0 ).
+
+%A call whose RESULT argument is already bound is not asking the function for
+%its answer, it is testing a candidate one: (let True (> (myplus $x 2) 3) $x)
+%compiles to a call to >/3 with the result fixed at true, and failing is how it
+%says "no". "det" is a claim about the answering mode, so zero solutions is
+%only a violation where the call site left the result open. Two or more
+%solutions is a violation in either mode - no amount of input binding turns one
+%answer into two.
+oracle_det_call(F, Det, Out, Goal) :-
+    ( var(Out) -> Answering = true ; Answering = false ),
+    findall(Goal, Goal, Sols),
+    length(Sols, N),
+    ( N >= 2 -> throw(error(determinism_cardinality(F, Det, N), determinism))
+    ; Sols == [] -> ( Det == det, Answering == true
+                      -> throw(error(determinism_cardinality(F, Det, 0), determinism))
+                       ; fail )                 %semidet may fail; a filter may too
+    ; Sols = [S], Goal = S ).
+
+%KNOWN LIMITATION: oracle_check/2 adjudicates with the checker's own
+%check_value/3, so it audits the CERTIFICATIONS, not the type model. A value
+%relation that is itself too permissive (e.g. a newtype whose representation is
+%a wildcard) agrees with the certification it should contradict and stays
+%invisible here. Fixing that needs an independent value relation; out of scope.
+%check_value/3 is a COMPILE-TIME relation over terms the compiler owns: it
+%binds open types, and (via the partial(F,B) clause) it binds an unbound VALUE
+%as well. Running it on live runtime data must not leak either binding back
+%into the audited program - an oracle that mutates the program it audits is
+%not an oracle. So both sides are copied, the call is made semidet, and an
+%unbound value is treated as no evidence rather than as a certification.
+oracle_check(V, T) :- ( var(V) -> true
+                      ; copy_term(V-T, V2-T2),
+                        ( once(check_value(V2, T2, St)), St == mismatch
+                          -> throw(error(literal_type_mismatch(V, T), typecheck))
+                           ; true ) ).
 
 %The unknown marker is not a concrete result type, so it never turns a bottom
 %body into a dishonest parametric declaration:
