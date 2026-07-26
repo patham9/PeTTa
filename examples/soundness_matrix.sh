@@ -143,6 +143,7 @@ counterexample_cases() {
 |Deterministic function pick has overlapping clauses|soundness/late_det_decl_1_defs.metta soundness/late_det_decl_2_decl.metta
 |Type mismatch: got "oops" but expected 'Number'|soundness/ctor_snapshot_1_goal.metta soundness/ctor_snapshot_2_gpu.metta
 |Deterministic function rank is not exhaustive|soundness/late_ctor_exhaustive_1_ranks.metta soundness/late_ctor_exhaustive_2_blue.metta
+|Argument of f is unbound|soundness/late_det_boundness_1_defs.metta soundness/late_det_boundness_2_decl.metta
 CASES
 }
 

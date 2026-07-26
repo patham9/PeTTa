@@ -158,6 +158,7 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                              -> maplist(normalize_type, ATs, ATN),
                                                 normalize_type(OT, OTN),
                                                 note_explicit_det_decl(Name, Type, ATN),
+                                                note_explicit_committed_decl(Name, Type, ATN),
                                                 retractall(inferred_fn_type(Name, _, _)),  %declaration supersedes inference
                                                 ( declared_fn_type(Name, A2, O2, D2),
                                                   (A2-O2-D2) =@= (ATN-OTN-Det) -> true
@@ -180,6 +181,21 @@ note_explicit_det_decl(Name, Type, ATs) :- ( nonvar(Type), Type = [Arrow|_], ato
                                              canonical_arrow(Arrow, '-[det]->'),
                                              length(ATs, N), \+ explicit_det_decl(Name, N)
                                              -> assertz(explicit_det_decl(Name, N)) ; true ).
+
+%The boundness enforcement (src/translator.pl) and the enforced-bound
+%strengthenings need BOTH committed arrows, not only -[det]->. This records the
+%explicit committed determinism (det OR semidet) written on the arrow, in every
+%mode - a plain -> never qualifies, not even under --strict-det, because only
+%the explicit arrow is a per-function every-mode commitment. Kept SEPARATE from
+%explicit_det_decl/2, which stays det-only for the exhaustiveness check (the
+%way out of a real incompleteness is -[semidet]->, so it must not be caught).
+:- dynamic explicit_committed_decl/3.   % explicit_committed_decl(F, N, Det), Det in {det, semidet}
+
+note_explicit_committed_decl(Name, Type, ATs) :- ( nonvar(Type), Type = [Arrow|_], atom(Arrow),
+                                                   canonical_arrow(Arrow, CArrow),
+                                                   arrow_atom_det(CArrow, Det), committed_det(Det),
+                                                   length(ATs, N), \+ explicit_committed_decl(Name, N, _)
+                                                   -> assertz(explicit_committed_decl(Name, N, Det)) ; true ).
 
 %Declaration prepass: only function (arrow) declarations are hoisted, so
 %definitions may call helpers declared later in the same file. Value
@@ -210,7 +226,8 @@ maybe_uncache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term 
                                                     -> erase(Ref),
                                                        length(ATN, NA),
                                                        ( declared_fn_type(Name, A3, _, _), length(A3, NA)
-                                                         -> true ; retractall(explicit_det_decl(Name, NA)) )
+                                                         -> true ; retractall(explicit_det_decl(Name, NA)),
+                                                                   retractall(explicit_committed_decl(Name, NA, _)) )
                                                      ; true )
                                                 ; normalize_type(Type, TN),
                                                   ( clause(declared_value_type(Name, T2), true, Ref),
@@ -248,6 +265,7 @@ enforce_late_declaration(Name) :-
 
 forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
                              retractall(explicit_det_decl(Name, _)),
+                             retractall(explicit_committed_decl(Name, _, _)),
                              retractall(declared_value_type(Name, _)),
                              retractall(declared_newtype(Name, _)),
                              retractall(inferred_fn_type(Name, _, _)).
@@ -1833,7 +1851,9 @@ fn_determinism(F, N, Det) :- findall(D, ( declared_fn_type(F, ATs, _, D), length
 validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
     length(Args, N),
     fn_determinism(F, N, Det),
-    ( committed_det(Det) -> with_det_head_vars(Args, ensure_deterministic_expr(Det, BodyExpr, F)),
+    ( committed_det(Det) -> det_enforced_flag(F, N, Enf),
+                            with_det_enforced(Enf,
+                                with_det_head_vars(Args, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
                           ; true ).
 
@@ -1844,13 +1864,51 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
 %records nothing for Atom/%Undefined%), so identity is the only reliable test.
 %unify_head_is_data/1 consults this to tell a parameter from a fresh local.
 with_det_head_vars(Args, Goal) :- catch(b_getval('$det_head_vars', Saved), _, Saved = []),
+                                  catch(b_getval('$det_direct_params', SavedD), _, SavedD = []),
                                   term_variables(Args, HVs),
-                                  setup_call_cleanup(b_setval('$det_head_vars', HVs),
+                                  include(var, Args, DPs),
+                                  setup_call_cleanup(( b_setval('$det_head_vars', HVs),
+                                                       b_setval('$det_direct_params', DPs) ),
                                                      Goal,
-                                                     b_setval('$det_head_vars', Saved)).
+                                                     ( b_setval('$det_head_vars', Saved),
+                                                       b_setval('$det_direct_params', SavedD) )).
 
 det_head_var(H) :- catch(b_getval('$det_head_vars', HVs), _, fail),
                    member(V, HVs), V == H, !.
+
+%A DIRECT variable parameter: a top-level head argument that is ITSELF a
+%variable, as opposed to a variable field inside a destructured parameter like
+%(P $u). term_variables (det_head_var/1) cannot tell them apart - it flattens
+%(P $u) to [$u] - but only direct params get the boundness check in
+%translate_clause, so the strengthenings must key on THIS, not det_head_var/1.
+det_direct_param(H) :- catch(b_getval('$det_direct_params', DPs), _, fail),
+                       member(V, DPs), V == H, !.
+
+%The commitment gate. Published alongside the head vars whenever a body's
+%determinism is analysed; true only when the analysis subject itself carries an
+%explicit -[det]->/-[semidet]-> arrow (validate_function_determinism), so its
+%direct params are guaranteed bound at runtime by the boundary check. A
+%transitive callee reached through body_determinism sets it from ITS OWN
+%declaration, which in practice is never committed (a committed callee is
+%answered from its declaration and never body-analysed), so it is false there -
+%wired explicitly, not left to happen by accident.
+with_det_enforced(Bool, Goal) :- catch(b_getval('$det_enforced', Saved), _, Saved = false),
+                                 setup_call_cleanup(b_setval('$det_enforced', Bool),
+                                                    Goal,
+                                                    b_setval('$det_enforced', Saved)).
+
+det_enforced_now :- catch(b_getval('$det_enforced', E), _, fail), E == true.
+
+%A DIRECT parameter of a function under an explicit committed arrow: the
+%boundary check guarantees it is bound at runtime, so - unlike an arbitrary
+%typed argument, which may arrive unbound out of ordinary well-typed code - the
+%strengthenings below may treat it as bound. A destructured FIELD is not a
+%direct param and does NOT qualify (the boundary check is spine-level).
+enforced_bound_param(V) :- det_direct_param(V), det_enforced_now.
+
+%Whether the function whose body is about to be analysed carries an explicit
+%committed arrow, as the boolean the gate publishes:
+det_enforced_flag(F, N, Flag) :- ( explicit_committed_decl(F, N, _) -> Flag = true ; Flag = false ).
 
 %A det body must neither branch nor fail; a semidet body is the same analysis
 %minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are
@@ -2231,6 +2289,27 @@ builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), m
 %literal spine built at the call site does.
 builtin_call_determinism_args('add-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
 builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
+%The same reasoning, unlocked at a call site whose argument is not a manifest
+%literal but a DIRECT parameter under an explicit committed arrow whose declared
+%type is NOMINAL: every value of a nominal type is a constructor application, a
+%nonempty list spine at runtime, so add_sexp/remove_sexp's =.. succeeds exactly
+%once. The boundary check supplies the one fact the manifest-literal entries got
+%from the source - that the argument is bound - which is why this is sound now
+%and was not when the argument could arrive unbound out of well-typed code.
+builtin_call_determinism_args('add-atom', 2, [_, T], det) :- enforced_bound_nominal(T).
+builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- enforced_bound_nominal(T).
+
+%--- Strengthened by a bound probe against a ground, duplicate-free literal.
+%is-member(X, L) is member(X, L) ; \+ member(X, L) - two mutually exclusive
+%clauses. With X BOUND (an enforced-bound direct param, or a ground literal)
+%and L a GROUND, DUPLICATE-FREE proper list, member/2 is a test that succeeds
+%at most once, so exactly one of the two clauses yields exactly one solution:
+%det. A duplicate in L would let clause one succeed twice, and an unbound X
+%would let it enumerate - hence both conditions. The runtime predicate is left
+%untouched: its generator mode is load-bearing (examples/functionhead3.metta).
+builtin_call_determinism_args('is-member', 2, [Probe, L], det) :-
+    is_member_probe_bound(Probe),
+    manifest_ground_dupfree_list(L).
 
 %--- Strengthened by manifestly bound boolean operands.
 %and/2, or/2, not/1, xor/2 and implies/2 are nondet because bool/1 INVENTS a
@@ -2272,10 +2351,12 @@ data_headed(_).
 %answers once and then raises. That is exactly the assumption commit 6996b5b
 %removed from the flat table, and re-admitting it here would put it back.
 manifest_proper_list(X) :- X == [], !.
+manifest_proper_list(X) :- var(X), !, enforced_bound_tuple(X, _).
 manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
                            manifest_proper_list(Tl).
 
+manifest_nonempty_list(X) :- var(X), !, enforced_bound_tuple(X, W), W >= 1.
 manifest_nonempty_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_nonempty_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
                              manifest_proper_list(Tl).
@@ -2286,9 +2367,58 @@ manifest_nonempty_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons
 %if-then-else over a comparison, and raises rather than guessing).
 manifest_bool(X) :- X == true, !.
 manifest_bool(X) :- X == false, !.
+%A DIRECT parameter, under an explicit committed arrow, whose declared type is
+%Bool: the boundary check makes it bound at runtime and its type makes it a
+%boolean, so and/or/not/xor/implies find a value to test rather than a hole to
+%enumerate. A Bool-typed destructured FIELD does NOT qualify - enforced_bound_param/1
+%tests direct params only, and a field is skipped by the spine-level boundary check.
+manifest_bool(X) :- var(X), !, enforced_bound_param(X), known_singleton(X, 'Bool').
 manifest_bool([F|As]) :- atom(F), is_list(As), length(As, N),
                          builtin_call_determinism(F, N, det),
                          findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool'.
+
+%A bound is-member probe: a ground literal, or an enforced-bound direct param
+%(any type - only boundness matters, since the probe is a test operand):
+is_member_probe_bound(P) :- ground(P), !.
+is_member_probe_bound(P) :- var(P), enforced_bound_param(P).
+
+%A manifest proper list that is fully ground and duplicate-free. sort/2 dedups
+%and orders; equal length to msort/2 (which keeps duplicates) means no dup:
+manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
+                                   sort(L, S), msort(L, M), length(S, K), length(M, K).
+
+%A DIRECT parameter, under an explicit committed arrow, whose declared type is
+%NOMINAL (a declared, non-wildcard, non-primitive atom type). Its values are
+%constructor applications - nonempty list spines at runtime - so remove/add-atom
+%is det. The boundary check removes the unbound-arrival case; the declaration
+%makes the type nominal - PROVIDED no inhabitant is a bare atom: a nullary
+%constructor or declared constant ((: left Left)) is an atom value, not a
+%list spine, and remove_sexp's =.. FAILS on it - zero solutions under a det
+%claim. The judgement reads the type's constructor set, so it is a snapshot
+%like every other such verdict (note_ctor_snapshot/1): a constant declared in
+%a later file recompiles this clause and withdraws the strengthening.
+enforced_bound_nominal(T) :- var(T), enforced_bound_param(T),
+                             known_singleton(T, K), atom(K),
+                             user_atom_type(K), type_name_declared(K),
+                             note_ctor_snapshot(K),
+                             \+ nominal_nullary_inhabitant(K).
+
+%An inhabitant of K that is a bare atom at runtime: a declared constant of
+%type K, or a nullary constructor (-> K):
+nominal_nullary_inhabitant(K) :- declared_value_type(C, K2), K2 == K, atom(C), \+ fun(C), !.
+nominal_nullary_inhabitant(K) :- member_ctor(K, 0, _).
+
+%A DIRECT parameter, under an explicit committed arrow, whose declared type is a
+%fixed-width positional tuple (tagged_tuple_type/3's positional reading: a list
+%of concrete types whose value is an N-element list, N>=1 - the tagged and
+%untagged readings agree on width = length of the type list). The value is
+%therefore a proper, nonempty list. This re-admits the (Number Number) min-atom
+%case that 28e87bd removed: its ONLY objection was unbound arrival, and the
+%boundary check removes exactly that, so the case is sound under enforcement.
+enforced_bound_tuple(X, W) :- var(X), enforced_bound_param(X),
+                              known_singleton(X, K),
+                              is_list(K), \+ is_arrow_type(K), \+ is_union(K), \+ list_type(K, _),
+                              length(K, W), W >= 1.
 
 %A deterministic caller needs positive evidence about its callees. Functions
 %without a determinism arrow are analyzed from their translated clauses
@@ -2312,7 +2442,8 @@ body_determinism(F, N, Det) :- catch(nb_getval(F, Metas0), _, Metas0 = []),
                                   ; catch(b_getval('$det_stack', St), _, St = []),
                                     b_setval('$det_stack', [F|St]),
                                     type_meta_params(F, N, Metas, Metas1),
-                                    clause_set_determinism(Metas1, Det0),
+                                    det_enforced_flag(F, N, Enf),
+                                    with_det_enforced(Enf, clause_set_determinism(Metas1, Det0)),
                                     b_setval('$det_stack', St),
                                     Det = Det0,
                                     assertz(det_analysis_cache(F, N, Det)) ).
@@ -2625,7 +2756,8 @@ body_determinism_assuming(F, N, Det) :- catch(nb_getval(F, Metas0), _, Metas0 = 
                                         maplist(assume_det_meta(ATs1, Positions), Metas, Upgraded),
                                         catch(b_getval('$det_assume_stack', St), _, St = []),
                                         b_setval('$det_assume_stack', [F|St]),
-                                        clause_set_determinism(Upgraded, Det0),
+                                        det_enforced_flag(F, N, Enf),
+                                        with_det_enforced(Enf, clause_set_determinism(Upgraded, Det0)),
                                         b_setval('$det_assume_stack', St),
                                         Det = Det0,
                                         assertz(det_assume_cache(F, N, Det)).

@@ -395,6 +395,43 @@ discipline the `-[det]->` exhaustiveness check uses. This strengthens
 `examples/strictdet_builtin_arg_shapes.metta` pins the strengthened cases and
 `examples/fail_strictdet_min_atom_unknown_shape.metta` pins the fallback.
 
+**Boundness enforcement at a committed boundary.** The paragraph above says a
+*declared* type never qualifies, because "typed" does not imply "bound" — a
+`(Number Number)` or `Bool` parameter can arrive unbound out of ordinary
+well-typed code (`(P $u)` leaves its field unfilled), and no residual guard
+rules that out. An explicit `-[det]->`/`-[semidet]->` arrow changes that at its
+own boundary: the compiler emits a `nonvar` check per **variable** parameter,
+before the commit cut and the body, so the function *cannot begin* with an
+unbound argument. Passing one throws a clear `unbound_det_argument` error
+(`examples/fail_unbound_det_argument.metta`) — where the same call used to
+enumerate a finite type through `bool/1` or crash downstream inside a builtin's
+`=..`. Enforcement is **mode-independent**: it keys on the explicit arrow, not
+on `--strict-det`, because only the explicit arrow is an every-mode commitment.
+
+Because "typed implies bound" now holds for those parameters, five call-site
+verdicts that a bare declared type could not earn become sound when the
+argument is such a parameter: `and`/`or`/`not`/`xor`/`implies` over `Bool`
+params, `remove-atom`/`add-atom` over a **nominal**-typed param (every value is
+a constructor application, a nonempty list spine), `is-member` with a bound
+probe against a ground duplicate-free literal, and `min-atom`/`max-atom` and the
+list operations over a fixed-width **tuple** param — the `(Number Number)` case
+the flat table had to drop, re-admitted because its only objection was unbound
+arrival and the boundary check removes exactly that.
+
+The check is **spine-level, deliberately**. A non-variable (destructuring)
+parameter like `(P $u)` is bound as a whole by head unification, so it is
+skipped — and its field `$u` is **not** checked. Chainer proof terms
+legitimately carry unbound variables inside otherwise-bound data, and
+field-level enforcement would reject them. The honest asymmetry is that a field
+does **not** count as bound: `(= (f (P $u)) (and $u true))` under `-[det]->`
+still rejects, because `$u` can arrive unbound even though `(P $u)` did not
+(`examples/fail_det_field_in_and.metta`). The strengthenings mirror the check
+exactly — they key on *direct* parameters, never fields.
+`examples/strictdet_det_bool_ops.metta`,
+`examples/strictdet_remove_atom_nominal.metta`,
+`examples/strictdet_is_member_literal.metta` and
+`examples/strictdet_min_atom_tuple.metta` pin the unlocked cases.
+
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so
 where a `-[det]->`/`-[semidet]->` (or, under `--strict-det`, a plain `->`)

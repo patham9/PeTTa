@@ -33,6 +33,11 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                retractall(det_analysis_cache(_, _, _)),  %clause set changed
                                                retractall(det_assume_cache(_, _, _)),  %conditional-det results depend on clauses too
                                                clause_param_types(F, Args1, DeclOut),
+                                               %A function whose declaration carries an EXPLICIT -[det]->/-[semidet]->
+                                               %arrow promises, in EVERY mode, that it is called with bound
+                                               %arguments. Emit the runtime boundness checks now, while the param
+                                               %vars are still fresh, and splice them in before the commit cut below.
+                                               det_boundness_checks(F, Args1, DetChecks),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
                                                parametric_param_snapshot(DeclOut, ParamVars),
@@ -87,8 +92,39 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %semidet function is as cheap as a det one:
                                                ( clause_commit_cut(F, Args1) -> Commit = [!] ; Commit = [] ),
                                                param_promises_restore(OuterPromises),
-                                               append([GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
+                                               append([DetChecks, GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
+
+%%% -[det]->/-[semidet]-> BOUNDNESS enforcement. An explicit committed arrow is
+%%% an every-mode promise (only the explicit arrow, never a plain -> even under
+%%% --strict-det - see the branch doctrine) that the function is called with
+%%% bound arguments. A runtime nonvar check per VARIABLE parameter makes "typed
+%%% implies bound" actually hold at the boundary, which is what soundly unlocks
+%%% the five strengthenings in typecheck.pl. It throws a clear error where the
+%%% code previously enumerated a finite type or crashed downstream in a builtin.
+%%%
+%%% SPINE-LEVEL, deliberately: a non-variable (destructuring) parameter is
+%%% already structurally bound by head unification, so it is skipped - and its
+%%% FIELDS are NOT checked. Chainer proof terms legitimately carry unbound vars
+%%% inside otherwise-bound data, so field-level enforcement would reject them.
+%%% The strengthenings mirror this exactly (enforced_bound_param/1 tests DIRECT
+%%% params only), so a field used where boundness is needed stays rejected.
+%%%
+%%% Specialized clause copies (ConstrainArgs == false) get the same checks -
+%%% calls route directly to them - and the late-declaration recompile re-emits
+%%% them when a det arrow arrives in a later file than the definition.
+det_boundness_checks(F, Args, Checks) :-
+    ( length(Args, N), explicit_committed_decl(F, N, Det)
+      -> det_param_checks(Args, F, Det, Checks)
+       ; Checks = [] ).
+
+det_param_checks([], _, _, []).
+det_param_checks([A|As], F, Det, Checks) :-
+    det_param_checks(As, F, Det, Rest),
+    ( var(A)
+      -> Checks = [ ( nonvar(A) -> true
+                    ; throw(error(unbound_det_argument(F, Det), determinism)) ) | Rest ]
+       ; Checks = Rest ).
 
 clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),

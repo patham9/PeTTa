@@ -37,6 +37,8 @@ prolog:error_message(determinism_cardinality(Fun, Det, N)) -->
     [ 'Determinism cardinality violated: ~p is declared -[~w]-> but this call produced ~w solutions'-[Fun, Det, N] ].
 prolog:error_message(strict_missing_function_type(Fun, Arity)) -->
     [ 'Strict mode requires a declared or inferable type for ~p/~p'-[Fun, Arity] ].
+prolog:error_message(unbound_det_argument(Fun, Det)) -->
+    [ 'Argument of ~p is unbound: a -[~w]-> function requires bound arguments'-[Fun, Det] ].
 
 is_silent_flag(silent).
 is_silent_flag('--silent').
