@@ -239,6 +239,9 @@ assert(Goal, true) :- ( call(Goal) -> true
 py_bool_norm('@'(true), true) :- !.
 py_bool_norm('@'(false), false) :- !.
 py_bool_norm(R, R).
+:- dynamic python_import_alias/2.
+python_call_module(Name, ModuleKey) :- python_import_alias(Name, ModuleKey), !.
+python_call_module(Name, Name).
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
 'py-call'([Spec|Args], Result, Opts) :- ( string(Spec) -> atom_string(A, Spec) ; A = Spec ),
                                         must_be(atom, A),
@@ -257,7 +260,8 @@ py_bool_norm(R, R).
                                              -> ( Args == []
                                                   -> compound_name_arguments(Call0, F, [])
                                                    ; Call0 =.. [F|Args] ),
-                                                py_call(M:Call0, R0, Opts), py_bool_norm(R0, Result)
+                                                python_call_module(M, PyModule),
+                                                py_call(PyModule:Call0, R0, Opts), py_bool_norm(R0, Result)
                                               ; ( Args == []                      % bare "fun"
                                                   -> compound_name_arguments(Call0, A, [])
                                                    ; Call0 =.. [A|Args] ),
@@ -368,17 +372,29 @@ python_module_names(CanonPath, ModuleKey, ModuleName) :-
 load_python_source(CanonPath) :-
     python_module_names(CanonPath, ModuleKey, ModuleName),
     py_call(sys:modules:get(ModuleName), PreviousModule),
+    py_call(sys:path:copy(), PreviousPath),
+    file_directory_name(CanonPath, ParentDir),
     py_call(importlib:util:spec_from_file_location(ModuleKey, CanonPath), Spec),
     py_call(importlib:util:module_from_spec(Spec), Module),
     py_call(sys:modules:'__setitem__'(ModuleKey, Module), _),
     py_call(sys:modules:'__setitem__'(ModuleName, Module), _),
-    catch(py_call(Spec:loader:exec_module(Module), _),
+    py_call(sys:path:insert(0, ParentDir), _),
+    catch(setup_call_cleanup(
+              true,
+              py_call(Spec:loader:exec_module(Module), _),
+              restore_python_import_context(ModuleName, PreviousModule,
+                                            PreviousPath)),
           Error,
-          ( restore_python_module(ModuleKey, ModuleName, PreviousModule),
-            throw(Error) )).
+          ( catch(py_call(sys:modules:pop(ModuleKey), _), _, true),
+            throw(Error) )),
+    retractall(python_import_alias(ModuleName, _)),
+    assertz(python_import_alias(ModuleName, ModuleKey)).
 
-restore_python_module(ModuleKey, ModuleName, PreviousModule) :-
-    catch(py_call(sys:modules:pop(ModuleKey), _), _, true),
+restore_python_import_context(ModuleName, PreviousModule, PreviousPath) :-
+    catch(( py_call(sys:path:clear(), _),
+            py_call(sys:path:extend(PreviousPath), _) ),
+          _,
+          true),
     ( PreviousModule == @(none)
       -> catch(py_call(sys:modules:pop(ModuleName), _), _, true)
        ; py_call(sys:modules:'__setitem__'(ModuleName, PreviousModule), _) ).

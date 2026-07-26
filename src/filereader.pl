@@ -19,9 +19,15 @@ pop_working_dir.
 load_metta_file(Filename, Results) :- load_metta_file(Filename, Results, '&self').
 load_metta_file(Filename, Results, Space) :-
     with_mutex(metta_loader,
-               catch(load_metta_file_impl(Filename, Results, Space),
+               catch(load_entry_metta_file(Filename, Results, Space),
                      Error,
                      rethrow_metta_file_error(Filename, Error))).
+
+load_entry_metta_file(Filename, Results, Space) :-
+    absolute_file_name(Filename, CanonPath, [access(read)]),
+    import_once(Space, CanonPath,
+                load_imported_metta_file(CanonPath, Results, Space)),
+    ( var(Results) -> Results = [] ; true ).
 
 load_metta_file_impl(Filename, Results, Space) :-
     load_metta_file_impl(Filename, Results, Space, compile).

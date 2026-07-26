@@ -100,9 +100,20 @@ if run_prog "$proj/conflict.metta" "$fixture/run6.log"; then
 fi
 grep -q conflicting_git_dependency "$fixture/run6.log"
 
+# Reusing one URL/revision with a different build command or base directory is
+# rejected explicitly instead of silently treating the second specification as
+# already satisfied.
+spec_build_base="$fixture/spec-build"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_build_base'),(catch(acquire_git_dependency('file://$fixture/a.git','$a1','build.sh','$spec_build_base'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_build_spec_conflict,none))),halt"
+
+spec_base_a="$fixture/spec-base-a"
+spec_base_b="$fixture/spec-base-b"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_a'),(catch(acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_b'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_base_spec_conflict,none))),halt"
+test ! -e "$spec_base_b/a"
+
 # A failed transitive acquisition must not mark its parent as loaded.  Make the
 # leaf remote available only after the first attempt, then retry in the same
-# Prolog process.
+# Prolog process using a different parent base directory.
 retry_leaf_src="$fixture/retry_leaf_src"
 mkdir -p "$retry_leaf_src"
 git -C "$retry_leaf_src" init -q
@@ -115,21 +126,23 @@ retry_leaf_sha=$(git -C "$retry_leaf_src" rev-parse HEAD)
 git clone -q --bare "$retry_leaf_src" "$fixture/retry-leaf.git.ready"
 
 retry_parent_src="$fixture/retry_parent_src"
-retry_base="$fixture/retry-imports"
+retry_leaf_base="$fixture/retry-leaf-imports"
+retry_parent_base_a="$fixture/retry-parent-a"
+retry_parent_base_b="$fixture/retry-parent-b"
 mkdir -p "$retry_parent_src"
 git -C "$retry_parent_src" init -q
 git -C "$retry_parent_src" config user.email test@example.invalid
 git -C "$retry_parent_src" config user.name "PeTTa test"
 printf '(git-dependency "file://%s" "%s" "" "%s")\n' \
-    "$fixture/retry-leaf.git" "$retry_leaf_sha" "$retry_base" \
+    "$fixture/retry-leaf.git" "$retry_leaf_sha" "$retry_leaf_base" \
     > "$retry_parent_src/deps.metta"
 git -C "$retry_parent_src" add .
 git -C "$retry_parent_src" commit -qm retry-parent
 retry_parent_sha=$(git -C "$retry_parent_src" rev-parse HEAD)
 git clone -q --bare "$retry_parent_src" "$fixture/retry-parent.git"
 
-swipl -q -g "consult('$ROOT/src/main.pl'),(catch(acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_base'),_,fail)->throw(error(expected_first_failure,none));true),rename_file('$fixture/retry-leaf.git.ready','$fixture/retry-leaf.git'),acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_base'),halt"
-test -d "$retry_base/retry-parent/.git"
-test -d "$retry_base/retry-leaf/.git"
+swipl -q -g "consult('$ROOT/src/main.pl'),(catch(acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_parent_base_a'),_,fail)->throw(error(expected_first_failure,none));true),(git_library_path('retry-parent',_)->throw(error(stale_parent_registration,none));true),rename_file('$fixture/retry-leaf.git.ready','$fixture/retry-leaf.git'),acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_parent_base_b'),halt"
+test -d "$retry_parent_base_b/retry-parent/.git"
+test -d "$retry_leaf_base/retry-leaf/.git"
 
 printf 'git dependency checks passed\n'

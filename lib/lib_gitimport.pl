@@ -2,7 +2,7 @@
 :- use_module(library(process)).
 :- use_module(library(random)).
 
-:- dynamic git_dependency/2.
+:- dynamic git_dependency/4.
 :- dynamic git_library_path/2.
 
 % Runtime git-import! is a core primitive.  Declarative git-dependency forms use
@@ -21,8 +21,8 @@
     git_validate_sha('git-import!', Rev0, Rev),
     acquire_pinned_repository('git-import!', Url, Build, Base, Rev,
                               Name, LocalDir),
-    register_git_library_path(Name, LocalDir),
-    acquire_manifest_dependencies(LocalDir).
+    acquire_manifest_dependencies(LocalDir),
+    register_git_library_path(Name, LocalDir).
 
 % Collect and satisfy the pinned dependencies declared by one parsed file.
 acquire_declared_dependencies(ParsedForms) :-
@@ -42,31 +42,38 @@ acquire_git_declaration(Args) :-
                 context('git-dependency',
                         'expected (git-dependency url rev [build [basedir]])'))).
 
-% A declarative URL has one revision per process.  This prevents two manifests
-% from silently retargeting the same checkout beneath already-loaded code.
+% A declarative URL has one complete dependency specification per process.  This
+% prevents manifests from silently changing revision, build, or checkout root
+% beneath already-loaded code.
 acquire_git_dependency(Url, Rev, Build, Base) :-
-    ( git_dependency(Url, Previous)
-      -> ( Previous == Rev
+    absolute_file_name(Base, CanonBase, [file_errors(fail)]),
+    ( git_dependency(Url, PreviousRev, PreviousBuild, PreviousBase)
+      -> ( PreviousRev == Rev,
+           PreviousBuild == Build,
+           PreviousBase == CanonBase
            -> true
             ; throw(error(domain_error(conflicting_git_dependency, Url),
                           context('git-dependency',
-                                  two_revisions(Previous, Rev)))) )
-       ; assertz(git_dependency(Url, Rev)),
-         run_new_git_dependency(Url, Rev, Build, Base) ).
+                                  conflicting_specs(
+                                      dependency(PreviousRev, PreviousBuild,
+                                                 PreviousBase),
+                                      dependency(Rev, Build, CanonBase))))) )
+       ; assertz(git_dependency(Url, Rev, Build, CanonBase)),
+         run_new_git_dependency(Url, Rev, Build, CanonBase) ).
 
 run_new_git_dependency(Url, Rev, Build, Base) :-
     catch(( once(acquire_git_dependency_body(Url, Rev, Build, Base))
             -> true
-             ; retractall(git_dependency(Url, Rev)), fail ),
+             ; retractall(git_dependency(Url, Rev, Build, Base)), fail ),
           Error,
-          ( retractall(git_dependency(Url, Rev)),
+          ( retractall(git_dependency(Url, Rev, Build, Base)),
             throw(Error) )).
 
 acquire_git_dependency_body(Url, Rev, Build, Base) :-
     acquire_pinned_repository('git-dependency', Url, Build, Base, Rev,
                               Name, LocalDir),
-    register_git_library_path(Name, LocalDir),
-    acquire_manifest_dependencies(LocalDir).
+    acquire_manifest_dependencies(LocalDir),
+    register_git_library_path(Name, LocalDir).
 
 % A checkout can declare transitive pinned dependencies in deps.metta.
 acquire_manifest_dependencies(LocalDir) :-
@@ -104,7 +111,10 @@ acquire_unpinned_repository(Context, Url, Build, Base, Name, LocalDir) :-
 acquire_unpinned_locked(Context, Url, Build, Base, Name, LocalDir) :-
     ( exists_directory(LocalDir)
       -> ensure_git_checkout(Context, LocalDir),
-         ensure_git_origin(Context, LocalDir, Url)
+         ensure_git_origin(Context, LocalDir, Url),
+         git_output(Context, 'resolve current HEAD', LocalDir,
+                    ['rev-parse', '--verify', 'HEAD^{commit}'], Head),
+         ensure_git_build(Context, LocalDir, Head, Build)
        ; exists_file(LocalDir)
       -> throw(error(permission_error(create, git_checkout, LocalDir),
                      context(Context, 'target exists and is not a directory')))
@@ -114,7 +124,9 @@ acquire_unpinned_locked(Context, Url, Build, Base, Name, LocalDir) :-
              true,
              ( git_process(Context, 'clone repository', path(git),
                            [clone, '--depth', '1', Url, StagingDir], []),
-               run_git_build(Context, StagingDir, Build),
+               git_output(Context, 'resolve current HEAD', StagingDir,
+                          ['rev-parse', '--verify', 'HEAD^{commit}'], Head),
+               ensure_git_build(Context, StagingDir, Head, Build),
                rename_file(StagingDir, LocalDir) ),
              delete_directory_and_contents(StagingRoot)) ).
 
@@ -135,12 +147,12 @@ acquire_pinned_locked(Context, Url, Build, Base, Name, LocalDir, Rev) :-
          git_output(Context, 'resolve current HEAD', LocalDir,
                     ['rev-parse', '--verify', 'HEAD^{commit}'], Head),
          ( Head == Rev
-           -> true
+           -> ensure_git_build(Context, LocalDir, Rev, Build)
             ; ensure_clean_checkout(Context, LocalDir),
               fetch_git_commit(Context, LocalDir, Rev),
               checkout_git_commit(Context, LocalDir, Rev),
               verify_git_head(Context, LocalDir, Rev),
-              run_git_build(Context, LocalDir, Build) )
+              ensure_git_build(Context, LocalDir, Rev, Build) )
        ; exists_file(LocalDir)
       -> throw(error(permission_error(create, git_checkout, LocalDir),
                      context(Context, 'target exists and is not a directory')))
@@ -153,7 +165,7 @@ acquire_pinned_locked(Context, Url, Build, Base, Name, LocalDir, Rev) :-
                fetch_git_commit(Context, StagingDir, Rev),
                checkout_git_commit(Context, StagingDir, Rev),
                verify_git_head(Context, StagingDir, Rev),
-               run_git_build(Context, StagingDir, Build),
+               ensure_git_build(Context, StagingDir, Rev, Build),
                rename_file(StagingDir, LocalDir) ),
              delete_directory_and_contents(StagingRoot)) ).
 
@@ -250,6 +262,39 @@ run_git_build(Context, LocalDir, Build) :-
     format("Running build: ~w in ~w~n", [Build, LocalDir]),
     git_process(Context, 'build imported repository', path(sh),
                 [Build], [cwd(LocalDir)]).
+
+ensure_git_build(_, _, _, Build) :- Build == '', !.
+ensure_git_build(Context, LocalDir, Rev, Build) :-
+    ( valid_git_build_stamp(Context, LocalDir, Rev, Build)
+      -> true
+       ; run_git_build(Context, LocalDir, Build),
+         write_git_build_stamp(Context, LocalDir, Rev, Build) ).
+
+git_build_stamp_file(Context, LocalDir, StampFile) :-
+    git_output(Context, 'resolve Git metadata directory', LocalDir,
+               ['rev-parse', '--absolute-git-dir'], GitDir),
+    directory_file_path(GitDir, 'petta-build-stamp', StampFile).
+
+valid_git_build_stamp(Context, LocalDir, Rev, Build) :-
+    git_build_stamp_file(Context, LocalDir, StampFile),
+    exists_file(StampFile),
+    catch(setup_call_cleanup(
+              open(StampFile, read, Stream),
+              read_term(Stream, Stamp, []),
+              close(Stream)),
+          _,
+          fail),
+    Stamp == git_build(Rev, Build).
+
+write_git_build_stamp(Context, LocalDir, Rev, Build) :-
+    git_build_stamp_file(Context, LocalDir, StampFile),
+    atom_concat(StampFile, '.tmp', TempFile),
+    setup_call_cleanup(
+        open(TempFile, write, Stream),
+        write_term(Stream, git_build(Rev, Build),
+                   [quoted(true), fullstop(true), nl(true)]),
+        close(Stream)),
+    rename_file(TempFile, StampFile).
 
 git_output(Context, Operation, LocalDir, Args, OutputAtom) :-
     git_process_output(Context, Operation, path(git), Args,

@@ -46,7 +46,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
 %a stored definition can be recompiled when the function arrives late, an already
 %executed expression cannot, so late registration repairs the former and warns on the latter.
 :- dynamic symbol_head/2.
-:- dynamic translating_runnable/0.
+:- thread_local translating_runnable/0.
 note_symbol_head(HV) :- atom(HV), !,
                         ( translating_runnable -> Ctx = runnable ; Ctx = clause ),
                         ( symbol_head(HV, Ctx) -> true ; assertz(symbol_head(HV, Ctx)) ).

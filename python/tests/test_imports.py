@@ -1,4 +1,6 @@
 import builtins
+import sys
+import types
 import uuid
 
 import pytest
@@ -23,14 +25,38 @@ def test_failed_import_can_be_retried(petta_instance, tmp_path):
         f'!(import! &self "{module_name}.py")\n(= (retry-result) retry-ok)\n'
     )
     python_file.write_text('raise RuntimeError("first import fails")\n')
+    previous_path = list(sys.path)
 
     with pytest.raises(Exception, match="first import fails"):
         petta_instance.load_metta_file(str(root_file))
+
+    assert sys.path == previous_path
+    assert module_name not in sys.modules
 
     python_file.write_text("RETRY_SUCCEEDED = True\n")
     results = petta_instance.load_metta_file(str(root_file))
 
     assert "retry-ok" in results
+
+
+def test_entry_file_breaks_direct_import_cycle(
+    petta_instance, petta_module, tmp_path
+):
+    function_name = f"entry_cycle_{uuid.uuid4().hex}"
+    entry_file = tmp_path / "a.metta"
+    sibling_file = tmp_path / "b.metta"
+    entry_file.write_text(
+        "!(import! &self b)\n"
+        f"(= ({function_name}) a)\n"
+    )
+    sibling_file.write_text("!(import! &self a)\n")
+
+    petta_instance.load_metta_file(str(entry_file))
+    result = petta_module.janus.query_once(
+        f"aggregate_all(count, clause('{function_name}'(_), _), Count)"
+    )
+
+    assert result["Count"] == 1
 
 
 def test_definition_before_import_resolves(petta_instance, tmp_path, capfd):
@@ -94,23 +120,61 @@ def test_python_import_uses_canonical_path(petta_instance, tmp_path):
     left.mkdir()
     right.mkdir()
     setattr(builtins, event_name, [])
+    previous_module = types.ModuleType(module_name)
+    sys.modules[module_name] = previous_module
 
     try:
         for directory, value in ((left, "left"), (right, "right")):
             (directory / f"{module_name}.py").write_text(
                 "import builtins\n"
                 f"builtins.{event_name}.append({value!r})\n"
+                f"def origin(): return {value!r}\n"
             )
             (directory / "root.metta").write_text(
                 f'!(import! &self "{module_name}.py")\n'
+                f"!(py-call ({module_name}.origin))\n"
             )
 
-        petta_instance.load_metta_file(str(left / "root.metta"))
-        petta_instance.load_metta_file(str(right / "root.metta"))
+        left_results = petta_instance.load_metta_file(str(left / "root.metta"))
+        assert "left" in left_results
+        assert sys.modules[module_name] is previous_module
+
+        right_results = petta_instance.load_metta_file(str(right / "root.metta"))
+        assert "right" in right_results
 
         assert getattr(builtins, event_name) == ["left", "right"]
+        assert sys.modules[module_name] is previous_module
     finally:
+        sys.modules.pop(module_name, None)
         delattr(builtins, event_name)
+
+
+def test_python_import_can_load_sibling_module(petta_instance, tmp_path):
+    module_name = f"python_sibling_{uuid.uuid4().hex}"
+    helper_name = f"python_helper_{uuid.uuid4().hex}"
+    module_file = tmp_path / f"{module_name}.py"
+    helper_file = tmp_path / f"{helper_name}.py"
+    root_file = tmp_path / "root.metta"
+    helper_file.write_text('VALUE = "sibling-import-ok"\n')
+    module_file.write_text(
+        f"import {helper_name}\n"
+        f"def sibling_value(): return {helper_name}.VALUE\n"
+    )
+    root_file.write_text(
+        f'!(import! &self "{module_name}.py")\n'
+        f"!(py-call ({module_name}.sibling_value))\n"
+    )
+    previous_path = list(sys.path)
+
+    try:
+        results = petta_instance.load_metta_file(str(root_file))
+
+        assert "sibling-import-ok" in results
+        assert sys.path == previous_path
+        assert module_name not in sys.modules
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(helper_name, None)
 
 
 def test_all_overloads_are_registered_before_repair(petta_instance, tmp_path):
