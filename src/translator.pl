@@ -36,7 +36,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %new clause (all clauses of F must qualify). A late clause that
                                                %breaks it withdraws the fact; consumers are the documented S4 exposure.
                                                length(Args1, ClauseArity),
-                                               update_proper_list_cert(F, ClauseArity, BodyExpr),
+                                               update_output_certs(F, ClauseArity, BodyExpr),
                                                clause_param_types(F, Args1, DeclOut),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
@@ -220,7 +220,7 @@ drop_stale_fun_meta(_, _).
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
                                  ( Us == [] -> true
                                  ; retractall(det_bound_proviso(F, _, _)),  %re-derive the boundness union from scratch
-                                   reset_proper_list_cert(F),  %FEATURE 2: re-derive the properness certificate too
+                                   reset_output_certs(F),  %withdraw the output certificates for re-derivation
                                    nb_setval(F, []),
                                    forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
 

@@ -225,6 +225,12 @@ manifest_bool(X) :- var(X), !, enforced_bound_param(X), known_singleton(X, 'Bool
 manifest_bool([F|As]) :- atom(F), is_list(As), length(As, N),
                          builtin_call_determinism(F, N, det),
                          findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool'.
+%A USER function call whose bound_bool certificate holds: every clause of it
+%provably results in a bound boolean, so the call cannot deliver the unbound
+%hole bool/1 would enumerate. The certificate, not the declaration, is what
+%qualifies - a declared Bool output can still return an unbound value:
+manifest_bool([F|As]) :- atom(F), is_list(As), length(As, N),
+                         bool_output(F, N).
 
 %A bound is-member probe: a ground literal, or an enforced-bound direct param
 %(any type - only boundness matters, since the probe is a test operand):
@@ -239,7 +245,7 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %%% FEATURE 2 - output-properness certificate %%%
 %
 %proper_list_output(F, N) holds when EVERY clause of F/N provably yields a bound
-%proper list. It is derived per-clause during translation (update_proper_list_cert/3,
+%proper list. It is derived per-clause during translation (update_output_certs/3,
 %called from translate_clause): a clause QUALIFIES when its result expression is a
 %collapse form (findall/3 always yields a bound proper list), a literal proper-list
 %spine, or - same file only - a call to an already-certified function. The certificate
@@ -249,25 +255,59 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %no clause yet, or one poisoned clause, is not certified.
 %
 %INVALIDATION / S4 exposure: a late clause of a certified F can break the
-%certificate. update_proper_list_cert/3 re-runs on every new clause of F
+%certificate. update_output_certs/3 re-runs on every new clause of F
 %(translate_clause), and both facts are cleared where det_bound_proviso is -
 %recompile_function_clauses (re-derived from scratch) and forget_symbol_types. A
 %CONSUMER already compiled against the certificate is not recompiled, the same
 %documented S4 exposure as det_analysis_cache and the boundness proviso.
-:- dynamic proper_list_output_fact/2.   % proper_list_output_fact(F, N)
-:- dynamic proper_list_disqualified/2.  % proper_list_disqualified(F, N) - sticky
+%The store is parameterized by KIND - the same "every clause's result
+%provably has this shape" bookkeeping serves both proper_list (a bound
+%proper list: collapse, literal spine, certified call) and bound_bool (a
+%bound boolean: literal, det Bool builtin, certified call, an if/case whose
+%every branch qualifies). One derivation, one sticky disqualification, one
+%reset; adding a certificate kind is one output_result_qualifies/2 clause.
+:- dynamic output_cert_fact/3.       % output_cert_fact(Kind, F, N)
+:- dynamic output_cert_poisoned/3.   % output_cert_poisoned(Kind, F, N) - sticky
 
-proper_list_output(F, N) :- proper_list_output_fact(F, N), \+ proper_list_disqualified(F, N).
+output_cert(Kind, F, N) :- output_cert_fact(Kind, F, N), \+ output_cert_poisoned(Kind, F, N).
 
-update_proper_list_cert(F, N, Body) :-
-    ( proper_list_disqualified(F, N) -> true                    %already poisoned, nothing to add
-    ; clause_result_proper_list(Body)
-      -> ( proper_list_output_fact(F, N) -> true ; assertz(proper_list_output_fact(F, N)) )
-    ; retractall(proper_list_output_fact(F, N)),                %this clause breaks the certificate
-      assertz(proper_list_disqualified(F, N)) ).
+proper_list_output(F, N) :- output_cert(proper_list, F, N).
+bool_output(F, N) :- output_cert(bound_bool, F, N).
 
-reset_proper_list_cert(F) :- retractall(proper_list_output_fact(F, _)),
-                             retractall(proper_list_disqualified(F, _)).
+update_output_certs(F, N, Body) :- update_output_cert(proper_list, F, N, Body),
+                                   update_output_cert(bound_bool, F, N, Body).
+
+update_output_cert(Kind, F, N, Body) :-
+    ( output_cert_poisoned(Kind, F, N) -> true                  %already poisoned, nothing to add
+    ; output_result_qualifies(Kind, Body)
+      -> ( output_cert_fact(Kind, F, N) -> true ; assertz(output_cert_fact(Kind, F, N)) )
+    ; retractall(output_cert_fact(Kind, F, N)),                 %this clause breaks the certificate
+      assertz(output_cert_poisoned(Kind, F, N)) ).
+
+reset_output_certs(F) :- retractall(output_cert_fact(_, F, _)),
+                         retractall(output_cert_poisoned(_, F, _)).
+
+output_result_qualifies(proper_list, Body) :- clause_result_proper_list(Body).
+output_result_qualifies(bound_bool, Body) :- clause_result_bool(Body).
+
+%A clause body whose RESULT is provably a bound boolean. manifest_bool/1
+%covers the leaves - the true/false literals and a det builtin whose sole
+%declared output is Bool ((== $values ()) is one) - and, like every result
+%probe here, all tests are NON-BINDING (== on heads, nonvar guards): Body is
+%the shared clause term the translator compiles next. The enforced-param
+%clause of manifest_bool cannot fire here (the analysis scope is not open at
+%derivation time), which only costs precision, never soundness.
+clause_result_bool(Body) :- manifest_bool(Body), !.
+clause_result_bool(Body) :- nonvar(Body), Body = [G|GArgs], atom(G), is_list(GArgs),
+                            length(GArgs, N), bool_output(G, N), !.
+clause_result_bool(Body) :- nonvar(Body), Body = [If, _, T, E], If == if, !,
+                            clause_result_bool(T), clause_result_bool(E).
+clause_result_bool(Body) :- nonvar(Body), Body = [If, _, T], If == if, !,
+                            clause_result_bool(T).   %no else: no result, not an unbound one
+clause_result_bool(Body) :- nonvar(Body), Body = [Let, _, _, In], Let == let, !,
+                            clause_result_bool(In).
+clause_result_bool(Body) :- nonvar(Body), Body = [Ls, _, In], Ls == 'let*', !,
+                            clause_result_bool(In).
 
 %A clause body whose RESULT is provably a bound proper list. Every test here is
 %NON-BINDING (nonvar guards + ==): Body is the SHARED clause body term that
