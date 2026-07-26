@@ -340,6 +340,16 @@ unprovable. See `examples/strictdet_higher_order_builtins.metta`. Both forms
 read the list argument as a proper list; that assumption is the one thing
 about them the analysis does not check.
 
+**The table outranks a declaration.** `lib_builtin_types.metta` gives many
+builtins a type, and a type carries an arrow head. Under `--strict-det` a
+plain `->` *is* a determinism commitment, so `(: or (-> Bool Bool Bool))` used
+to read as det wherever `or` appeared as a **value** — certifying
+`(fold-flat or False ...)` — while a direct call to `or` from the same det
+body was rejected, because a direct call consults the table. One symbol, two
+verdicts. A declared builtin now takes its arrow head from the table in both
+places, which is what an *undeclared* builtin always did. See
+`examples/fail_strictdet_nondet_builtin_closure.metta`.
+
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so
 where a `-[det]->`/`-[semidet]->` (or, under `--strict-det`, a plain `->`)

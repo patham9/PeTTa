@@ -33,11 +33,20 @@
 
 ;Set operations on Expressions
 
+;or/2 is a boolean GENERATOR on an unbound operand - bool/1 enumerates the
+;type rather than testing it - so it is nondet, and passing it as a fold's
+;accumulator hands that nondeterminism to every function below. These
+;membership tests only ever fold over Bools that have already been computed
+;by $pred, so what they need is the restriction of or to bound operands:
+;one clause, one answer, and it says so in its arrow.
+(: bool-or (-[det]-> Bool Bool Bool))
+(= (bool-or $seen $next) (if $seen True $next))
+
 ;Intersection
 (: /?\ (-> (-> $a $b Bool) (List $a) (List $b) (List $a)))
 (= (/?\ $pred () $b) ())
 (= (/?\ $pred (cons $a $as) $bs)
-      (if (fold-flat or False (map-flat ($pred $a) $bs))
+      (if (fold-flat bool-or False (map-flat ($pred $a) $bs))
          (cons $a (/?\ $pred $as $bs))
          (/?\ $pred $as $bs)))
 
@@ -52,7 +61,7 @@
 (: \? (-> (-> $a $b Bool) (List $a) (List $b) (List $a)))
 (= (\? $pred () $bs) ())
 (= (\? $pred (cons $a $as) $bs)
-  (if (fold-flat or False (map-flat ($pred $a) $bs))
+  (if (fold-flat bool-or False (map-flat ($pred $a) $bs))
     (\? $pred $as $bs)
     (cons $a (\? $pred $as $bs))))
 
@@ -67,7 +76,7 @@
 (: \?/ (-> (-> $a $b Bool) (List $a) (List $b) (List $a)))
 (= (\?/ $pred () $bs) $bs)
 (= (\?/ $pred (cons $a $as) $bs)
-  (if (fold-flat or False (map-flat ($pred $a) $bs))
+  (if (fold-flat bool-or False (map-flat ($pred $a) $bs))
     (\?/ $pred $as $bs)
     (cons $a (\?/ $pred $as $bs))))
 

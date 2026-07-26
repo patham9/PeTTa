@@ -591,7 +591,7 @@ value_candidate_types(false, ['Bool']) :- !.
 value_candidate_types(V, Cs) :- atom(V), !,
                                 findall(T, declared_value_type(V, T), Vs),
                                 findall([H|Xs], ( declared_fn_type(V, ATs, OT, Det),
-                                                  det_arrow_head(Det, H),
+                                                  length(ATs, NA), value_arrow_head(V, NA, Det, H),
                                                   append(ATs, [OT], Xs) ), Fs),
                                 append(Vs, Fs, Cs0),
                                 ( Cs0 == [], current_arithmetic_function(V)
@@ -600,7 +600,8 @@ value_candidate_types(V, Cs) :- atom(V), !,
 value_candidate_types(partial(F, B), Cs) :- !,
                                 length(B, N),
                                 findall([H|Xs], ( fn_decl_partial(F, N, PTs, RTs, OT, Det),
-                                                  det_arrow_head(Det, H),
+                                                  length(RTs, NR), NA is N + NR,
+                                                  value_arrow_head(F, NA, Det, H),
                                                   bound_args_match(B, PTs),
                                                   append(RTs, [OT], Xs) ), Cs).
 value_candidate_types([], [['List', _]]) :- !.
@@ -630,6 +631,19 @@ value_single_type(V, T) :- ( var(V) -> known_singleton(V, T)
 
 det_arrow_head(Det, H) :- nonvar(Det), arrow_atom_det(H, Det), !.
 det_arrow_head(_, (->)).
+
+%The arrow head a declared symbol carries when it is used as a VALUE. Where
+%the checker's own builtin table has an entry it OVERRIDES the declaration,
+%exactly as it does for a direct call (function_call_determinism/3) and for
+%the oracle's wrapping decision (oracle_det_believed/3). lib_builtin_types
+%declares (: or (-> Bool Bool Bool)); plain_arrow_det/1 reads that plain arrow
+%as a det commitment under --strict-det, so without this the same symbol was
+%det as a closure argument and nondet as a call. An undeclared builtin already
+%got this right, through inferred_arrow_head/3 - the declaration was the only
+%thing hiding the table:
+value_arrow_head(F, N, Det, H) :- ( atom(F), builtin_call_determinism(F, N, DetB)
+                                    -> det_arrow_head(DetB, H)
+                                     ; det_arrow_head(Det, H) ).
 
 bound_args_match(B, PTs) :- \+ \+ maplist(arg_soft_ok, B, PTs).
 
@@ -2318,8 +2332,16 @@ det_arg_evidence(['|->', _, LBody], _) :- !, deterministic_expr(LBody, ok).
 det_arg_evidence([F2|_], _) :- atom(F2), !, fn_own_arity(F2, A), det_atom_evidence(F2, A).
 det_arg_evidence(F2, M) :- atom(F2), !, det_atom_evidence(F2, M).
 
-det_atom_evidence(F2, M) :- ( catch(fn_determinism(F2, M, det), _, fail) -> true
-                            ; body_determinism(F2, M, det) ).
+%A named function used as a VALUE is the same function it is when called, so
+%it is judged by the same relation - builtin table first, then the declared
+%arrow, then clause analysis. Reading only the declaration here is what let
+%(: or (-> Bool Bool Bool)) certify (fold-flat or False ...) as det under
+%--strict-det, where plain_arrow_det/1 turns a plain -> into a commitment,
+%while a direct call to or/2 in the same body was rejected: one symbol, two
+%verdicts. The table is the checker's own knowledge and outranks a
+%declaration it contradicts, exactly as it does for a direct call and for the
+%oracle's wrapping decision (oracle_det_believed/3).
+det_atom_evidence(F2, M) :- catch(function_call_determinism(F2, M, Det), _, fail), Det == det.
 
 %The named function's own full arity (declared, else from stored clauses):
 fn_own_arity(F2, A) :- fn_decl_arity(F2, A, _, _), !.
