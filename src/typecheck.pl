@@ -573,8 +573,20 @@ value_candidate_types(partial(F, B), Cs) :- !,
 value_candidate_types([], [['List', _]]) :- !.
 %A constructor application (STV 0.5 0.8) has the constructor's output type,
 %but only when its fields do not contradict the constructor's signature -
-%otherwise the value is unknown and the (runtime or strict) guard decides:
-value_candidate_types([H|Args], Cs) :- atom(H), length(Args, N), fn_decl_arity(H, N, _, _), !,
+%otherwise the value is unknown and the (runtime or strict) guard decides.
+%
+%is_list/1 before length/2 is load-bearing, not defensive. A head pattern
+%written with a variable tail - (cons Premises $p), which constrain_args/3
+%compiles to the PARTIAL list ['Premises'|$p] - reaches here, and length/2 on
+%a partial list is a GENERATOR: it proposes N = 0, 1, 2, ... forever, and
+%since fn_decl_arity/4 fails for each one nothing ever cuts the loop. It ran
+%out to a 76-million-element term (35s, 2.2GB, stack overflow) on a two-line
+%file. A term whose tail is still unbound is not an n-argument constructor
+%application - its arity is not known yet - so this clause simply does not
+%apply to it, and it falls through to the "no candidate types" answer, which
+%is the honest one. is_list/1 is also cycle-safe, so a rational tree (an
+%inferred self-referential value) fails here rather than looping.
+value_candidate_types([H|Args], Cs) :- atom(H), is_list(Args), length(Args, N), fn_decl_arity(H, N, _, _), !,
                                 findall(OT, ( fn_decl_arity(H, N, ATs, OT),
                                               bound_args_match(Args, ATs) ), Cs).
 value_candidate_types(V, Cs) :- is_list(V), maplist(value_single_type, V, Ts), !, Cs = [Ts].
