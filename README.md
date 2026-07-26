@@ -395,6 +395,32 @@ discipline the `-[det]->` exhaustiveness check uses. This strengthens
 `examples/strictdet_builtin_arg_shapes.metta` pins the strengthened cases and
 `examples/fail_strictdet_min_atom_unknown_shape.metta` pins the fallback.
 
+**An output-properness certificate crosses the clause boundary.** The manifest
+judgement above reads a *spine the caller builds*, so it goes blind the moment a
+proper list is produced by a *call* — a helper that wraps `(collapse …)` returns
+a bound proper list, but at its call site only the declared `(List Number)`
+output type is visible, and a declared type never implies properness (a `det`
+function may still return an unbound variable). The checker closes that gap with
+a per-function certificate: `proper_list_output(F, N)` holds when **every** clause
+of `F/N` provably results in a bound proper list — a `collapse` form (which
+compiles to `findall/3`, always a bound proper list), a literal proper-list
+spine, or, same file only, a call to an already-certified function. It is derived
+per clause during translation and is "all clauses qualify": one non-certifying
+clause withdraws the whole certificate (a clause that returns a `(List _)`
+*parameter* does not qualify, for the same reason a declared type never does).
+`manifest_proper_list` then accepts `(G …)` when `G/N` is certified, so
+`union-atom` (and `append`/`subtraction-atom`/`intersection-atom`/`exclude-item`/
+`size-atom`/`length`/`reverse`, which all consult it) become `det` on such a call.
+**Nonempty is not implied** — `collapse` can yield `()` — so the certificate feeds
+only `manifest_proper_list`, never `manifest_nonempty_list`.
+`examples/strictdet_collapse_proper_list.metta` pins the certificate (and its
+transitivity within a file) and `examples/fail_strictdet_collapse_proper_list.metta`
+pins the boundary where one non-certifying clause withdraws it. Invalidation is
+the documented late-knowledge exposure: a late clause of a certified `F`
+re-derives the certificate (and clears it in `recompile_function_clauses` /
+`forget_symbol_types`), but a consumer already compiled against it is not
+recompiled.
+
 **Boundness enforcement at a committed boundary, need-based.** The paragraph
 above says a *declared* type never qualifies, because "typed" does not imply
 "bound" — a `(Number Number)` or `Bool` parameter can arrive unbound out of
@@ -532,6 +558,27 @@ provably uncovered value counts, and a scrutinee whose type is unknown,
 unenumerable or open stays silent. See `examples/semidet_partial_constructs.metta`
 for what stays accepted and `examples/fail_det_once_semidet.metta`,
 `fail_det_two_arg_if.metta`, `fail_det_case_no_catchall.metta` for what does not.
+
+**Flow-sensitive nonemptiness.** An `(if (== $values ()) T E)` — with `$values`
+a variable of a `(List _)` type — runs its else branch `E` exactly when
+`$values` is a **nonempty** list. A `-[semidet]->` accessor whose only
+incompleteness is the empty case is therefore `det` inside `E`, and the checker
+upgrades the call there. The upgrade is **proven, not assumed**, because
+`-[semidet]->` means *at most one* and a callee still produces *zero* in two
+ways — no clause head matches, or a clause body fails — so both legs are
+required: **coverage**, the clause heads cover every nonempty list at the
+argument position (a `(cons $h $t)` head, stored as a var-headed/var-tailed cons
+cell, matches all of them — a head that pins an element or fixes the tail length
+does not), and **no-fail bodies**, every clause body is may-not-fail. It is
+kept minimal: single-argument arity-1 callees, an `== ()`-shaped condition (in
+either order), and a unique declaration at the arity. Provable-only, so it only
+ever *upgrades* — any leg unproven leaves the `-[semidet]->` verdict standing and
+nothing new is rejected. `examples/strictdet_nonempty_branch.metta` pins the
+upgrade and `examples/fail_strictdet_nonempty_branch_failing_body.metta` pins the
+no-fail-body boundary: a callee whose body calls another `-[semidet]->` function
+keeps the semidet verdict at the narrowed site. The same late-knowledge exposure
+applies — a clause added to the callee later can invalidate the site verdict,
+and the consumer is not recompiled.
 
 **Knowledge that arrives late.** Type declarations are pre-cached per file, so
 within one file order never matters. Across files it does, and two kinds of

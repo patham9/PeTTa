@@ -135,7 +135,8 @@ forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
                              retractall(declared_value_type(Name, _)),
                              retractall(declared_newtype(Name, _)),
                              retractall(inferred_fn_type(Name, _, _)),
-                             retractall(det_bound_proviso(Name, _, _)).
+                             retractall(det_bound_proviso(Name, _, _)),
+                             reset_proper_list_cert(Name).  %FEATURE 2: withdraw the properness certificate
 
 %%% Store lookup (each retrieval yields a fresh copy of the declaration):
 fn_decl_arity(F, N, ATs, OT) :- declared_fn_type(F, ATs, OT, _), length(ATs, N).

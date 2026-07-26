@@ -15,6 +15,69 @@
 call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
 call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
 
+%%% FEATURE 1 - flow-sensitive nonemptiness upgrade %%%
+%
+%A -[semidet]-> USER-function call is det AT A NARROWED SITE. semidet means AT
+%MOST one, and a callee produces ZERO in two ways: no clause head matches, or a
+%clause body fails. So the upgrade to det requires BOTH legs proven:
+%  (a) COVERAGE - the callee's clause heads cover the narrowed domain (here:
+%      every NONEMPTY list matches some head - a (cons $h $t) head, stored as a
+%      var-headed/var-tailed cons cell, matches every nonempty list), and
+%  (b) NO-FAIL BODIES - every clause body is may-not-fail. body_determinism/3
+%      returns det exactly when every body is `ok` (may-not-fail) AND the heads
+%      do not overlap, so it certifies (b) and rules out the multi-solution case
+%      in one call; a body that is just a head variable is trivially ok.
+%Provable-only: any leg failing simply fails this predicate, and the semidet
+%verdict stands - this feature only ever UPGRADES, it never rejects.
+%
+%Minimal by design: single-argument (arity-1) callees, a variable argument
+%narrowed to a nonempty value of a list type by an == ()-shaped condition, and a
+%unique declaration at the arity.
+%
+%KNOWN LIMITATION (the existing S4 exposure, not solved here): a clause added to
+%the callee LATER can invalidate this site verdict. det_analysis_cache and
+%det_assume_cache are retracted when a clause arrives (translate_clause), but a
+%CONSUMER already compiled against this verdict is not recompiled - consistent
+%with the boundness proviso and the det_analysis_cache consumers elsewhere.
+semidet_site_upgraded_to_det(Fun, N, Args) :-
+    N =:= 1,
+    nth0(Idx, Args, A), var(A), nonempty_var(A),
+    known_singleton(A, T), nonvar(T), list_type(T, _),
+    findall(ATs, fn_decl_arity(Fun, N, ATs, _), [_]),
+    catch(nb_getval(Fun, Metas0), _, fail),
+    include(arity_meta(N), Metas0, Metas), Metas \== [],
+    nonempty_list_domain_covered(Metas, Idx),
+    body_determinism(Fun, N, det).
+
+%The narrowed domain is "nonempty lists", and every nonempty list value is a
+%cons cell, so ONE clause-head pattern that matches every cons cell covers the
+%whole domain: a bare variable (matches anything), or a cons cell whose head and
+%tail are both unconstrained variables (matches every list of length >= 1). A
+%pattern that pins the head or fixes the tail length covers only part of it.
+nonempty_list_domain_covered(Metas, Idx) :- member(fun_meta(HArgs, _), Metas),
+                                            nth0(Idx, HArgs, P), covers_all_nonempty_lists(P), !.
+
+covers_all_nonempty_lists(P) :- var(P), !.
+covers_all_nonempty_lists(P) :- nonvar(P), P = [H|Tl], var(H), var(Tl).
+
+%The narrowing note: variables proven NONEMPTY on the current analysis path.
+%A b_setval-scoped list, restored on exit (deterministic_expr's if clause). The
+%stored terms are the shared body variables, so membership is by identity (==).
+with_nonempty_var(V, Goal) :- catch(b_getval('$nonempty_vars', Saved), _, Saved = []),
+                              setup_call_cleanup(b_setval('$nonempty_vars', [V|Saved]),
+                                                 Goal,
+                                                 b_setval('$nonempty_vars', Saved)).
+
+nonempty_var(V) :- catch(b_getval('$nonempty_vars', Vs), _, fail), member(X, Vs), X == V, !.
+
+%(== V ()) or (== () V) with V a variable whose known type is a (List _). The
+%empty literal () is the empty Prolog list here; == is the structural test the
+%if compiles its condition from:
+nonempty_narrowing_var([Eq, A, B], V) :- Eq == '==',
+                                         ( var(A), B == [] -> V = A
+                                         ; var(B), A == [] -> V = B ),
+                                         known_singleton(V, T), nonvar(T), list_type(T, _).
+
 %--- Strengthened by a manifest list SPINE.
 %length/2, reverse/2, append/3 and friends invert over an open list; over a
 %proper one they answer exactly once. The properness is read off the source.
@@ -131,6 +194,16 @@ manifest_proper_list(X) :- var(X), !, enforced_bound_tuple(X, _).
 manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
                            manifest_proper_list(Tl).
+%FEATURE 2 - an output-properness certificate crosses the clause boundary a
+%DECLARED (List _) type cannot. A call (G Arg...) to a function whose every
+%clause provably RESULTS in a bound proper list (proper_list_output/2) is itself
+%a bound proper list at this site - which a declared output type never proves,
+%since a det function may still return an unbound variable. Nonempty is NOT
+%implied (collapse can yield ()), so this lives ONLY here, never in
+%manifest_nonempty_list/1. The cons/cons-atom heads are already handled above.
+manifest_proper_list(X) :- nonvar(X), X = [G|GArgs], atom(G),
+                           \+ ( G == cons ; G == 'cons-atom' ),
+                           length(GArgs, N), proper_list_output(G, N).
 
 manifest_nonempty_list(X) :- var(X), !, enforced_bound_tuple(X, W), W >= 1.
 manifest_nonempty_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
@@ -162,6 +235,63 @@ is_member_probe_bound(P) :- var(P), enforced_bound_param(P).
 %and orders; equal length to msort/2 (which keeps duplicates) means no dup:
 manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
                                    sort(L, S), msort(L, M), length(S, K), length(M, K).
+
+%%% FEATURE 2 - output-properness certificate %%%
+%
+%proper_list_output(F, N) holds when EVERY clause of F/N provably yields a bound
+%proper list. It is derived per-clause during translation (update_proper_list_cert/3,
+%called from translate_clause): a clause QUALIFIES when its result expression is a
+%collapse form (findall/3 always yields a bound proper list), a literal proper-list
+%spine, or - same file only - a call to an already-certified function. The certificate
+%is "ALL stored clauses qualify", tracked by the simplest sound bookkeeping: one
+%fact recorded on the first qualifying clause, and a STICKY disqualification set the
+%moment any clause fails to qualify (which also withdraws the fact). A function with
+%no clause yet, or one poisoned clause, is not certified.
+%
+%INVALIDATION / S4 exposure: a late clause of a certified F can break the
+%certificate. update_proper_list_cert/3 re-runs on every new clause of F
+%(translate_clause), and both facts are cleared where det_bound_proviso is -
+%recompile_function_clauses (re-derived from scratch) and forget_symbol_types. A
+%CONSUMER already compiled against the certificate is not recompiled, the same
+%documented S4 exposure as det_analysis_cache and the boundness proviso.
+:- dynamic proper_list_output_fact/2.   % proper_list_output_fact(F, N)
+:- dynamic proper_list_disqualified/2.  % proper_list_disqualified(F, N) - sticky
+
+proper_list_output(F, N) :- proper_list_output_fact(F, N), \+ proper_list_disqualified(F, N).
+
+update_proper_list_cert(F, N, Body) :-
+    ( proper_list_disqualified(F, N) -> true                    %already poisoned, nothing to add
+    ; clause_result_proper_list(Body)
+      -> ( proper_list_output_fact(F, N) -> true ; assertz(proper_list_output_fact(F, N)) )
+    ; retractall(proper_list_output_fact(F, N)),                %this clause breaks the certificate
+      assertz(proper_list_disqualified(F, N)) ).
+
+reset_proper_list_cert(F) :- retractall(proper_list_output_fact(F, _)),
+                             retractall(proper_list_disqualified(F, _)).
+
+%A clause body whose RESULT is provably a bound proper list. Every test here is
+%NON-BINDING (nonvar guards + ==): Body is the SHARED clause body term that
+%translate_expr/3 compiles next, so unifying a pattern into it - e.g. matching a
+%var-headed application ($f $x) against [collapse, _] - would bind the clause's
+%own variables and corrupt the compile.
+clause_result_proper_list(Body) :- nonvar(Body), Body = [Hd|Rest], nonvar(Hd), Hd == collapse,
+                                   Rest = [_], !.
+clause_result_proper_list(Body) :- proper_list_literal_spine(Body), !.
+%recursive, same-file only: a call to an already-certified function. A data
+%atom head is handled by proper_list_literal_spine above (data_headed), so this
+%reaches only a genuine function application:
+clause_result_proper_list(Body) :- nonvar(Body), Body = [G|GArgs], atom(G),
+                                   \+ ( G == cons ; G == 'cons-atom' ),
+                                   length(GArgs, N), proper_list_output(G, N).
+
+%A literal proper-list spine, built at the clause site: the empty list, a
+%data-headed list literal, or a cons onto a literal spine. Mirrors
+%manifest_proper_list's literal clauses without the var/enforced-tuple case -
+%a parameter is not a literal the clause builds.
+proper_list_literal_spine(X) :- X == [], !.
+proper_list_literal_spine(X) :- is_list(X), X = [H|_], data_headed(H), !.
+proper_list_literal_spine(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
+                                proper_list_literal_spine(Tl).
 
 %A DIRECT parameter, under an explicit committed arrow, whose declared type is
 %NOMINAL (a declared, non-wildcard, non-primitive atom type). Its values are
@@ -326,6 +456,19 @@ deterministic_expr([Op, A, B], Result) :- unify_test_op(Op), !,
 %-[semidet]-> accepts it, -[det]-> does not:
 deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], R0),
                                                 combine_det_results(may_fail(if_without_else), R0, Result).
+%FEATURE 1 - flow-sensitive nonemptiness. When the condition is (== V ()) or
+%(== () V) with V a variable of known list type, the ELSE branch runs exactly
+%when V is NONEMPTY, so a -[semidet]-> accessor whose only incompleteness is
+%the empty case is det there. The narrowing is recorded for V while the Else
+%branch is analysed (semidet_site_upgraded_to_det/3 reads it) and restored
+%after; Cond and Then get no narrowing. Nothing here can REJECT: a
+%non-matching condition falls through to the plain worst-of composition below.
+deterministic_expr([if, Cond, Then, Else], Result) :- nonempty_narrowing_var(Cond, V), !,
+                                                      deterministic_expr(Cond, RC),
+                                                      deterministic_expr(Then, RT),
+                                                      with_nonempty_var(V, deterministic_expr(Else, RE)),
+                                                      combine_det_results(RC, RT, R01),
+                                                      combine_det_results(R01, RE, Result).
 deterministic_expr([if, Cond, Then, Else], Result) :- !, combine_determinism_list([Cond, Then, Else], Result).
 deterministic_expr([progn|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
 deterministic_expr([prog1|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
@@ -391,6 +534,8 @@ deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),
                                                call_site_determinism(Fun, N, Args, Det),
                                                ( Det == nondet -> Result = nondeterministic(call(Fun))
+                                               ; Det == semidet, semidet_site_upgraded_to_det(Fun, N, Args)
+                                                 -> combine_determinism_list(Args, Result)
                                                ; Det == semidet
                                                  -> combine_determinism_list(Args, R0),
                                                     combine_det_results(may_fail(call(Fun)), R0, Result)
