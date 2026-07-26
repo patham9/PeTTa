@@ -167,12 +167,16 @@ combine_determinism_list([Expr|Exprs], Result) :- deterministic_expr(Expr, First
                                                   ; combine_determinism_list(Exprs, Rest),
                                                     combine_det_results(First, Rest, Result) ).
 
+%(let* ((P1 V1) (P2 V2) ...) Body) IS nested (let P1 V1 (let P2 V2 ...)),
+%so each binding is judged by let_determinism/4 itself - the destructured
+%field types, the collapse properness guarantee and the nonemptiness
+%narrowing all apply per binding with no second copy of the logic. The old
+%pattern_then_exprs walk analyzed each pair in isolation, which is exactly
+%how the let refinements failed to reach let*:
 binds_and_body_determinism([], Body, Result) :- deterministic_expr(Body, Result).
 binds_and_body_determinism([[Pat, Val]|Rest], Body, Result) :-
-    pattern_then_exprs(Pat, [Val], HeadResult),
-    ( det_result_final(HeadResult) -> Result = HeadResult
-    ; binds_and_body_determinism(Rest, Body, R2),
-      combine_det_results(HeadResult, R2, Result) ).
+    ( Rest == [] -> In = Body ; In = ['let*', Rest, Body] ),
+    let_determinism(Pat, Val, In, Result).
 
 case_expr_determinism(KeyExpr, PairsExpr, Result) :- deterministic_expr(KeyExpr, KeyResult),
                                                      ( det_result_final(KeyResult) -> Result = KeyResult
