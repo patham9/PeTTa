@@ -293,12 +293,26 @@ output_cert(Kind, F, N) :- output_cert_memo(Kind, F, N, A), !, A == yes.
 output_cert(Kind, F, N) :- cert_on_stack(Kind, F, N), !.       %coinductive assumption
 output_cert(Kind, F, N) :-
     atom(F),
-    catch(nb_getval(F, Metas0), _, fail),
-    include(arity_meta(N), Metas0, Metas), Metas \== [],
+    cert_clause_bodies(F, N, Bodies), Bodies \== [],
     catch(b_getval('$cert_stack', St0), _, St0 = []),
-    ( with_cert_stack(Kind, F, N, all_clause_results_qualify(Kind, Metas)) -> A = yes ; A = no ),
+    ( with_cert_stack(Kind, F, N, all_bodies_qualify(Kind, Bodies)) -> A = yes ; A = no ),
     ( St0 == [] -> assertz(output_cert_memo(Kind, F, N, A)) ; true ),
     A == yes.
+
+%Every clause body of F/N the prover can see: the compiled store, PLUS the
+%current file's pending prepass bodies (filereader.pl) - a later definition's
+%clauses are visible while an earlier one is validated, which is what lets
+%mutually recursive functions certify in source order. During a load both
+%stores may hold the same body; qualifying it twice is idempotent and every
+%probe is non-binding.
+:- dynamic pending_clause_body/4.   % pending_clause_body(File, F, N, Body)
+
+cert_clause_bodies(F, N, Bodies) :-
+    findall(B, ( catch(nb_getval(F, Ms), _, fail),
+                 member(fun_meta(As, B), Ms), length(As, N) ), Rs),
+    current_metta_file(File),
+    findall(B, pending_clause_body(File, F, N, B), Ps),
+    append(Rs, Ps, Bodies).
 
 cert_on_stack(Kind, F, N) :- catch(b_getval('$cert_stack', St), _, fail),
                              member(c(K, F1, N1), St), K == Kind, F1 == F, N1 == N, !.
@@ -308,9 +322,9 @@ with_cert_stack(Kind, F, N, Goal) :- catch(b_getval('$cert_stack', St), _, St = 
                                                         Goal,
                                                         b_setval('$cert_stack', St)).
 
-all_clause_results_qualify(_, []).
-all_clause_results_qualify(Kind, [fun_meta(_, B)|Ms]) :- output_result_qualifies(Kind, B),
-                                                         all_clause_results_qualify(Kind, Ms).
+all_bodies_qualify(_, []).
+all_bodies_qualify(Kind, [B|Bs]) :- output_result_qualifies(Kind, B),
+                                    all_bodies_qualify(Kind, Bs).
 
 proper_list_output(F, N) :- output_cert(proper_list, F, N).
 bool_output(F, N) :- output_cert(bound_bool, F, N).

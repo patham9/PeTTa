@@ -38,12 +38,28 @@ process_metta_string(S, Results, Space) :- metta_string_forms(S, Forms),
                                            %file is visible to every definition in it, independent of order
                                            forall(member(parsed(expression, _, _, Decl), ParsedForms),
                                                   precache_fn_type_decl(Space, Decl)),
-                                           %exhaustiveness is a property of the whole clause set, so it is
-                                           %judged here, once the file's clauses and declarations are all
-                                           %visible, and before any of its forms runs:
-                                           det_exhaustiveness_prepass(ParsedForms),
-                                           maplist(process_form(Space), ParsedForms, ResultsList), !,
+                                           %clause-BODY prepass, same rationale: the output-certificate
+                                           %prover (output_cert/3) may need a later definition's bodies
+                                           %while an earlier one is validated - mutually recursive
+                                           %bound-Bool functions in source order. Keyed by file so a
+                                           %nested import cannot clobber the outer file's set, and
+                                           %cleaned on the way out, error or not:
+                                           current_metta_file(File),
+                                           setup_call_cleanup(
+                                               precache_pending_bodies(File, ParsedForms),
+                                               ( %exhaustiveness is a property of the whole clause set, so it
+                                                 %is judged here, once the file's clauses and declarations are
+                                                 %all visible, and before any of its forms runs:
+                                                 det_exhaustiveness_prepass(ParsedForms),
+                                                 maplist(process_form(Space), ParsedForms, ResultsList) ),
+                                               retractall(pending_clause_body(File, _, _, _))), !,
                                            append(ResultsList, Results).
+
+precache_pending_bodies(File, ParsedForms) :-
+    forall(( member(parsed(function, _, _, Term), ParsedForms),
+             Term = [=, [F|Args], Body], atom(F) ),
+           ( length(Args, N),
+             assertz(pending_clause_body(File, F, N, Body)) )).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:
 parse_form(form(S, L), parsed(T, S, L, Term)) :- sread(S, Term),
