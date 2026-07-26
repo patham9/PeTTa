@@ -312,10 +312,16 @@ brand_type(V, T) :-
     ; check_value(V, T, St),
       ( St == mismatch -> throw(error(literal_type_mismatch(V, T), typecheck)) ; true ) ).
 
-%Newtype-transparent test for the Expression argument convention (arguments
-%whose declared type is Expression, or a brand of it, stay unevaluated data):
-expression_typed(Ty) :- nonvar(Ty), ( Ty == 'Expression' -> true
-                                    ; atom(Ty), declared_newtype(Ty, R), R == 'Expression' ).
+%The Expression argument convention: an argument whose declared type is the
+%LITERAL Expression stays unevaluated data - that is what a code-taking
+%function asks for. A brand of Expression does NOT inherit it (this reverses
+%an earlier newtype-transparent reading): (Newtype Expression) says the
+%payload SHAPE is unconstrained, not that callers must quote, and inheriting
+%the convention made a brand-typed position unable to receive a computed
+%value at all - (expected-role? (holder-role $h)) passed the literal call.
+%For constructor-built data evaluation is identity, so nothing is lost; a
+%genuinely raw fun-headed payload still has quote.
+expression_typed(Ty) :- Ty == 'Expression'.
 
 %Derive match-pattern variable types from declared relation schemas: atoms
 %matched by (F ...) conform to F's declared argument types, and a pattern
