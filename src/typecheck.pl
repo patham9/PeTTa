@@ -1183,25 +1183,54 @@ first_list_out_type(A, Out) :- ( var(Out), union_side_elem(A, T)
                                  -> set_out_type(Out, ['List', T]) ; true ).
 
 %cons stays undeclared (a global (List $a) signature would reject legal
-%heterogeneous expressions), but when the head provably fits the tail's list
-%type the result is known to be that list type:
-cons_out_type(H, Tl, Out) :- ( var(Out),
-                               ( var(Tl) -> known_singleton(Tl, TT), list_type(TT, T)
-                               ; Tl == [] -> true
-                               ; list_elem_type(Tl, T) ),
-                               ( wildcard_type_t(T) -> true    %(List %Undefined%): any head fits
-                               ; var(H) -> known_singleton(H, K), type_unify(K, T)
-                                         ; check_value(H, T, St), St == ok )
-                               -> set_out_type(Out, ['List', T])
+%heterogeneous expressions). When the head provably fits the tail's list type
+%the result is that list type; when it provably does NOT - both types known,
+%no fit - the result is still a proper list, of the WIDENED element type: the
+%union of what the tail holds and what the head is, exactly how collapse
+%records disagreeing branches. (cons () (cons (item 1) ())) is a
+%(List (| Item (List ...))), which fits a declared (List Atom) - every member
+%fits Atom - while against (List Number) the non-fitting member still costs
+%the guard, so nothing is discharged that the value cannot honour. A head of
+%UNKNOWN type still yields no claim: unknown is not evidence of anything, a
+%union member included.
+cons_out_type(H, Tl, Out) :- ( var(Out), cons_tail_elem(Tl, T)
+                               -> ( ( wildcard_type_t(T) -> true    %(List %Undefined%): any head fits
+                                    ; var(H) -> known_singleton(H, K), type_unify(K, T)
+                                              ; check_value(H, T, St), St == ok )
+                                    -> set_out_type(Out, ['List', T])
+                                  ; nonvar(T), cons_head_type(H, KH)
+                                    -> union_widen(T, KH, U),
+                                       set_out_type(Out, ['List', U])
+                                     ; true )
                                 ; true ).
+
+cons_tail_elem(Tl, T) :- ( var(Tl) -> known_singleton(Tl, TT), list_type(TT, T)
+                         ; Tl == [] -> true
+                         ; list_elem_type(Tl, T) ).
+
+cons_head_type(H, KH) :- ( var(H) -> known_singleton(H, KH0), nonvar(KH0), KH = KH0
+                                   ; value_single_type(H, KH) ).
+
+%The union of two element types, flattening existing unions and deduplicating
+%by variant so repeated widening stays small:
+union_widen(T, KH, U) :- ( is_union(T) -> T = ['|'|Ms] ; Ms = [T] ),
+                         ( is_union(KH) -> KH = ['|'|Ks] ; Ks = [KH] ),
+                         variant_union(Ks, Ms, U0),
+                         ( U0 = [Single] -> U = Single ; U = ['|'|U0] ).
 
 %union-atom likewise stays undeclared, but concatenating two provably
 %compatible lists yields that list type:
 union_atom_out_type(A, B, Out) :- ( var(Out),
                                     union_side_elem(A, TA),
-                                    union_side_elem(B, TB),
-                                    type_unify(TA, TB)
-                                    -> set_out_type(Out, ['List', TA])
+                                    union_side_elem(B, TB)
+                                    -> ( type_unify(TA, TB)
+                                         -> set_out_type(Out, ['List', TA])
+                                       %incompatible element types widen, as in cons_out_type/3 -
+                                       %the concatenation is still a proper list of both:
+                                       ; nonvar(TA), nonvar(TB)
+                                         -> union_widen(TA, TB, U),
+                                            set_out_type(Out, ['List', U])
+                                          ; true )
                                      ; true ).
 
 union_side_elem(X, T) :- ( var(X) -> known_singleton(X, K), list_type(K, T)
