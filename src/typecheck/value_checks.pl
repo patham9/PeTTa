@@ -47,18 +47,16 @@ value_single_type(V, T) :- ( var(V) -> known_singleton(V, T)
 det_arrow_head(Det, H) :- nonvar(Det), arrow_atom_det(H, Det), !.
 det_arrow_head(_, (->)).
 
-%The arrow head a declared symbol carries when it is used as a VALUE. Where
-%the checker's own builtin table has an entry it OVERRIDES the declaration,
-%exactly as it does for a direct call (function_call_determinism/3) and for
-%the oracle's wrapping decision (oracle_det_believed/3). lib_builtin_types
-%declares (: or (-> Bool Bool Bool)); plain_arrow_det/1 reads that plain arrow
-%as a det commitment under --strict-det, so without this the same symbol was
-%det as a closure argument and nondet as a call. An undeclared builtin already
-%got this right, through inferred_arrow_head/3 - the declaration was the only
-%thing hiding the table:
-value_arrow_head(F, N, Det, H) :- ( atom(F), builtin_call_determinism(F, N, DetB)
-                                    -> det_arrow_head(DetB, H)
-                                     ; det_arrow_head(Det, H) ).
+%The arrow head a declared symbol carries when it is used as a VALUE. The
+%builtin table OVERRIDES the declared determinism (table_det_override/4, shared
+%with the direct-call and oracle sites), then det_arrow_head/2 turns the
+%effective determinism into the head atom. lib_builtin_types declares
+%(: or (-> Bool Bool Bool)); plain_arrow_det/1 reads that plain arrow as a det
+%commitment under --strict-det, so without the override the same symbol was det
+%as a closure argument and nondet as a call. An undeclared builtin already got
+%this right, through inferred_arrow_head/3 - the declaration was the only thing
+%hiding the table:
+value_arrow_head(F, N, Det, H) :- table_det_override(F, N, Det, Eff), det_arrow_head(Eff, H).
 
 bound_args_match(B, PTs) :- \+ \+ maplist(arg_soft_ok, B, PTs).
 
@@ -240,7 +238,7 @@ tuple_type(C) :- is_list(C), C \= [->|_], C \= ['List', _].
 % undeclared head atom keeps the legacy tagged reading.
 tagged_tuple_type(T, Tag, FieldTs) :- nonvar(T), T = [Tag|FieldTs],
                                       atom(Tag), user_atom_type(Tag),
-                                      \+ is_arrow_type(T), \+ is_union(T), \+ list_type(T, _),
+                                      \+ special_compound_type(T),
                                       length(FieldTs, N),
                                       ( fn_decl_arity(Tag, N, _, _) -> true
                                                                      ; \+ type_name_declared(Tag) ).

@@ -25,7 +25,7 @@ oracle_det_wrap(Fun, NArgs, Out, Goal, Wrapped) :-
 %than the thing it audits - a false positive by construction.
 oracle_det_believed(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
                                   Det0 \== unspecified,
-                                  ( builtin_call_determinism(F, N, DetB) -> Det = DetB ; Det = Det0 ).
+                                  table_det_override(F, N, Det0, Det).
 
 %A call whose RESULT argument is already bound is not asking the function for
 %its answer, it is testing a candidate one: (let True (> (myplus $x 2) 3) $x)
@@ -64,11 +64,12 @@ oracle_check(V, T) :- ( var(V) -> true
                           -> throw(error(literal_type_mismatch(V, T), typecheck))
                            ; true ) ).
 
-%The unknown marker is not a concrete result type, so it never turns a bottom
-%body into a dishonest parametric declaration:
+%Only a candidate carrying CONCRETE type evidence (candidate_evidence(C,type(_)))
+%makes a bottom body a dishonest parametric declaration: the marker, a wrapped
+%literal and a still-open type variable are all "no concrete result stated here".
 parametric_output_check(F, ExpOut) :- ( var(ExpOut)
                                         -> ( known_candidates(ExpOut, Cs), member(C, Cs),
-                                             nonvar(C), \+ unknown_candidate(C)
+                                             candidate_evidence(C, type(_))
                                              -> throw(error(non_parametric_output(F), typecheck)) ; true )
                                          ; throw(error(non_parametric_output(F), typecheck)) ).
 

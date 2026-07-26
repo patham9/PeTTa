@@ -25,22 +25,24 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
                           ; true ).
 
 %Publish the clause's HEAD variables for the duration of a body determinism
-%analysis. A head variable is a parameter: it can arrive bound to anything the
-%caller chose, functions included, whatever its declared type says - and a
-%wildcard-typed parameter carries no type attribute at all (bind_param_type
-%records nothing for Atom/%Undefined%), so identity is the only reliable test.
-%unify_head_is_data/1 consults this to tell a parameter from a fresh local.
-with_det_head_vars(Args, Goal) :- catch(b_getval('$det_head_vars', Saved), _, Saved = []),
-                                  catch(b_getval('$det_direct_params', SavedD), _, SavedD = []),
+%analysis, as one $det_head_scope term scope(HeadVars, DirectParams). The full
+%head-variable set and its direct-parameter subset are captured from the same
+%head at the same moment and are always read together, so they live in a single
+%published term with a single setup/restore. A head variable is a parameter: it
+%can arrive bound to anything the caller chose, functions included, whatever its
+%declared type says - and a wildcard-typed parameter carries no type attribute at
+%all (bind_param_type records nothing for Atom/%Undefined%), so identity is the
+%only reliable test. unify_head_is_data/1 consults this to tell a parameter from
+%a fresh local. (The commitment gate $det_enforced is deliberately NOT folded in
+%here: it has a coarser lifetime - see the context inventory in flags_arrows.pl.)
+with_det_head_vars(Args, Goal) :- catch(b_getval('$det_head_scope', Saved), _, Saved = scope([], [])),
                                   term_variables(Args, HVs),
                                   include(var, Args, DPs),
-                                  setup_call_cleanup(( b_setval('$det_head_vars', HVs),
-                                                       b_setval('$det_direct_params', DPs) ),
+                                  setup_call_cleanup(b_setval('$det_head_scope', scope(HVs, DPs)),
                                                      Goal,
-                                                     ( b_setval('$det_head_vars', Saved),
-                                                       b_setval('$det_direct_params', SavedD) )).
+                                                     b_setval('$det_head_scope', Saved)).
 
-det_head_var(H) :- catch(b_getval('$det_head_vars', HVs), _, fail),
+det_head_var(H) :- catch(b_getval('$det_head_scope', scope(HVs, _)), _, fail),
                    member(V, HVs), V == H, !.
 
 %A DIRECT variable parameter: a top-level head argument that is ITSELF a
@@ -48,7 +50,7 @@ det_head_var(H) :- catch(b_getval('$det_head_vars', HVs), _, fail),
 %(P $u). term_variables (det_head_var/1) cannot tell them apart - it flattens
 %(P $u) to [$u] - but only direct params get the boundness check in
 %translate_clause, so the strengthenings must key on THIS, not det_head_var/1.
-det_direct_param(H) :- catch(b_getval('$det_direct_params', DPs), _, fail),
+det_direct_param(H) :- catch(b_getval('$det_head_scope', scope(_, DPs)), _, fail),
                        member(V, DPs), V == H, !.
 
 %The commitment gate. Published alongside the head vars whenever a body's

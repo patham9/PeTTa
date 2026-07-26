@@ -284,7 +284,24 @@ builtin_call_determinism('random-float', 2, det).
 %    'get-mettatype', 'mm2-exec', set_hook - foreign, dynamic, or absent
 %    predicates whose result count is not established here.
 
-function_call_determinism(F, N, Det) :- builtin_call_determinism(F, N, Det), !.
+%The builtin table is the checker's OWN bookkeeping about a symbol's result
+%count, and where it has an entry that entry OVERRIDES any determinism derived
+%from the program's own declaration. table_det_verdict/3 is that lookup, and
+%the override it implements is shared by every site that needs a symbol's
+%effective determinism, so the three cannot drift: a direct call
+%(function_call_determinism/3), a value-position arrow head (value_arrow_head/4),
+%and the oracle's wrapping decision (oracle_det_believed/3). The atom(F) guard
+%keeps a still-unbound F from enumerating the table by binding itself to a
+%builtin name; every caller here already passes a bound atom.
+table_det_verdict(F, N, Det) :- atom(F), builtin_call_determinism(F, N, Det).
+
+%The override applied to an ALREADY-COMPUTED fallback determinism (value_arrow_head
+%and oracle_det_believed hold theirs in hand). function_call_determinism keeps
+%the table check first and its fallback lazy, because its fallback is a goal that
+%may legitimately have no answer for a table-only builtin.
+table_det_override(F, N, Fallback, Det) :- ( table_det_verdict(F, N, DetB) -> Det = DetB ; Det = Fallback ).
+
+function_call_determinism(F, N, Det) :- table_det_verdict(F, N, Det), !.
 function_call_determinism(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
                                         Det0 \== unspecified, !, Det = Det0.
 function_call_determinism(F, N, Det) :- body_determinism(F, N, Det).

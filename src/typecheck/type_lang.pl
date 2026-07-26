@@ -84,6 +84,12 @@ is_arrow_type(T) :- nonvar(T), T = [A|_], arrow_atom(A).
 
 list_type(T, ET) :- nonvar(T), T = [L, ET], L == 'List'.
 
+%A compound type with dedicated syntax and semantics - an arrow, a union, or a
+%(List T) - as opposed to a plain positional tuple. A [Head|Fields] term that is
+%NONE of these is read as a tagged/positional tuple, so the "is this an ordinary
+%tuple" sites exclude exactly this set (\+ special_compound_type/1):
+special_compound_type(T) :- ( is_arrow_type(T) ; is_union(T) ; list_type(T, _) ).
+
 %%% Attribute hooks (permissive merging; errors are raised by explicit checks):
 tknown:attr_unify_hook(Cs, Other) :-
     ( var(Other) -> ( get_attr(Other, tknown, C2) -> variant_union(Cs, C2, U),
@@ -119,6 +125,51 @@ known_candidates(V, Cs) :- get_attr(V, tknown, Cs).
 %be discharged from the types the other flows happened to contribute.
 known_singleton(V, K) :- get_attr(V, tknown, [K]), \+ unknown_candidate(K).
 
+%%% The candidate-evidence classifier.
+%
+% Every candidate stored in a variable's tknown attribute answers to exactly
+% one kind of evidence. Each discharge/conflict/certainty site in the checker
+% used to re-derive that classification with its own ad-hoc mix of ==, nonvar
+% and marker tests; candidate_evidence/2 is the single relation they now
+% consult. The marker atoms below stay as the stored representation (attribute
+% contents are data) - this consolidates the READING of them, not the writing:
+%
+%   literal(V) - a '$certifiable_literal'(V) wrapper: a ground data literal a
+%                merge could not assign a single type to - (a b) fed to a
+%                (| Number (List Atom)) output. value_single_type/2 fails on it
+%                (its bare-atom elements carry no declared type), so an ordinary
+%                merge would record the plain unknown marker; it is recorded
+%                wrapped instead. It counts as unknown EVERYWHERE (a merged
+%                variable carrying it is never a known singleton, arg passing
+%                and parametric checks stay conservative) and is read specially
+%                only at the output certification (output_candidate_fits/2),
+%                where the concrete target is in hand and check_value/3 can
+%                certify the actual value V.
+%   unknown    - the '$unknown_branch_type' marker: a branch whose type the
+%                checker could not determine. "I don't know", never "compatible
+%                with everything".
+%   promised   - an unbound type variable this clause's declaration promised to
+%                its callers (param_promise_var/1): its value is the CALLER's
+%                choice, so it is evidence for nothing here (see below).
+%   open_var   - any other unbound candidate: a legitimate open declaration
+%                instance, universally quantified, which fits every requirement.
+%   type(T)    - a concrete type T: ordinary evidence.
+%
+% The relation NEVER binds C: every clause tests by == or a nonvar/var guard,
+% so a candidate list legitimately holding unbound declaration-instance type
+% variables (a param promise, or an open instance shared with the context) is
+% classified, never instantiated to a marker or a target type. The nonvar guard
+% on certifiable_literal_candidate/2 is part of that discipline: the output
+% discharge is called with candidates that may be such variables and must TEST,
+% never bind one to the wrapper.
+unknown_marker('$unknown_branch_type').
+certifiable_literal_candidate(C, V) :- nonvar(C), C = '$certifiable_literal'(V).
+
+candidate_evidence(C, literal(V)) :- certifiable_literal_candidate(C, V), !.
+candidate_evidence(C, unknown)    :- unknown_marker(M), C == M, !.
+candidate_evidence(C, E)          :- var(C), !, ( param_promise_var(C) -> E = promised ; E = open_var ).
+candidate_evidence(C, type(C)).
+
 %%% The unknown-branch marker.
 %
 % A construct that merges several branches into one result (if, case,
@@ -128,27 +179,11 @@ known_singleton(V, K) :- get_attr(V, tknown, [K]), \+ unknown_candidate(K).
 % - an existential test - look like a proof about the whole disjunction: one
 % typed branch discharged the obligation for all of them, and an untyped
 % branch could then deliver a value of any type where a concrete one was
-% certified. The marker makes the untyped branch visible, so the discharge
-% tests are effectively universal again: a merged variable carrying it is
-% never a known singleton, and an output certification over it falls back to a
-% runtime guard (a hard rejection under --strict).
-unknown_marker('$unknown_branch_type').
-%Never unifies: a candidate list legitimately holds unbound declaration-instance
-%type variables, and testing them must not bind one to the marker.
-unknown_candidate(C) :- unknown_marker(M), C == M.
-%A wrapped GROUND data literal a merge could not assign a single type to - (a b)
-%fed to a (| Number (List Atom)) output. value_single_type/2 fails on it (its
-%bare-atom elements carry no declared type), so an ordinary merge would record
-%the plain unknown marker. The literal is instead recorded wrapped: it counts as
-%unknown_candidate/1 EVERYWHERE (a merged variable carrying it is never a known
-%singleton, arg passing and parametric checks stay conservative), and is only
-%read specially at the output certification (output_candidate_fits/2), where the
-%concrete target type is in hand and check_value/3 can certify the actual value.
-unknown_candidate(C) :- certifiable_literal_candidate(C, _).
-%nonvar guard is load-bearing: unknown_candidate/1 and the output-check discharge
-%are called with candidates that may be unbound type variables (param promises),
-%and this must TEST such a candidate, never bind it to the wrapper.
-certifiable_literal_candidate(C, V) :- nonvar(C), C = '$certifiable_literal'(V).
+% certified. The marker (and the wrapped literal) make the untyped branch
+% visible, so the discharge tests are effectively universal again: a merged
+% variable carrying it is never a known singleton, and an output certification
+% over it falls back to a runtime guard (a hard rejection under --strict).
+unknown_candidate(C) :- candidate_evidence(C, E), ( E == unknown ; E = literal(_) ).
 
 %%% Indefinite evidence: a PROMISED type variable.
 %
@@ -171,8 +206,9 @@ certifiable_literal_candidate(C, V) :- nonvar(C), C = '$certifiable_literal'(V).
 % in none of its function's argument types is universally quantified, so by
 % parametricity only a bottom implementation can produce it - (: empty (-> $a))
 % is the one in the standard library - and a value that is never produced fits
-% every requirement. set_call_out_type/3 already makes exactly that
-% distinction; this is its counterpart on the reading side.
+% every requirement (candidate_evidence/2 classes it open_var, not promised).
+% set_call_out_type/3 already makes exactly that distinction; this is its
+% counterpart on the reading side.
 %
 % The var is deliberately NOT replaced by the marker: its identity is
 % load-bearing (it aliases the declaration instance shared with the context -
@@ -180,8 +216,7 @@ certifiable_literal_candidate(C, V) :- nonvar(C), C = '$certifiable_literal'(V).
 % purpose by ascribe_type/3). Nor does type_compat_soft/2 change: it is also
 % the definite-CONFLICT test, where refusing a var would turn "unknown" into
 % "wrong". The distinction belongs at the discharge test, so it lives here.
-indefinite_candidate(C) :- var(C), !, param_promise_var(C).
-indefinite_candidate(C) :- unknown_candidate(C).
+indefinite_candidate(C) :- candidate_evidence(C, E), ( E == unknown ; E = literal(_) ; E == promised ).
 
 note_unknown_candidate(V) :- ( var(V) -> unknown_marker(M),
                                          ( get_attr(V, tknown, Cs)

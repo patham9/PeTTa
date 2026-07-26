@@ -166,7 +166,7 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
 %the strongest evidence there is - so (a b) fits (| Number (List Atom)). Every
 %other candidate uses the type-level compatibility test, and an INDEFINITE one
 %(the unknown marker, or a promised type variable) is never a fit.
-output_candidate_fits(C, OT) :- certifiable_literal_candidate(C, V), !, check_value(V, OT, ok).
+output_candidate_fits(C, OT) :- candidate_evidence(C, literal(V)), !, check_value(V, OT, ok).
 output_candidate_fits(C, OT) :- \+ indefinite_candidate(C),
                                 ( type_compat_soft(C, OT) ; refinement_pair(C, OT) ).
 
@@ -175,7 +175,7 @@ output_candidate_fits(C, OT) :- \+ indefinite_candidate(C),
 %with no compatibility or refinement path. Binds Bad to the offending value/type
 %for the diagnostic. An indefinite candidate is never a conflict - it costs a
 %guard, not a rejection.
-output_candidate_conflict(C, OT, V) :- certifiable_literal_candidate(C, V), !, check_value(V, OT, mismatch).
+output_candidate_conflict(C, OT, V) :- candidate_evidence(C, literal(V)), !, check_value(V, OT, mismatch).
 output_candidate_conflict(C, OT, C) :- \+ indefinite_candidate(C),
                                        \+ type_compat_soft(C, OT), \+ refinement_pair(C, OT).
 

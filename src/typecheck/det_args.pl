@@ -181,7 +181,7 @@ nominal_nullary_inhabitant(K) :- member_ctor(K, 0, _).
 %boundary check removes exactly that, so the case is sound under enforcement.
 enforced_bound_tuple(X, W) :- var(X), enforced_bound_param(X),
                               known_singleton(X, K),
-                              is_list(K), \+ is_arrow_type(K), \+ is_union(K), \+ list_type(K, _),
+                              is_list(K), \+ special_compound_type(K),
                               length(K, W), W >= 1.
 
 %A deterministic caller needs positive evidence about its callees. Functions

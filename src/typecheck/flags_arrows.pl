@@ -132,3 +132,43 @@ canonical_arrow('-[nondet]->', '-[nondet]->') :- !.
 canonical_arrow('-[nondeterministic]->', '-[nondet]->') :- !.
 canonical_arrow(_, (->)).
 
+%%%%%%%%%% Clause-analysis context: the checker's global scratch state %%%%%%%%%%
+%
+% Several analyses publish per-scope state through non-logical global variables
+% (b_setval/nb_setval), each with a setup/restore helper that saves the outer
+% value and reinstates it on exit. They are NOT one context: their LIFETIMES
+% differ, which is why they are kept separate (a single term would tie scopes
+% that legitimately nest at different granularities). Inventory, so a reader
+% need not reconstruct it from the writer/reader sites:
+%
+%   $det_head_scope   (det_validate.pl)  scope(HeadVars, DirectParams).
+%       LIFETIME per CLAUSE BODY. Writer with_det_head_vars/2; readers
+%       det_head_var/1, det_direct_param/1 (-> unify_head_is_data/1,
+%       enforced_bound_param/1, the det strengthenings). The two lists were once
+%       two globals; they are captured from one head at one moment and merged.
+%   $det_enforced     (det_validate.pl)  the boolean commitment gate.
+%       LIFETIME per CLAUSE SET - strictly COARSER than $det_head_scope: it is
+%       set once around clause_set_determinism/2, which then opens one
+%       $det_head_scope per clause body inside it. That is why it is a separate
+%       helper (with_det_enforced/2) and NOT folded into $det_head_scope.
+%       Reader det_enforced_now/0 (-> enforced_bound_param/1).
+%   $det_stack        (det_args.pl)      list, the body_determinism/3 recursion
+%       guard. LIFETIME per transitive-analysis call chain.
+%   $det_assume_stack (det_analysis.pl)  list, the SEPARATE recursion guard for
+%       body_determinism_assuming/3 - deliberately not $det_stack (see the note
+%       there: sharing would cross-poison the two analyses). Same lifetime shape.
+%   $assumptions / $assume_decl / $assump_taint  (inference.pl)
+%       the assumption environment while an UNDECLARED function's clause is
+%       type-inferred. LIFETIME per clause of an undeclared function. Writer
+%       begin_clause_inference/4 (+ taint_assumption/1); restored from its
+%       saved(...) token; readers taint_assumption/1, assumed_self_decl/4,
+%       store_inferred_type/4.
+%   $param_promises   (inference.pl)     the promised declaration type variables
+%       of the clause under translation. LIFETIME per clause translation. Writer
+%       param_promises_scope/2 (+ _restore/1); reader param_promise_var/1, which
+%       candidate_evidence/2 consults to class an unbound candidate as promised.
+%   $ctor_deps        (ctor_snapshots.pl) list, the constructor-set dependencies
+%       captured during a snapshot. LIFETIME per snapshot scope. Uses nb_setval
+%       (non-backtrackable) with an explicit fail-branch restore; writer/reader
+%       ctor_deps/1 and the snapshot-scope helpers.
+

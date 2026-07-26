@@ -90,20 +90,20 @@ untyped_call_out('cdr-atom', [A], Out) :- cdr_atom_out_type(A, Out).
 %call SUCCEEDS is a separate question and belongs to the determinism table
 %(where car-atom is det because its second clause answers () for anything the
 %first does not match, and last is semidet-or-worse for the empty list).
-list_elem_out_type(A, Out) :- ( var(Out), union_side_elem(A, T), nonvar(T),
+list_elem_out_type(A, Out) :- ( var(Out), list_source_elem(A, T), nonvar(T),
                                 \+ wildcard_type_t(T)
                                 -> set_out_type(Out, T) ; true ).
 
 %An expression's tail is always a sequence, so cdr-atom keeps the (List ...)
 %floor its old declaration gave it, and narrows the element type whenever the
 %argument's own type supplies one:
-cdr_atom_out_type(A, Out) :- ( var(Out), union_side_elem(A, T), nonvar(T)
+cdr_atom_out_type(A, Out) :- ( var(Out), list_source_elem(A, T), nonvar(T)
                                -> set_out_type(Out, ['List', T])
                                 ; set_out_type(Out, ['List', '%Undefined%']) ).
 
 %Element-filtering builtins preserve their first argument's list type; the
 %other operand may be any expression:
-first_list_out_type(A, Out) :- ( var(Out), union_side_elem(A, T)
+first_list_out_type(A, Out) :- ( var(Out), list_source_elem(A, T)
                                  -> set_out_type(Out, ['List', T]) ; true ).
 
 %cons stays undeclared (a global (List $a) signature would reject legal
@@ -117,7 +117,7 @@ first_list_out_type(A, Out) :- ( var(Out), union_side_elem(A, T)
 %the guard, so nothing is discharged that the value cannot honour. A head of
 %UNKNOWN type still yields no claim: unknown is not evidence of anything, a
 %union member included.
-cons_out_type(H, Tl, Out) :- ( var(Out), cons_tail_elem(Tl, T)
+cons_out_type(H, Tl, Out) :- ( var(Out), list_source_elem(Tl, T)
                                -> ( ( wildcard_type_t(T) -> true    %(List %Undefined%): any head fits
                                     ; var(H) -> known_singleton(H, K), type_unify(K, T)
                                               ; check_value(H, T, St), St == ok )
@@ -127,10 +127,6 @@ cons_out_type(H, Tl, Out) :- ( var(Out), cons_tail_elem(Tl, T)
                                        set_out_type(Out, ['List', U])
                                      ; true )
                                 ; true ).
-
-cons_tail_elem(Tl, T) :- ( var(Tl) -> known_singleton(Tl, TT), list_type(TT, T)
-                         ; Tl == [] -> true
-                         ; list_elem_type(Tl, T) ).
 
 cons_head_type(H, KH) :- ( var(H) -> known_singleton(H, KH0), nonvar(KH0), KH = KH0
                                    ; value_single_type(H, KH) ).
@@ -145,8 +141,8 @@ union_widen(T, KH, U) :- ( is_union(T) -> T = ['|'|Ms] ; Ms = [T] ),
 %union-atom likewise stays undeclared, but concatenating two provably
 %compatible lists yields that list type:
 union_atom_out_type(A, B, Out) :- ( var(Out),
-                                    union_side_elem(A, TA),
-                                    union_side_elem(B, TB)
+                                    list_source_elem(A, TA),
+                                    list_source_elem(B, TB)
                                     -> ( type_unify(TA, TB)
                                          -> set_out_type(Out, ['List', TA])
                                        %incompatible element types widen, as in cons_out_type/3 -
@@ -157,9 +153,16 @@ union_atom_out_type(A, B, Out) :- ( var(Out),
                                           ; true )
                                      ; true ).
 
-union_side_elem(X, T) :- ( var(X) -> known_singleton(X, K), list_type(K, T)
-                         ; X == [] -> true
-                         ; list_elem_type(X, T) ).
+%The element type carried by a list-valued SOURCE expression, the one question
+%behind every list-shape output typer above: a cons TAIL, a union/concat OPERAND,
+%an accessor's list ARGUMENT all ask it (cons_tail_elem/2 was a second, identical
+%copy). A bound variable answers from its known (List T); a literal () carries no
+%element constraint (T stays open, so any head fits); a literal list is read
+%element-wise (list_elem_type/2). The callers differ only in how they re-wrap the
+%answer - the element itself (car-atom), or (List T) again (cdr-atom, concat):
+list_source_elem(X, T) :- ( var(X) -> known_singleton(X, K), list_type(K, T)
+                          ; X == [] -> true
+                          ; list_elem_type(X, T) ).
 
 %Destructuring bindings: type a pattern's variables from the bound value's
 %known type, e.g. (let (Stats $sum $sq $n) (make-stats) ...). With no type for
