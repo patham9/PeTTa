@@ -32,11 +32,10 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
                                                retractall(det_analysis_cache(_, _, _)),  %clause set changed
                                                retractall(det_assume_cache(_, _, _)),  %conditional-det results depend on clauses too
-                                               %FEATURE 2: re-derive F's output-properness certificate for this
-                                               %new clause (all clauses of F must qualify). A late clause that
-                                               %breaks it withdraws the fact; consumers are the documented S4 exposure.
-                                               length(Args1, ClauseArity),
-                                               update_output_certs(F, ClauseArity, BodyExpr),
+                                               %clause set changed: the output-certificate memos (proper_list,
+                                               %bound_bool) depend on clause sets transitively, so they reset
+                                               %alongside the det caches above (see output_cert/3):
+                                               reset_output_certs(F),
                                                clause_param_types(F, Args1, DeclOut),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:

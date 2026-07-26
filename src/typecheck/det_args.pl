@@ -268,31 +268,57 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %CONSUMER already compiled against the certificate is not recompiled, the same
 %documented S4 exposure as det_analysis_cache and the boundness proviso.
 %The store is parameterized by KIND - the same "every clause's result
-%provably has this shape" bookkeeping serves both proper_list (a bound
-%proper list: collapse, literal spine, certified call) and bound_bool (a
-%bound boolean: literal, det Bool builtin, certified call, an if/case whose
-%every branch qualifies). One derivation, one sticky disqualification, one
-%reset; adding a certificate kind is one output_result_qualifies/2 clause.
-:- dynamic output_cert_fact/3.       % output_cert_fact(Kind, F, N)
-:- dynamic output_cert_poisoned/3.   % output_cert_poisoned(Kind, F, N) - sticky
+%provably has this shape" question serves both proper_list (a bound proper
+%list: collapse, literal spine, certified call) and bound_bool (a bound
+%boolean: literal, det Bool builtin, certified call, an if/case whose every
+%branch qualifies). Adding a certificate kind is one
+%output_result_qualifies/2 clause.
+%
+%Derivation is DEMAND-DRIVEN with a COINDUCTIVE cycle assumption, exactly
+%body_determinism/3's treatment of recursion: proving output_cert(K, F, N)
+%checks every stored clause of F, and a recursive reference to a function
+%already on the proof stack is assumed to hold. Sound for these
+%shape-of-every-output properties: a value actually produced at runtime
+%traces a FINITE call tree, and induction on that tree grounds every leaf in
+%a literal or builtin shape - so mutually recursive definitions
+%(even-number?/odd-number?) certify, which the previous one-pass
+%sticky-poison derivation could not. Failure under the optimistic assumption
+%is definitive (assumptions only ever ADD successes), so a `no` is a real
+%no. The memo is written only for OUTERMOST proofs (empty stack on entry):
+%inner members of a cycle are re-derived when asked directly, which costs
+%recomputation, never correctness.
+:- dynamic output_cert_memo/4.   % output_cert_memo(Kind, F, N, yes|no)
 
-output_cert(Kind, F, N) :- output_cert_fact(Kind, F, N), \+ output_cert_poisoned(Kind, F, N).
+output_cert(Kind, F, N) :- output_cert_memo(Kind, F, N, A), !, A == yes.
+output_cert(Kind, F, N) :- cert_on_stack(Kind, F, N), !.       %coinductive assumption
+output_cert(Kind, F, N) :-
+    atom(F),
+    catch(nb_getval(F, Metas0), _, fail),
+    include(arity_meta(N), Metas0, Metas), Metas \== [],
+    catch(b_getval('$cert_stack', St0), _, St0 = []),
+    ( with_cert_stack(Kind, F, N, all_clause_results_qualify(Kind, Metas)) -> A = yes ; A = no ),
+    ( St0 == [] -> assertz(output_cert_memo(Kind, F, N, A)) ; true ),
+    A == yes.
+
+cert_on_stack(Kind, F, N) :- catch(b_getval('$cert_stack', St), _, fail),
+                             member(c(K, F1, N1), St), K == Kind, F1 == F, N1 == N, !.
+
+with_cert_stack(Kind, F, N, Goal) :- catch(b_getval('$cert_stack', St), _, St = []),
+                                     setup_call_cleanup(b_setval('$cert_stack', [c(Kind, F, N)|St]),
+                                                        Goal,
+                                                        b_setval('$cert_stack', St)).
+
+all_clause_results_qualify(_, []).
+all_clause_results_qualify(Kind, [fun_meta(_, B)|Ms]) :- output_result_qualifies(Kind, B),
+                                                         all_clause_results_qualify(Kind, Ms).
 
 proper_list_output(F, N) :- output_cert(proper_list, F, N).
 bool_output(F, N) :- output_cert(bound_bool, F, N).
 
-update_output_certs(F, N, Body) :- update_output_cert(proper_list, F, N, Body),
-                                   update_output_cert(bound_bool, F, N, Body).
-
-update_output_cert(Kind, F, N, Body) :-
-    ( output_cert_poisoned(Kind, F, N) -> true                  %already poisoned, nothing to add
-    ; output_result_qualifies(Kind, Body)
-      -> ( output_cert_fact(Kind, F, N) -> true ; assertz(output_cert_fact(Kind, F, N)) )
-    ; retractall(output_cert_fact(Kind, F, N)),                 %this clause breaks the certificate
-      assertz(output_cert_poisoned(Kind, F, N)) ).
-
-reset_output_certs(F) :- retractall(output_cert_fact(_, F, _)),
-                         retractall(output_cert_poisoned(_, F, _)).
+%The memo is stale the moment ANY clause set changes - a certificate depends
+%on callees transitively - so invalidation is global, exactly like
+%det_analysis_cache (translate_clause retracts both on every new clause):
+reset_output_certs(_) :- retractall(output_cert_memo(_, _, _, _)).
 
 output_result_qualifies(proper_list, Body) :- clause_result_proper_list(Body).
 output_result_qualifies(bound_bool, Body) :- clause_result_bool(Body).
