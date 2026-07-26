@@ -319,9 +319,26 @@ partial application, and `add-atom` needs an expression — so they are
 `semidet`, and a `-[det]->` body promising exactly one result may not call
 them either. `match`, `get-type`, `member`, `is-member` and `callPredicate`
 stay nondet, and the higher-order builtins (`maplist`, `foldl`, `map-atom`,
-`filter-atom`, `foldl-atom`) claim nothing because their determinism is their
-closure's. `examples/determinism_builtins.metta` pins the honest arrow for
-each family; the `fail_det_*` examples pin one rejection per cause.
+`filter-atom`, `foldl-atom`) have no table entry at all, because their
+determinism is their closure's and a (name, arity) table cannot say so.
+`examples/determinism_builtins.metta` pins the honest arrow for each family;
+the `fail_det_*` examples pin one rejection per cause.
+
+**Higher-order builtins take it from the closure.** `map-atom`, `filter-atom`
+and `foldl-atom` come in two forms and both are live: the *pseudo-lambda* form
+`(map-atom $l $x Body)`, which the translator rewrites inline, and the
+*closure* form `(map-atom $l $f)`, which is what `src/metta.pl` defines —
+`'map-atom'/3`, `'foldl-atom'/4` and `'filter-atom'/3`, i.e. two, three and two
+MeTTa arguments plus the result. Either way the construct is exactly as
+deterministic as what it is handed, so the closure argument has to carry det
+evidence the same way it does at a user-written higher-order call site: an
+explicit `-[det]->`, an inline lambda with a deterministic body, or (under
+`--strict-det`) a plain `->`. A closure parameter therefore has to be
+*declared* as an arrow — `(: for-each-in-atom (-> $l (-> $a $b) %Undefined%))`,
+not `(-> $l $f ...)`, which says nothing about `$f` and leaves the wrapper
+unprovable. See `examples/strictdet_higher_order_builtins.metta`. Both forms
+read the list argument as a proper list; that assumption is the one thing
+about them the analysis does not check.
 
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so

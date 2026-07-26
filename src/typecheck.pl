@@ -2194,9 +2194,43 @@ deterministic_expr(['let*', Binds, Body], Result) :- !, binds_and_body_determini
 deterministic_expr([sealed, _, Expr], Result) :- !, deterministic_expr(Expr, Result).
 deterministic_expr(['forall', _, _], ok) :- !.
 deterministic_expr(['foldall', _, _, _], ok) :- !.
+%The three higher-order builtins exist in TWO forms, and both are live.
+%
+%  * The pseudo-lambda form the translator rewrites inline (src/translator.pl):
+%    (foldl-atom List Init $acc $x Body), (map-atom List $x Body),
+%    (filter-atom List $x Cond). The element variable is a binder, so the
+%    determinism is that of the list and of the inlined body.
+%  * The CLOSURE form, which is what src/metta.pl actually defines
+%    ('map-atom'/3, 'foldl-atom'/4, 'filter-atom'/3 = 2/3/2 MeTTa arguments
+%    plus the result): (map-atom List F), (foldl-atom List Init F),
+%    (filter-atom List F). Here the determinism is the CLOSURE argument's -
+%    the predicate calls reduce/2 on it once per element - so the closure has
+%    to carry det evidence exactly as it does for a user-written fold
+%    (det_arg_evidence/2, the caller-side discharge used by
+%    det_closure_args_ok/3).
+%
+%Only the first form had clauses, so every closure-form call fell through to
+%deterministic_call_expr/2, where the three are deliberately unlisted in
+%builtin_call_determinism/3 ("their determinism is that of the closure they
+%are given, which this table cannot express") and therefore `unspecified`.
+%That is what rejected lib_he's for-each-in-atom under --strict-det.
+%
+%LIMIT, shared with the pseudo-lambda clauses above and stated rather than
+%hidden: all six read the list argument as a PROPER list. It need not be one
+%- 'map-atom'([], _, []) and 'map-atom'([H|T], ...) both match an unbound
+%argument, so an open list enumerates lengths - but the closure's own
+%determinism is the question these constructs are asked, and requiring the
+%spine to be manifest would make (map-atom $l $f) unprovable for every
+%function that takes its list as a parameter, i.e. all of them.
 deterministic_expr(['foldl-atom', List, Init, _, _, Body], Result) :- !, combine_determinism_list([List, Init, Body], Result).
 deterministic_expr(['map-atom', List, _, Body], Result) :- !, combine_determinism_list([List, Body], Result).
 deterministic_expr(['filter-atom', List, _, Cond], Result) :- !, combine_determinism_list([List, Cond], Result).
+deterministic_expr(['foldl-atom', List, Init, F], Result) :- !,
+    closure_builtin_determinism('foldl-atom', F, 2, [List, Init], Result).
+deterministic_expr(['map-atom', List, F], Result) :- !,
+    closure_builtin_determinism('map-atom', F, 1, [List], Result).
+deterministic_expr(['filter-atom', List, F], Result) :- !,
+    closure_builtin_determinism('filter-atom', F, 1, [List], Result).
 deterministic_expr(['|->', _, _], ok) :- !.
 deterministic_expr([case, KeyExpr, PairsExpr], Result) :- !, case_expr_determinism(KeyExpr, PairsExpr, Result).
 deterministic_expr([Head|Args], Result) :- ( atomic(Head), ( \+ atom(Head) ; \+ fun(Head) )
@@ -2204,6 +2238,13 @@ deterministic_expr([Head|Args], Result) :- ( atomic(Head), ( \+ atom(Head) ; \+ 
                                            combine_determinism_list([Head|Args], Result).
 deterministic_expr([Head|Args], Result) :- atom(Head), !, deterministic_call_expr([Head|Args], Result).
 deterministic_expr([Head|_], unknown(dynamic_head(Head))).
+
+%(map-atom L F), (foldl-atom L Init F) and (filter-atom L F): the data
+%arguments contribute their own determinism, and the closure has to prove
+%itself exactly as it does at a user-written higher-order call site.
+closure_builtin_determinism(Name, F, M, DataArgs, Result) :-
+    ( det_arg_evidence(F, M) -> combine_determinism_list(DataArgs, Result)
+                              ; Result = unknown(undetermined_closure(Name, F)) ).
 
 deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),

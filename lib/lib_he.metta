@@ -63,7 +63,10 @@
              $B))
 
 ;Evaluation control
-(: for-each-in-atom (-> $l $f %Undefined%))
+;The second parameter is applied to every element, so it is an arrow, not an
+;anonymous $f: naming its shape is what lets the checker carry the closure's
+;determinism through map-atom to this function's own -> commitment.
+(: for-each-in-atom (-> $l (-> $a $b) %Undefined%))
 (= (for-each-in-atom $L $f)
    (map-atom $L $f))
 
@@ -86,7 +89,10 @@
 (= (is-function (-> $A $B)) (let $temp (cut) True))
 (= (is-function $X) False)
 
-(: get-type-space (-> $s $a %Undefined%))
+;get-type collects its candidates through a soft cut, so it offers every one
+;of them - and user refinement clauses add more. A wrapper cannot be more
+;deterministic than what it wraps.
+(: get-type-space (-[nondet]-> $s $a %Undefined%))
 (= (get-type-space &self $x)
    (get-type $x))
 
