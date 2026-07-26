@@ -11,6 +11,13 @@
 ; compiling under --strict is the proof that no ascription and no residual
 ; runtime check is needed.
 ;
+; The $prf : Proof half of that used to be vacuous: Proof is a newtype over
+; Expression, Expression is a wildcard, and a brand over a wildcard fitted
+; every type in both directions - so proof-score's first parameter would have
+; accepted anything the narrowing produced. It does not any more (brand_unify/2
+; in typecheck.pl): the narrowing has to deliver Proof specifically, and this
+; example now pins that it does.
+;
 ; Reverse the two branches and the narrowing is refused - see
 ; fail_strict_union_var_branch_first.metta.
 

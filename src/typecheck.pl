@@ -161,11 +161,13 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                 retractall(inferred_fn_type(Name, _, _)),  %declaration supersedes inference
                                                 ( declared_fn_type(Name, A2, O2, D2),
                                                   (A2-O2-D2) =@= (ATN-OTN-Det) -> true
-                                                ; warn_if_late_declaration(Name),
-                                                  assertz(declared_fn_type(Name, ATN, OTN, Det)) )
+                                                ; assertz(declared_fn_type(Name, ATN, OTN, Det)),
+                                                  enforce_late_declaration(Name),
+                                                  note_constructor_set_change(Name) )
                                               ; normalize_type(Type, TN),
                                                 ( declared_value_type(Name, T2), T2 =@= TN -> true
-                                                ; assertz(declared_value_type(Name, TN)) ) )
+                                                ; assertz(declared_value_type(Name, TN)),
+                                                  note_constructor_set_change(Name) ) )
                                          ; true ).
 
 %declared_fn_type/4 keeps the determinism, not the arrow that expressed it, and
@@ -216,13 +218,32 @@ maybe_uncache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term 
                                                     -> erase(Ref) ; true ) )
                                            ; true ).
 
-%Type declarations only affect later forms; warn when one arrives after the
-%function's clauses were already compiled (a silent no-op otherwise):
-warn_if_late_declaration(Name) :-
+%%% A declaration that arrives after the function was compiled used to be
+%%% BELIEVED and never ENFORCED: the clauses were validated (and emitted) with
+%%% no declaration in sight, so a late -[det]-> got no overlap check, no body
+%%% determinism check and no commit cut, while every later caller was told the
+%%% function is det. A warning is not enough for that - the compiler was
+%%% asserting something it had not checked.
+%%%
+%%% This cannot happen INSIDE a file: process_metta_string/3 pre-caches every
+%%% arrow declaration of a file before compiling any of its definitions. It is
+%%% specifically a cross-file (or add-atom-at-runtime) situation, so recompiling
+%%% is cheap - it revisits one function, not the program.
+%%%
+%%% Recompiling, rather than rejecting, is what a declaration prepass would
+%%% have done had the two files been one, so it is the semantics that already
+%%% exists rather than a new rule. The clauses go back through
+%%% translate_clause/2 with the declaration in place: they get their argument
+%%% and output certifications, their determinism verdict, and their commit cut,
+%%% and if they cannot satisfy the declaration the normal error is thrown.
+%%% The warning stays, because a recompile can change a program that already
+%%% ran part of itself.
+enforce_late_declaration(Name) :-
     ( catch(nb_getval(Name, [_|_]), _, fail)
       -> format(user_error,
-                "Warning: type declaration for ~w arrives after its definition; already-compiled clauses and earlier calls are unaffected~n",
-                [Name])
+                "Warning: type declaration for ~w arrives after its definition; its clauses are being recompiled against it~n",
+                [Name]),
+         recompile_function_clauses(Name)
        ; true ).
 
 forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
@@ -246,6 +267,12 @@ wildcard_type('Expression').
 wildcard_type_t(T) :- atom(T), wildcard_type(T).
 
 type_unify(A, B) :- ( var(A) ; var(B) ), !, A = B.
+%A wildcard is NOT "every type at once" - it is "nothing is stated here". The
+%difference is invisible for structural types (a wildcard on either side
+%simply discharges the obligation) but load-bearing against a newtype brand,
+%so the brand rules run BEFORE the wildcard shortcut and the shortcut never
+%sees a brand on either side. See brand_unify/2:
+type_unify(A, B) :- ( brand_name(A) ; brand_name(B) ), !, brand_unify(A, B).
 type_unify(A, B) :- ( wildcard_type_t(A) ; wildcard_type_t(B) ), !.
 %Union types (| T1 T2 ...): a union value must fit every context member-wise;
 %a value fits a required union if it fits some member:
@@ -253,13 +280,6 @@ type_unify(A, B) :- is_union(A), !, A = ['|'|As],
                     \+ ( member(MA, As), \+ type_compat_soft(MA, B) ).
 type_unify(A, B) :- is_union(B), !, B = ['|'|Ms],
                     member(M, Ms), type_unify(A, M), !.
-%Newtypes are nominal: identical brands unify, a brand fits its
-%representation, but neither the bare representation nor a different brand
-%fits it implicitly (that is the point):
-type_unify(A, B) :- atom(A), declared_newtype(A, RA), !,
-                    ( atom(B) -> ( declared_newtype(B, _) -> A == B ; type_unify(RA, B) )
-                               ; type_unify(RA, B) ).
-type_unify(A, B) :- atom(B), declared_newtype(B, _), !, atom(A), A == B.
 type_unify(A, B) :- atom(A), !, A == B.
 %Arrows: a det closure fits anywhere, a nondet closure only fits a nondet
 %requirement once --strict-det makes plain -> a determinism commitment:
@@ -269,6 +289,40 @@ type_unify(A, B) :- is_arrow_type(A), is_arrow_type(B), !,
                     same_length(As, Bs), maplist(type_unify, As, Bs).
 type_unify(A, B) :- is_list(A), !, is_list(B), same_length(A, B), maplist(type_unify, A, B).
 type_unify(A, B) :- A == B.
+
+brand_name(T) :- atom(T), declared_newtype(T, _).
+
+%%% (Newtype R) is NOMINAL, and the rule is one-directional and non-vacuous:
+%%%
+%%%   1. A brand fits itself, and no other brand.
+%%%   2. A brand fits a WILDCARD requirement (%Undefined%/Atom/Expression).
+%%%      That is what erasure means: at runtime the value simply is its
+%%%      representation, and a wildcard requirement asks for nothing.
+%%%   3. A brand fits a concrete requirement T exactly when its representation
+%%%      does - PROVIDED the representation is not itself a wildcard. A
+%%%      wildcard representation says "the payload shape is unconstrained",
+%%%      and reading that as "the payload fits every type" would erase the
+%%%      brand into a universal type: (: Proof (Newtype Expression)) made Proof
+%%%      and Number mutually compatible, so a Proof could be handed to
+%%%      (-> Number Number) with the obligation discharged statically.
+%%%      Unconstrained is not the same as universal.
+%%%   4. NOTHING implicitly fits a brand - not a wildcard either. The whole
+%%%      point of a brand is that a value acquires it in exactly one way, by
+%%%      being written (brand T V); an unknown or unconstrained value is not
+%%%      evidence that the brand was ever applied.
+%%%
+%%% (3) and (4) are what closed the hole; (1) and (2) are the previous
+%%% behaviour restated. Note the asymmetry is deliberate and matches the
+%%% relation's argument convention: type_unify(Actual, Required).
+brand_unify(A, B) :- brand_name(A), brand_name(B), !, A == B.
+brand_unify(A, B) :- brand_name(B), !,
+                     %a union VALUE fits a brand only if every member does,
+                     %mirroring the is_union(A) rule below; nothing else does:
+                     is_union(A), A = ['|'|As],
+                     \+ ( member(MA, As), \+ type_compat_soft(MA, B) ).
+brand_unify(_, B) :- wildcard_type_t(B), !.
+brand_unify(A, B) :- is_union(B), !, B = ['|'|Ms], member(M, Ms), type_unify(A, M), !.
+brand_unify(A, B) :- declared_newtype(A, RA), \+ wildcard_type_t(RA), type_unify(RA, B).
 
 %A closure fits a required arrow when it can produce no MORE results than the
 %requirement allows (det < semidet < nondet). An explicit -[det]->/-[semidet]->
@@ -1094,11 +1148,12 @@ narrowing_sound(P, Ms, _, Prior) :- is_list(P), length(P, N),
 %      EARLIER branch of the same case. case is first-match/committed
 %      (translate_case compiles to nested if-then-else), so such a value can
 %      never reach this branch.
-%LIMITATION: (a) reads the constructor set as it stands right now. A
-%constructor for Member declared in a LATER file (or a later form) would
-%invalidate an exclusion already made; unlike get-type extensions there is no
-%single hook to gate on, and the already-compiled clause is not revisited.
-%Declare a type's constructors before the code that matches on it.
+%(a) reads the constructor set as it stands right now, so the verdict is a
+%SNAPSHOT. It used to be a standing limitation - a constructor for Member
+%declared in a later file invalidated an exclusion already made and nothing
+%revisited the clause. The snapshot is now recorded (note_ctor_snapshot/1) and
+%a later declaration that changes the set recompiles the clauses that read it;
+%see "Constructor-set snapshots" below.
 union_member_excluded(M, _, _) :- var(M), !, fail.
 union_member_excluded(M, _, _) :- is_arrow_type(M), !.       %a closure is not an expression
 union_member_excluded(M, _, _) :- list_type(M, _), !, fail.  %(List T) admits every length
@@ -1114,6 +1169,7 @@ union_member_excluded(M, N, Prior) :- atom(M), !,
         ; primitive_type(M) -> true          %an expression is not a Number/String/Bool
         ; N =:= 0 -> true                    %() is no constructor application
         ; K is N - 1,
+          note_ctor_snapshot(M),             %this verdict depends on M's constructor set
           forall(member_ctor(M, K, C), prior_consumed_ctor(Prior, C, K)) ).
 union_member_excluded(_, _, _) :- fail.
 
@@ -1136,6 +1192,125 @@ union_member_excluded(_, _, _) :- fail.
 member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
                         \+ fun(C),
                         nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).
+
+%%% Constructor-set snapshots %%%
+%%%
+%%% Two static verdicts are read off the constructor set of a nominal type:
+%%% union_member_excluded/3 (this member cannot build an N-element value) and
+%%% domain_keys/3 (these are all the value shapes of this type, used by the
+%%% exhaustiveness checks). PeTTa's types are OPEN - a constructor may be
+%%% declared in any later file - so both verdicts are snapshots, and a
+%%% constructor arriving afterwards silently invalidates them.
+%%%
+%%% Every snapshot is therefore recorded with the key set it saw, and every
+%%% new type declaration re-reads them. A set that changed means some clause
+%%% was compiled on a premise that no longer holds:
+%%%
+%%%   - a clause verdict (union narrowing, case coverage) is REDONE - the
+%%%     clause goes back through translate_clause/2 with the new constructor
+%%%     set, exactly as if the constructor had been declared first. It shares
+%%%     recompile_function_clauses/1 with the late-declaration fix, which is
+%%%     the same problem in a different disguise.
+%%%   - an exhaustiveness verdict has no clause to redo (it is a property of
+%%%     the whole clause set, judged in a per-file prepass), so it is simply
+%%%     re-run and throws if the function is no longer exhaustive.
+%%%
+%%% Both are gated behind "nothing was recorded", so a program that never
+%%% narrows a union and declares no -[det]-> pays nothing.
+:- dynamic ctor_snapshot_use/3.        % ctor_snapshot_use(Type, KeySnapshot, Function)
+:- dynamic det_exhaustive_verdict/8.   % det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, FormStr)
+
+%The accumulator is only open while a clause is being translated; outside one
+%(the exhaustiveness prepass, say) there is no clause to attribute a snapshot
+%to and the verdict is recorded by other means:
+ctor_deps(Ds) :- catch(nb_getval('$ctor_deps', Ds), _, Ds = none).
+
+note_ctor_snapshot(T) :- ctor_deps(Ds),
+                         ( Ds == none -> true
+                         ; memberchk(T, Ds) -> true
+                         ; nb_setval('$ctor_deps', [T|Ds]) ).
+
+%Opens the accumulator for one clause translation and records what it read.
+%Nests safely (the specializer re-enters the translator) and leaves the outer
+%accumulator exactly as it found it, error or not:
+with_ctor_snapshot(F, Goal) :- ctor_deps(Saved),
+                               nb_setval('$ctor_deps', []),
+                               (  catch(Goal, E, ( nb_setval('$ctor_deps', Saved), throw(E) ))
+                               -> ctor_deps(Ds),
+                                  nb_setval('$ctor_deps', Saved),
+                                  ( Ds == none -> true ; record_ctor_snapshots(F, Ds) )
+                               ;  nb_setval('$ctor_deps', Saved), fail ).
+
+%Same accumulator, for a verdict that is NOT a clause: returns the types read
+%instead of attributing them to a function (the exhaustiveness prepass).
+with_ctor_snapshot_types(Goal, Types) :- ctor_deps(Saved),
+                                         nb_setval('$ctor_deps', []),
+                                         (  catch(Goal, E, ( nb_setval('$ctor_deps', Saved), throw(E) ))
+                                         -> ctor_deps(Ds),
+                                            nb_setval('$ctor_deps', Saved),
+                                            ( Ds == none -> Types = [] ; Types = Ds )
+                                         ;  nb_setval('$ctor_deps', Saved), fail ).
+
+record_ctor_snapshots(F, Ts) :- forall(member(T, Ts),
+                                       ( ctor_key_snapshot(T, Keys),
+                                         retractall(ctor_snapshot_use(T, _, F)),
+                                         assertz(ctor_snapshot_use(T, Keys, F)) )).
+
+%Everything domain_keys/3 and union_member_excluded/3 can see of T: its
+%equation-less declared constructors and its declared nullary constants.
+ctor_key_snapshot(T, Keys) :- findall(C/K, ( member_ctor(T, K, C)
+                                           ; declared_value_type(C, T2), T2 == T, atom(C), \+ fun(C), K = 0 ),
+                                      Ks),
+                              sort(Ks, Keys).
+
+%Hook on every NEW type declaration (maybe_cache_type_decl/2). Two gates keep
+%it off the hot path, cheapest first: a program that has recorded no snapshot
+%has nothing to revalidate (which is every program until it narrows a union or
+%declares a -[det]->, and in particular the whole builtin-type seeding pass),
+%and a declared symbol WITH equations is never a constructor anyway -
+%member_ctor/3's own rule, since such a symbol is rewritten at the call site
+%and never survives as a value.
+note_constructor_set_change(_) :- \+ ctor_snapshot_use(_, _, _),
+                                  \+ det_exhaustive_verdict(_, _, _, _, _, _, _, _), !.
+note_constructor_set_change(Name) :- fun(Name), !.
+note_constructor_set_change(Name) :- revalidate_ctor_snapshots(Name).
+
+%A declaration only ever ADDS to a constructor set, and it adds exactly the
+%keys built from the symbol being declared - so only THAT symbol has to be
+%tested against each recorded snapshot. Recomputing whole key sets here
+%instead would be quadratic in the number of declarations, for no extra
+%precision.
+new_ctor_key(Name, T, K) :- member_ctor(T, K, Name).
+new_ctor_key(Name, T, 0) :- declared_value_type(Name, T2), T2 == T, \+ fun(Name).
+
+revalidate_ctor_snapshots(Name) :-
+    findall(F, ( ctor_snapshot_use(T, Keys, F),
+                 new_ctor_key(Name, T, K), \+ memberchk(Name/K, Keys) ),
+            Fs0),
+    sort(Fs0, Fs),
+    forall(member(F, Fs),
+           ( format(user_error,
+                    "Warning: a constructor declared after ~w was compiled changes a type it matched on; recompiling ~w~n",
+                    [F, F]),
+             recompile_function_clauses(F) )),
+    revalidate_det_exhaustiveness(Name).
+
+%Re-run every exhaustiveness verdict whose domain the new symbol enters. A
+%verdict that now fails throws det_nonexhaustive/3 from here - reported
+%against the clause that made the claim, not against the declaration that
+%broke it, because the clause is what has to change (cover the new
+%constructor, or say -[semidet]->).
+%The location is the one the verdict was made at, in the file that made it -
+%not the file being read now, which merely added the constructor:
+revalidate_det_exhaustiveness(Name) :-
+    forall(( det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str),
+             member(T, Types), once(new_ctor_key(Name, T, _)) ),
+           in_metta_file(File, with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads)))).
+
+in_metta_file(File, Goal) :- current_metta_file(Prev),
+                             setup_call_cleanup(nb_setval('$metta_file', File),
+                                                Goal,
+                                                nb_setval('$metta_file', Prev)).
 
 %An earlier branch consumed EVERY (Ctor V1 ... Vk) value: its pattern is
 %headed by Ctor at that arity and its arguments are distinct variables, so the
@@ -1253,9 +1428,12 @@ oracle_det_call(F, Det, Out, Goal) :-
 
 %KNOWN LIMITATION: oracle_check/2 adjudicates with the checker's own
 %check_value/3, so it audits the CERTIFICATIONS, not the type model. A value
-%relation that is itself too permissive (e.g. a newtype whose representation is
-%a wildcard) agrees with the certification it should contradict and stays
-%invisible here. Fixing that needs an independent value relation; out of scope.
+%relation that is itself too permissive agrees with the certification it should
+%contradict and stays invisible here - it can only ever re-ask the same
+%question. That is why the (Newtype <wildcard>) hole had to be closed in
+%type_unify/2 (see brand_unify/2) rather than instrumented: no oracle built on
+%check_value/3 could have seen it. Auditing the model needs an INDEPENDENT
+%value relation, which is out of scope.
 %check_value/3 is a COMPILE-TIME relation over terms the compiler owns: it
 %binds open types, and (via the partial(F,B) clause) it binds an unbound VALUE
 %as well. Running it on live runtime data must not leak either binding back
@@ -1819,7 +1997,7 @@ deterministic_expr([Head|Args], Result) :- var(Head), !,
        ; Result = unknown(dynamic_head(Head)) ).
 deterministic_expr([collapse, _], ok) :- !.
 deterministic_expr(['trace!', A, B], Result) :- !, combine_determinism_list([A, B], Result).
-deterministic_expr([once, _], ok) :- !.
+deterministic_expr([once, Expr], Result) :- !, once_determinism(Expr, Result).
 deterministic_expr([quote, _], ok) :- !.
 deterministic_expr([eval, _], unknown(dynamic_eval)) :- !.
 deterministic_expr([reduce, _], unknown(dynamic_reduce)) :- !.
@@ -1828,7 +2006,12 @@ deterministic_expr([superpose|_], nondeterministic(superpose)) :- !.
 deterministic_expr([match|_], nondeterministic(match)) :- !.
 deterministic_expr([hyperpose|_], nondeterministic(hyperpose)) :- !.
 deterministic_expr([translatePredicate|_], nondeterministic(translatePredicate)) :- !.
-deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], Result).
+%A two-argument if has no else branch: when the condition is false the whole
+%expression produces NOTHING. That is a failure path of the construct itself,
+%invisible to an analysis of the parts, so it is may_fail unconditionally -
+%-[semidet]-> accepts it, -[det]-> does not:
+deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], R0),
+                                                combine_det_results(may_fail(if_without_else), R0, Result).
 deterministic_expr([if, Cond, Then, Else], Result) :- !, combine_determinism_list([Cond, Then, Else], Result).
 deterministic_expr([progn|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
 deterministic_expr([prog1|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
@@ -1991,6 +2174,22 @@ underapplied_closure(Fun, N) :- CallArity is N + 1,
 %%% one settles it - so may_fail keeps scanning for something worse, and the
 %%% top of the lattice short-circuits (which preserves the historical
 %%% "first non-ok verdict wins" reason reporting):
+%once/1 (which is what (once E) compiles to) caps the solution count at one; it
+%never manufactures one. So it does erase nondeterminism - and opacity too: an
+%expression nothing can analyse still has AT MOST one solution once wrapped -
+%but it does not erase failure, because (once E) fails exactly when E does.
+%The old reading, that (once E) is unconditionally ok, threw the callee's
+%may_fail away and let a -[semidet]-> call satisfy a -[det]-> promise.
+%Note this is a REFINEMENT as well as a tightening: once(nondeterministic) and
+%once(unknown) used to be discarded, and are now the strictly more precise
+%may_fail (zero or one), which -[semidet]-> accepts.
+once_determinism(Expr, Result) :- deterministic_expr(Expr, R),
+                                  ( R == ok -> Result = ok
+                                  ; R = may_fail(_) -> Result = R
+                                  ; R = nondeterministic(Why) -> Result = may_fail(once(Why))
+                                  ; R = unknown(Why) -> Result = may_fail(once(Why))
+                                  ; Result = may_fail(once(R)) ).
+
 det_result_rank(ok, 0).
 det_result_rank(may_fail(_), 1).
 det_result_rank(nondeterministic(_), 2).
@@ -2017,7 +2216,51 @@ binds_and_body_determinism([[Pat, Val]|Rest], Body, Result) :-
 case_expr_determinism(KeyExpr, PairsExpr, Result) :- deterministic_expr(KeyExpr, KeyResult),
                                                      ( det_result_final(KeyResult) -> Result = KeyResult
                                                      ; case_pairs_determinism(PairsExpr, R2),
-                                                       combine_det_results(KeyResult, R2, Result) ).
+                                                       case_coverage_determinism(KeyExpr, PairsExpr, R3),
+                                                       combine_det_results(KeyResult, R2, R12),
+                                                       combine_det_results(R12, R3, Result) ).
+
+%%% Does the case cover its scrutinee?
+%%%
+%%% translate_case/6 compiles the branches to a nested if-then-else with NO
+%%% final else, so a value that matches no pattern makes the whole case FAIL.
+%%% That failure path belongs to the construct, not to any branch, so
+%%% case_pairs_determinism/2 above cannot see it.
+%%%
+%%% The verdict is ASYMMETRIC in exactly the way det_exhaustiveness_prepass/1
+%%% is, and for the same reason: PeTTa's nominal types are OPEN, so "cannot
+%%% tell" is the common case and treating it as failure would reject most
+%%% legitimate code. Only a PROVABLY uncovered value yields may_fail - a
+%%% scrutinee whose type is unknown, unenumerable or extensible stays silent.
+%%% The proof itself is unmatched_case/5, the same relation the clause-head
+%%% exhaustiveness check uses, applied to the branch patterns as a one-column
+%%% head set.
+case_coverage_determinism(KeyExpr, PairsExpr, Result) :-
+    ( case_scrutinee_type(KeyExpr, T0), copy_term(T0, T),
+      case_value_patterns(PairsExpr, Heads), Heads \== [],
+      catch(unmatched_case([], Heads, 0, T, Missing0), _, fail),
+      copy_term(Missing0, Missing)
+      -> Result = may_fail(nonexhaustive_case(Missing))
+       ; Result = ok ).
+
+%The scrutinee's type, when the checker already knows it: a parameter (or any
+%other variable) carrying a single known type, or a call to a function with a
+%unique declaration at that arity. Anything else has no type here and the
+%coverage question is simply not asked.
+case_scrutinee_type(K, T) :- var(K), !, known_singleton(K, T0), nonvar(T0), T = T0.
+case_scrutinee_type(K, T) :- nonvar(K), is_list(K), K = [F|Args], atom(F), fun(F),
+                             length(Args, N),
+                             findall(OT, fn_decl_arity(F, N, _, OT), [T0]),
+                             nonvar(T0), T = T0.
+
+%The branch patterns, as single-argument "clause heads" for unmatched_case/5.
+%The (Empty ...) branch is dropped: it is not a value pattern at all but the
+%fallback translate_expr/3 wires to "the KEY produced no solution", so it
+%covers nothing the other branches leave open.
+case_value_patterns(Pairs, Heads) :- is_list(Pairs),
+                                     findall([P], ( member(Pair, Pairs), nonvar(Pair),
+                                                    Pair = [P, _], P \== 'Empty' ),
+                                             Heads).
 
 case_pairs_determinism([], ok).
 case_pairs_determinism([[CaseExpr, BranchExpr]|Rest], Result) :-
@@ -2098,7 +2341,14 @@ check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
       -> findall(Args, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N)
                        ; stored_clause_head(F, N, Args) ), Heads),
          once(( parsed_clause_head(ParsedForms, Line, Str, F, A0), length(A0, N) )),
-         with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads))
+         %the verdict is a snapshot of the constructor sets it consulted, so
+         %it is kept along with WHICH sets those were - a constructor declared
+         %later re-runs exactly the verdicts its type takes part in:
+         with_ctor_snapshot_types(
+             with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads)), Types),
+         current_metta_file(File),
+         retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
+         assertz(det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str))
        ; true ).
 
 %The declaration must be unique at this arity: several declarations are typed
@@ -2143,14 +2393,16 @@ uncovered_infinite_domain('String', Keys) :- forall(member(key(V, A), Keys), ( A
 %declared constructors (member_ctor/3 - a declared symbol WITH equations is
 %rewritten at the call site and never survives as a value) plus its
 %equation-less declared constants.
-%LIMITATION (the same one union_member_excluded/3 documents): the set is read
-%as it stands right now. A constructor for T declared in a LATER file would
-%invalidate an "unmatched constructor" verdict made here, and the rejected
-%file is not revisited. Declare a type's constructors before the -[det]->
-%functions that match on it.
+%The set is read as it stands right now, so like union_member_excluded/3 this
+%is a SNAPSHOT: a constructor for T declared in a later file changes it. Both
+%users of the snapshot are recorded and re-read when that happens - a case
+%coverage verdict through note_ctor_snapshot/1 (it runs inside a clause
+%translation, so the clause can be recompiled), the clause-head exhaustiveness
+%verdict through det_exhaustive_verdict/7 (it does not, so it is re-run).
 domain_keys('Bool', _, [key(true, 0), key(false, 0)]) :- !.
 domain_keys(T, Consts, Keys) :- atom(T), declared_newtype(T, R), !, domain_keys(R, Consts, Keys).
 domain_keys(T, Consts, Keys) :- atom(T), \+ wildcard_type(T), \+ primitive_type(T),
+                                note_ctor_snapshot(T),
                                 findall(key(C, K), nominal_ctor(T, Consts, C, K), Keys0),
                                 sort(Keys0, Keys), Keys \== [].
 

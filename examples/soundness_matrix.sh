@@ -18,13 +18,19 @@
 # This is what catches BODY-level determinism violations, which Phase B is
 # blind to.
 #
-# Phase D (counterexample cases): programs KNOWN to violate a certification,
-# each pinned to the oracle flag and the exact finding that must catch it.
-# Unlike phases A-C these are expected to fail, and the test is that they fail
-# for the stated reason. A case may be MULTI-FILE with a defined load order -
-# some holes (a constructor declared in a later file, a determinism
-# declaration arriving after the definition it constrains) exist only across a
-# file boundary and cannot be expressed in a single file at all.
+# Phase D (counterexample cases): MULTI-FILE programs that would violate a
+# certification, each pinned to the exact finding that must reject it. Unlike
+# phases A-C these are expected to fail, and the test is that they fail for the
+# stated reason. Load ORDER is the point of every case here: a constructor or a
+# determinism declaration arriving in a later file than the code it constrains
+# cannot be expressed in a single file at all, because the per-file declaration
+# prepass makes a file's own declarations visible to all of it.
+#
+# Each case names the flags it needs, and all of them currently need NONE: the
+# checker rejects these at compile time, so no oracle has to run to catch them.
+# That is the goal state - a case that only fails under an oracle flag is a
+# hole in the static checker that has been instrumented rather than closed.
+# The oracles are still exercised, over the whole suite, by phases A-C.
 #
 # Phases A-C only make sense for examples that normally pass; fail_* and the
 # standing skip list are excluded. Timeouts are reported, not hidden.
@@ -91,22 +97,25 @@ done
 
 # Phase D. One case per line:
 #
-#     <oracle flags>|<substring the finding must contain>|<file> [<file> ...]
+#     <extra flags>|<substring the finding must contain>|<file> [<file> ...]
 #
 # Paths are relative to examples/ and are loaded IN THE ORDER GIVEN - run.sh
 # passes several .metta files straight through to the loader, and load order is
-# precisely what some of these cases are about. The case must fail, and it must
-# fail with the named finding: a case that dies of something else (the raw
-# Prolog error the hole would otherwise produce, say) means the oracle stopped
-# catching it, which is a regression, not a pass.
+# precisely what these cases are about. The case must fail, and it must fail
+# with the named finding: a case that dies of something else (the raw Prolog
+# error the hole would otherwise produce, or a dynamic oracle finding where a
+# static rejection is expected) means the check stopped catching it, which is a
+# regression, not a pass.
+#
+# The single-file counterexamples that used to live here are now ordinary
+# examples/fail_*.metta cases, checked by test.sh like every other one:
+# fail_det_once_semidet, fail_det_two_arg_if, fail_det_case_no_catchall,
+# fail_newtype_wildcard_leak.
 counterexample_cases() {
     cat <<'CASES'
---oracle|Type mismatch: got "oops" but expected 'Number'|soundness/ctor_snapshot_1_goal.metta soundness/ctor_snapshot_2_gpu.metta
---oracle|Type mismatch: got "not a number" but expected 'Number'|soundness/newtype_wildcard_leak.metta
---oracle-det|pick is declared -[det]-> but this call produced 2 solutions|soundness/late_det_decl_1_defs.metta soundness/late_det_decl_2_decl.metta
---oracle-det|f is declared -[det]-> but this call produced 0 solutions|soundness/det_case_no_catchall.metta
---oracle-det|g is declared -[det]-> but this call produced 0 solutions|soundness/det_two_arg_if.metta
---oracle-det|h is declared -[det]-> but this call produced 0 solutions|soundness/det_once_semidet.metta
+|Deterministic function pick has overlapping clauses|soundness/late_det_decl_1_defs.metta soundness/late_det_decl_2_decl.metta
+|Type mismatch: got "oops" but expected 'Number'|soundness/ctor_snapshot_1_goal.metta soundness/ctor_snapshot_2_gpu.metta
+|Deterministic function rank is not exhaustive|soundness/late_ctor_exhaustive_1_ranks.metta soundness/late_ctor_exhaustive_2_blue.metta
 CASES
 }
 
@@ -118,7 +127,7 @@ counterexample_cases | while IFS='|' read -r flags want files; do
     out=$(timeout -k 5 240 sh "$ROOT_DIR/run.sh" $paths $flags -s 2>&1)
     st=$?
     if [ $st -eq 0 ]; then
-        echo "[FAIL counterexample] $files: expected $flags to catch it, it ran clean"
+        echo "[FAIL counterexample] $files: expected it to be rejected, it ran clean"
         : > "$TMP_DIR/failed"
     elif ! echo "$out" | grep -qF "$want"; then
         echo "[FAIL counterexample] $files: failed, but not with the expected finding"

@@ -13,8 +13,16 @@ constrain_args([F|Args], Var, Goals) :- atom(F),
 constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsList),
                                   flatten(NestedGoalsList, Goals), !.
 
-%Flatten (= Head Body) MeTTa function into Prolog Clause:
-translate_clause(Input, (Head :- BodyConj)) :- translate_clause(Input, (Head :- BodyConj), true).
+%Flatten (= Head Body) MeTTa function into Prolog Clause. The wrapper records
+%which types' CONSTRUCTOR SETS this clause's compilation read, so a
+%constructor declared later can find the clauses it invalidates
+%(with_ctor_snapshot/2, typecheck.pl). Specialized copies go through the
+%3-argument form and record nothing: they are instances of a clause that
+%already carries the dependency.
+translate_clause(Input, (Head :- BodyConj)) :-
+        ( nonvar(Input), Input = [Eq, H0, _], Eq == (=), nonvar(H0), H0 = [F0|_], atom(F0)
+          -> F = F0 ; F = '$no_function' ),
+        with_ctor_snapshot(F, translate_clause(Input, (Head :- BodyConj), true)).
 translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                Input = [=, [F|Args0], BodyExpr],
                                                ( ConstrainArgs -> maplist(constrain_args, Args0, Args1, GoalsA),
@@ -110,6 +118,40 @@ drop_stale_fun_meta(G, Body) :- catch(nb_getval(G, Metas), _, fail),
                                 select(fun_meta(_, B), Metas, Rest), B =@= Body, !,
                                 nb_setval(G, Rest).
 drop_stale_fun_meta(_, _).
+
+%%% Recompiling a whole function, for knowledge that arrived AFTER its clauses
+%%% were compiled. Two things can do that, and both used to be believed and
+%%% never enforced:
+%%%
+%%%   - a type/determinism DECLARATION in a later file than the definition it
+%%%     constrains (typecheck.pl, maybe_cache_type_decl/2). The clauses were
+%%%     validated and emitted with no declaration in sight, so they carry no
+%%%     determinism commit and no argument/output certification.
+%%%   - a CONSTRUCTOR declared in a later file than a clause whose compilation
+%%%     read that type's constructor set (typecheck.pl, ctor_snapshot_use/3).
+%%%
+%%% Unlike recompile_late_uses/1 - which revisits clauses one at a time, each
+%%% independent of the others - a function's clauses must be redone TOGETHER
+%%% and IN SOURCE ORDER: the determinism overlap check compares each clause
+%%% against the ones before it, so the meta list has to be rebuilt from empty
+%%% in the original order or the check sees the wrong predecessors. That is
+%%% the only difference; the per-clause work is recompile_clause/2 as usual.
+%%%
+%%% Errors are not swallowed. A late -[det]-> over clauses that genuinely
+%%% overlap throws exactly the error the declaration would have caused had it
+%%% arrived first - which is the whole point: enforced, or rejected.
+recompile_function_clauses(F) :- function_source_clauses(F, Us),
+                                 ( Us == [] -> true
+                                 ; nb_setval(F, []),
+                                   forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
+
+%Every compiled clause of F, in the order it was asserted (which is source
+%order - process_form/3 records translated_from/2 as it goes):
+function_source_clauses(F, Us) :- findall(Ref-Term,
+                                          ( translated_from(Ref, Term), nonvar(Term),
+                                            Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F,
+                                            clause(_, _, Ref) ),
+                                          Us).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.

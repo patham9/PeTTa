@@ -197,17 +197,24 @@ does not block an exclusion. Give that same helper a declaration but no
 equation and it becomes a genuine constructor that does block. See
 `examples/strict_union_reducible_helper_not_ctor.metta` and
 `examples/fail_strict_union_undefined_second_ctor.metta`. Definition order
-inside one file is irrelevant (definedness is recorded in the parse prepass),
-but the exclusion otherwise reads the constructor set as it stands at that
-point in the compilation, so declare a type's constructors before the code
-that matches on it.
+inside one file is irrelevant (definedness is recorded in the parse prepass).
+The exclusion does read the constructor set as it stands at that point in the
+compilation, but that snapshot is now recorded and honoured — see "Knowledge
+that arrives late" below.
 
 **Erased nominal newtypes.** `(: KB (Newtype Expression))` declares a
 distinct compile-time role over an existing representation: nothing is
 wrapped at runtime and no guards are emitted. A branded value fits its
 representation, but different brands never unify merely because their
 representations do — swapping a `Proof` into a `KB` position is a compile
-error. Raw literals and constructed values acquire a brand contextually from
+error. The representation is an *upper bound* on what the brand can be used
+as, never a licence to be anything: a **wildcard** representation
+(`(: Proof (Newtype Expression))`) says the payload shape is unconstrained,
+which is not the same as saying it fits every type, so such a brand fits
+wildcards and itself and nothing else. Nor does anything implicitly fit a
+brand, wildcards included — a value acquires a brand in exactly one way, by
+being written `(brand T v)`. See `examples/fail_newtype_wildcard_leak.metta`.
+Raw literals and constructed values acquire a brand contextually from
 the expected position; an unknown variable does not (under `--strict`) —
 brand it explicitly with `(brand KB $x)`, an erased trust operation that
 rejects conflicting brands but generates no check (a role has no runtime
@@ -308,6 +315,56 @@ explicit `-[det]->` is checked — under `--strict-det` a plain `->` reads as
 deterministic too, but that is a mode-wide default rather than a per-function
 promise of totality.
 
+**Partiality of `once`, `if` and `case`.** Exhaustiveness above is about clause
+*heads*; a clause with a single variable head is exhaustive at that level and
+can still be partial inside its body. Three constructs produce nothing for some
+inputs, and all three now say so:
+
+- `(once E)` is deterministic only when `E` is. `once` removes a callee's extra
+  solutions, but it does not manufacture one where there was none, so it is
+  `may_fail` whenever `E` may fail — including when `E` is nondeterministic or
+  unanalysable, which `once` really does cap at one solution but cannot make
+  productive. (That last part is also a *refinement*: an unanalysable `E` under
+  a `once` is now "at most one" rather than "unknown", which `-[semidet]->`
+  accepts.)
+- A two-argument `(if C T)` has no else branch and is `may_fail`
+  unconditionally. The failure belongs to the construct, not to any of its
+  subexpressions, so combining the parts never saw it.
+- A `case` compiles to a nested if-then-else with no final else, so a value no
+  branch matches makes the whole `case` fail. A `case` whose branches
+  *provably* do not cover the scrutinee is `may_fail`.
+
+`-[semidet]->` accepts all of them, `-[det]->` rejects them. The `case` verdict
+is asymmetric in exactly the way clause-head exhaustiveness is — only a
+provably uncovered value counts, and a scrutinee whose type is unknown,
+unenumerable or open stays silent. See `examples/semidet_partial_constructs.metta`
+for what stays accepted and `examples/fail_det_once_semidet.metta`,
+`fail_det_two_arg_if.metta`, `fail_det_case_no_catchall.metta` for what does not.
+
+**Knowledge that arrives late.** Type declarations are pre-cached per file, so
+within one file order never matters. Across files it does, and two kinds of
+late knowledge used to be *believed* without being *enforced*:
+
+- A **type or determinism declaration** in a later file than the definition it
+  constrains. The clauses were compiled with no declaration in sight — no
+  argument or output certification, no determinism validation, no commit cut —
+  while every later caller was told the declaration holds. Such a declaration
+  now warns and **recompiles** the function's clauses against it, which is what
+  the in-file prepass would have done had the files been one. If they cannot
+  satisfy it, the ordinary error is thrown. Enforced, or rejected.
+- A **constructor** declared after a clause whose compilation read that type's
+  constructor set. Union member exclusion and the exhaustiveness domain are
+  both read as snapshots, and a new constructor invalidates them. Every
+  snapshot is recorded with the key set it saw; a declaration that changes the
+  set recompiles the clauses that read it, and re-runs any exhaustiveness
+  verdict that was made on it (the latter is a property of a whole clause set,
+  so there is no single clause to redo).
+
+Both share one mechanism, and both are exercised by the multi-file cases in
+`examples/soundness/`. The cost is confined to programs that actually declare
+things late: nothing is recorded for a program that narrows no union and
+declares no `-[det]->`.
+
 **Strict determinism mode.** `--strict-det` (implies `--strict`) makes a
 plain `->` itself a determinism commitment: every declared function is
 validated as deterministic unless its arrow says `-[nondet]->`. Overlapping
@@ -341,40 +398,47 @@ only what a program verifies as it runs, never which programs compile.
   clause-selection alternatives.
 
 `examples/soundness_matrix.sh` runs the first three over the whole example
-suite, plus a set of counterexample programs in `examples/soundness/` that are
-*known* to violate a certification and are pinned to the flag and the finding
-that must catch each one. Several of those are multi-file: `run.sh` accepts
-more than one `.metta` file and loads them in the order given, and some holes
-(a constructor declared in a later file than the code that matched on it, a
-determinism declaration arriving after the definition it constrains) exist only
-across a file boundary.
+suite (phases A–C), plus a set of counterexample programs in
+`examples/soundness/` (phase D) that would violate a certification, each pinned
+to the exact finding that must reject it. Those are all multi-file: `run.sh`
+accepts more than one `.metta` file and loads them in the order given, and the
+holes they pin (a constructor declared in a later file than the code that
+matched on it, a determinism declaration arriving after the definition it
+constrains) exist only across a file boundary. None of them needs an oracle
+flag any more — they are rejected at compile time, which is the goal state; a
+counterexample that only fails under an oracle is a hole that has been
+instrumented rather than closed.
 
 The oracles adjudicate with the checker's own value relation, so they audit the
 checker's *certifications*, not its type model: where the model itself is too
-permissive, the oracle agrees with the certification it should contradict.
+permissive, the oracle agrees with the certification it should contradict. That
+is why the `(Newtype <wildcard>)` hole had to be fixed in the compatibility
+relation rather than instrumented — no oracle built on the checker's own value
+relation could ever have seen it.
 
 Notes and caveats:
 
 - Function type declarations are pre-cached per file, so helpers may be
   declared and defined after their callers within the same file. Across files,
   imports must still precede use. Value declarations like `(: a A)` stay
-  order-sensitive (they are knowledge atoms), and a function declaration
-  arriving after its function was already compiled in an earlier file warns
-  and has no retroactive effect.
+  order-sensitive (they are knowledge atoms). A function declaration arriving
+  after its function was already compiled in an earlier file warns and
+  recompiles that function's clauses against it — see "Knowledge that arrives
+  late". Results already printed by a form that ran before the recompile are
+  not revisited, which is what the warning is for.
 - `Expression`-typed arguments are passed unevaluated (as data), except
   underapplied closures like `(+ 1)`.
 - Interpreters that call `eval` per iteration pay for a (typed) translation
   each time — that pattern was always slow and types do not change it.
 - The executable specification lives in `examples/type_*.metta`,
   `examples/fail_*.metta` (must fail compilation), `examples/strict_*.metta`,
-  `examples/soundness/` (must be caught by an oracle), and
+  `examples/soundness/` (multi-file counterexamples that must be rejected), and
   `examples/type_dispatch_matrix.sh`, which asserts properties of the
   generated code itself.
-- Known holes the oracles document rather than fix: a `(Newtype T)` whose
-  representation is a wildcard (`(: Proof (Newtype Expression))`) is compatible
-  with everything in both directions, and `once`, a two-argument `if` and a
-  `case` with no catch-all do not contribute `may_fail`, so a `-[det]->` body
-  built from them can have zero solutions. See `examples/soundness/`.
+- Residual holes of this kind are tracked in `examples/soundness/`. The four
+  the oracles used to merely document are now closed in the checker — see
+  "Partiality of `once`, `if` and `case`" and "Knowledge that arrives late"
+  above, and `examples/fail_newtype_wildcard_leak.metta`.
 
 ## Notebooks, Servers, Browser
 
