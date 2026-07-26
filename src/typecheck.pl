@@ -1668,7 +1668,11 @@ assume_pattern_vars([A|As], Ps0, Ps) :- ( var(A) -> ( known_singleton(A, _) -> P
 %knowledge - the fields of a value carrying P's tag are what P declared them.
 %A literal field that contradicts the declaration only means this clause head
 %cannot match a well-typed value; inference stays out of that judgement.
-ctor_pattern_field_types(Arg) :- ( is_list(Arg), Arg = [Tag|Fs], atom(Tag), Fs \== [],
+%\+ fun(Tag) is member_ctor/3's own constructor test: a declared symbol WITH
+%equations is a function, and a function-headed pattern is compiled as an
+%inverted CALL of that function - its fields are solved, not destructured -
+%so its declaration says nothing about what the pattern variables hold.
+ctor_pattern_field_types(Arg) :- ( is_list(Arg), Arg = [Tag|Fs], atom(Tag), \+ fun(Tag), Fs \== [],
                                    length(Fs, N), findall(ATs, fn_decl_arity(Tag, N, ATs, _), [ATs1])
                                    -> catch(maplist(bind_param_type, Fs, ATs1),
                                             error(literal_type_mismatch(_, _), typecheck), true)
@@ -2174,6 +2178,14 @@ builtin_call_determinism_args(not, 1, Args, det) :- maplist(manifest_bool, Args)
 %therefore conservatively read as a call.
 data_headed(H) :- var(H), !, known_singleton(H, K), nonfunction_type(K).
 data_headed(H) :- atom(H), !, \+ fun(H).
+%A COMPOUND head is itself an expression, and whether the whole thing is data
+%follows the same rule one level down: ((c) 1 2) with c a declared constant is
+%a nested data literal, but ((foo) 2 3) with foo a function is compiled as an
+%application (apply_fn/reduce, translate_expr/3) whose result is whatever the
+%applied closure returns - possibly (), possibly open - and no part of its
+%spine is built at this call site. The old catch-all read every compound head
+%as data, which strengthened min-atom to det over an application's result.
+data_headed(H) :- is_list(H), H = [F|_], !, data_headed(F).
 data_headed(_).
 
 %Manifestly a proper list: the literal (), a literal expression whose head is

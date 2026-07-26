@@ -191,8 +191,13 @@ declaration would defeat this rather than help it: it is consulted *first*, so
 narrow, it replaced what the argument knew — `(car-atom (cdr-atom $xs))` on a
 `(List Choice)` came back untyped, needed a runtime guard on every later use,
 and `--strict` rejected the guard it could not discharge. Whether an accessor
-*succeeds* is a separate question, and belongs to the determinism table. See
-`examples/strict_list_accessor_types.metta`.
+*succeeds* is a separate question, and belongs to the determinism table — with
+one caveat the certification forces: `(car-atom ())` **raises** (an empty
+expression has no head), because the certified element type leaves the runtime
+no licence to answer `()` where a `Number` was proven. `first` and `last`
+simply fail on input they have no answer for, which threatens no
+certification. See `examples/strict_list_accessor_types.metta` and
+`examples/fail_strict_car_atom_empty.metta`.
 
 **Structural tuple types.** A parenthesized type describes an expression, in
 one of two readings — and which one you get is decided by the *declaration* of
@@ -374,10 +379,15 @@ shape is manifest in the source, the reason does not apply and the call site
 gets the stronger verdict — `(min-atom ($a $b))` is `det` because a
 two-element list literal cannot be empty, and `(and (> $x 0) (< $x 10))` is
 `det` because both operands are already booleans. What counts as manifest is
-deliberately narrow: a list literal, a `cons` onto a manifestly proper tail, or
-a parameter whose declared type is a fixed-width tuple like `(Number Number)`
-— **not** `(List T)`, which is exactly the open list these predicates invert
-over. Anything else falls back to the flat table, the same provable-only
+deliberately narrow — only a spine the compiler itself builds at the call
+site: a list literal whose head is data (recursively, so `((c) 1 2)` with a
+constant `c` counts but `((foo) 2 3)` does not — that is an *application*,
+and its result is whatever the closure returns), or a `cons` onto a
+manifestly proper tail. A **declared** type never qualifies, not even a
+fixed-width tuple like `(Number Number)`: the residual guard succeeds on an
+unbound variable, so no type implies a bound value, and such a parameter can
+arrive unbound out of ordinary well-typed code. Anything else falls back to
+the flat table, the same provable-only
 discipline the `-[det]->` exhaustiveness check uses. This strengthens
 `min-atom`, `max-atom`, `size-atom`, `length`, `reverse`, `last`, `append`,
 `union-atom`, `subtraction-atom`, `intersection-atom`, `exclude-item`,

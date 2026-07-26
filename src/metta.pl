@@ -147,6 +147,12 @@ non_list(X) :- compound(X), X \= [_|_].
 'size-atom'(List, Size) :- non_list(List), !, Size = [].
 'size-atom'(List, Size) :- length(List, Size).
 'car-atom'([H|_], H) :- !.
+%An empty expression has no head, and answering () here instead of raising
+%would be a WRONG answer, not a failure: the typechecker certifies this
+%result as the argument's element type (list_elem_out_type/2), so a quiet ()
+%would arrive where a Number was proven. Raising keeps the certification
+%sound and the det verdict too - an exception is not a solution:
+'car-atom'([], _) :- !, throw(error(car_atom_empty, 'car-atom')).
 'car-atom'(_, []).
 'cdr-atom'([_|T], T) :- !.
 'cdr-atom'(_, []).

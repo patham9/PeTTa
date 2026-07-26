@@ -6,6 +6,8 @@
 % translator throws.
 prolog:error_message(literal_type_mismatch(Value, Required)) -->
     [ 'Type mismatch: got ~p but expected ~p'-[Value, Required] ].
+prolog:error_message(car_atom_empty) -->
+    [ 'car-atom expects a non-empty expression' ].
 prolog:error_message(type_conflict(existing(Existing), required(Required))) -->
     [ 'Type conflict: value is constrained as ~p but also required as ~p'-[Existing, Required] ].
 prolog:error_message(determinism_conflict(Fun, Reason)) -->
