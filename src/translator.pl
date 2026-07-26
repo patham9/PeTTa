@@ -33,11 +33,6 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                retractall(det_analysis_cache(_, _, _)),  %clause set changed
                                                retractall(det_assume_cache(_, _, _)),  %conditional-det results depend on clauses too
                                                clause_param_types(F, Args1, DeclOut),
-                                               %A function whose declaration carries an EXPLICIT -[det]->/-[semidet]->
-                                               %arrow promises, in EVERY mode, that it is called with bound
-                                               %arguments. Emit the runtime boundness checks now, while the param
-                                               %vars are still fresh, and splice them in before the commit cut below.
-                                               det_boundness_checks(F, Args1, BodyExpr, DetChecks),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
                                                parametric_param_snapshot(DeclOut, ParamVars),
@@ -54,6 +49,13 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %declared arrow types into the body analysis.
                                                ( ConstrainArgs == false -> true
                                                                          ; validate_function_determinism(F, Args1, BodyExpr, Prev) ),
+                                               %A function whose declaration carries an EXPLICIT -[det]->/-[semidet]->
+                                               %arrow promises, in EVERY mode, that it is called with bound arguments -
+                                               %but only for the parameters its determinism proof CONSUMED. Emit those
+                                               %runtime boundness checks now, AFTER validation has populated the
+                                               %det_bound_proviso union, while the param vars are still fresh; they are
+                                               %spliced in before the commit cut below (goal-term position unchanged).
+                                               det_boundness_checks(F, Args1, DetChecks),
                                                begin_clause_inference(F, Args1, Assume, SavedInf),
                                                translate_expr(BodyExpr, GoalsBody, ExpOut),
                                                %A body that forced a declared parametric parameter to a concrete type
@@ -95,32 +97,52 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                append([DetChecks, GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
-%%% -[det]->/-[semidet]-> BOUNDNESS enforcement. An explicit committed arrow is
-%%% an every-mode promise (only the explicit arrow, never a plain -> even under
-%%% --strict-det - see the branch doctrine) that the function is called with
-%%% bound arguments. A runtime nonvar check per VARIABLE parameter makes "typed
-%%% implies bound" actually hold at the boundary, which is what soundly unlocks
-%%% the five strengthenings in typecheck.pl. It throws a clear error where the
-%%% code previously enumerated a finite type or crashed downstream in a builtin.
+%%% -[det]->/-[semidet]-> BOUNDNESS enforcement, NEED-BASED. An explicit
+%%% committed arrow is an every-mode promise (only the explicit arrow, never a
+%%% plain -> even under --strict-det - see the branch doctrine). A parameter is
+%%% checked nonvar on entry ONLY when the clause-set's determinism proof actually
+%%% CONSUMED its boundness - i.e. enforced_bound_param/1 succeeded on it during a
+%%% call-site strengthening (manifest_bool, enforced_bound_nominal,
+%%% enforced_bound_tuple, is-member probe). The emitted check is then exactly the
+%%% proviso the certificate relied on: a pure data constructor
+%%% ((= (pair-up $x $y) ($x $y))) is genuinely det with unbound args, consumes no
+%%% boundness, and gets NO check. Where a check IS emitted it throws a clear error
+%%% where the code previously enumerated a finite type or crashed in a builtin.
 %%%
-%%% SPINE-LEVEL, deliberately: a non-variable (destructuring) parameter is
-%%% already structurally bound by head unification, so it is skipped - and its
-%%% FIELDS are NOT checked. Chainer proof terms legitimately carry unbound vars
-%%% inside otherwise-bound data, so field-level enforcement would reject them.
-%%% The strengthenings mirror this exactly (enforced_bound_param/1 tests DIRECT
-%%% params only), so a field used where boundness is needed stays rejected.
+%%% The consumed positions are the per-function UNION det_bound_proviso(F,N,Pos),
+%%% populated by validation (validate_function_determinism, run just before this).
+%%% A param consumed by ANY clause is checked in EVERY clause of the function -
+%%% a sound superset of the strict per-clause need (an extra check never unsound).
+%%%
+%%% SPINE-LEVEL, deliberately: enforced_bound_param/1 records DIRECT params only
+%%% (a destructured FIELD is skipped by det_direct_param/1), so a field is never a
+%%% proviso and never checked. Chainer proof terms legitimately carry unbound vars
+%%% inside otherwise-bound data, so field-level enforcement would reject them. The
+%%% is-var exemption is preserved for free: det_enforced_params/3 keeps an is-var
+%%% param out of the published direct params, so enforced_bound_param/1 can never
+%%% consume it and no proviso is ever recorded for it.
 %%%
 %%% Specialized clause copies (ConstrainArgs == false) get the same checks -
-%%% calls route directly to them - and the late-declaration recompile re-emits
-%%% them when a det arrow arrives in a later file than the definition.
-%The parameters checked are exactly det_enforced_params/3's list - the same
-%one the call-site strengthenings read - so a parameter the body tests with
-%is-var loses its boundary check AND its enforced-bound status together:
-det_boundness_checks(F, Args, Body, Checks) :-
+%%% calls route directly to them - reading the union the general clauses filled;
+%%% a position bound by specialization is nonvar here and simply skipped. The
+%%% late-declaration recompile clears and re-derives the union, then re-emits.
+%The consumed POSITIONS are collected first (ground integers, so findall's copy
+%is harmless), then the check goals are built OUTSIDE findall so each nonvar
+%guard shares the actual head-argument variable - collecting the goals through
+%findall would copy that variable and guard a disconnected fresh one instead.
+det_boundness_checks(F, Args, Checks) :-
     ( length(Args, N), explicit_committed_decl(F, N, Det)
-      -> det_enforced_params(Args, Body, DPs),
-         maplist(det_param_check(F, Det), DPs, Checks)
+      -> findall(Pos, det_bound_proviso(F, N, Pos), Ps0),
+         sort(Ps0, Ps),
+         det_pos_checks(Ps, F, Det, Args, Checks)
        ; Checks = [] ).
+
+det_pos_checks([], _, _, _, []).
+det_pos_checks([Pos|Ps], F, Det, Args, Checks) :-
+    nth1(Pos, Args, A),
+    ( var(A) -> det_param_check(F, Det, A, Chk), Checks = [Chk|Rest]
+              ; Checks = Rest ),
+    det_pos_checks(Ps, F, Det, Args, Rest).
 
 det_param_check(F, Det, A, ( nonvar(A) -> true
                            ; throw(error(unbound_det_argument(F, Det), determinism)) )).
@@ -192,7 +214,8 @@ drop_stale_fun_meta(_, _).
 %%% arrived first - which is the whole point: enforced, or rejected.
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
                                  ( Us == [] -> true
-                                 ; nb_setval(F, []),
+                                 ; retractall(det_bound_proviso(F, _, _)),  %re-derive the boundness union from scratch
+                                   nb_setval(F, []),
                                    forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
 
 %Every compiled clause of F, in the order it was asserted (which is source

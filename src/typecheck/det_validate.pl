@@ -1,5 +1,13 @@
 %%% Determinism arrows (-[det]->, -[semidet]->, -[nondet]->) %%%
 
+%The per-function UNION of head positions whose boundness a determinism proof
+%CONSUMED. Populated by enforced_bound_param/1 during validation and read by
+%det_boundness_checks/3 (translator.pl) to emit exactly the boundary checks the
+%certificate relied on. Retracted per function in forget_symbol_types/1
+%(decl_store.pl) and at the top of recompile_function_clauses/1 (translator.pl),
+%so a late declaration re-derives the set from scratch.
+:- dynamic det_bound_proviso/3.   % det_bound_proviso(F, N, Pos)
+
 %Several declarations at one arity are overloads, and the function as a whole
 %can only be trusted with the WEAKEST commitment any of them makes: det and
 %semidet both commit (semidet is the weaker of the two), while a nondet or an
@@ -25,23 +33,25 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
                           ; true ).
 
 %Publish the clause's HEAD variables for the duration of a body determinism
-%analysis, as one $det_head_scope term scope(HeadVars, DirectParams). The full
-%head-variable set and its direct-parameter subset are captured from the same
-%head at the same moment and are always read together, so they live in a single
-%published term with a single setup/restore. A head variable is a parameter: it
-%can arrive bound to anything the caller chose, functions included, whatever its
-%declared type says - and a wildcard-typed parameter carries no type attribute at
-%all (bind_param_type records nothing for Atom/%Undefined%), so identity is the
-%only reliable test. unify_head_is_data/1 consults this to tell a parameter from
-%a fresh local. (The commitment gate $det_enforced is deliberately NOT folded in
-%here: it has a coarser lifetime - see the context inventory in flags_arrows.pl.)
-%The direct-parameter subset excludes is-var-EXEMPT parameters (see
-%det_enforced_params/3): a parameter the body tests with is-var gets no
+%analysis, as one $det_head_scope term scope(HeadVars, DirectParams, Args). The
+%full head-variable set and its direct-parameter subset are captured from the
+%same head at the same moment and are always read together, so they live in a
+%single published term with a single setup/restore; the whole Args list rides
+%along so a consumed direct parameter can be located by its 1-based POSITION
+%(enforced_bound_param/1's consumption record). A head variable is a parameter:
+%it can arrive bound to anything the caller chose, functions included, whatever
+%its declared type says - and a wildcard-typed parameter carries no type
+%attribute at all (bind_param_type records nothing for Atom/%Undefined%), so
+%identity is the only reliable test. unify_head_is_data/1 consults this to tell a
+%parameter from a fresh local. (The commitment gate $det_enforced is deliberately
+%NOT folded in here: it has a coarser lifetime - see the context inventory in
+%flags_arrows.pl.) The direct-parameter subset excludes is-var-EXEMPT parameters
+%(see det_enforced_params/3): a parameter the body tests with is-var gets no
 %boundary check, so nothing downstream may treat it as bound either.
-with_det_head_vars(Args, Body, Goal) :- catch(b_getval('$det_head_scope', Saved), _, Saved = scope([], [])),
+with_det_head_vars(Args, Body, Goal) :- catch(b_getval('$det_head_scope', Saved), _, Saved = scope([], [], [])),
                                   term_variables(Args, HVs),
                                   det_enforced_params(Args, Body, DPs),
-                                  setup_call_cleanup(b_setval('$det_head_scope', scope(HVs, DPs)),
+                                  setup_call_cleanup(b_setval('$det_head_scope', scope(HVs, DPs, Args)),
                                                      Goal,
                                                      b_setval('$det_head_scope', Saved)).
 
@@ -68,7 +78,7 @@ body_applies_is_var(E, V) :- nonvar(E), E = [X|Xs],
                              ( body_applies_is_var(X, V) -> true
                              ; body_applies_is_var(Xs, V) ).
 
-det_head_var(H) :- catch(b_getval('$det_head_scope', scope(HVs, _)), _, fail),
+det_head_var(H) :- catch(b_getval('$det_head_scope', scope(HVs, _, _)), _, fail),
                    member(V, HVs), V == H, !.
 
 %A DIRECT variable parameter: a top-level head argument that is ITSELF a
@@ -76,34 +86,60 @@ det_head_var(H) :- catch(b_getval('$det_head_scope', scope(HVs, _)), _, fail),
 %(P $u). term_variables (det_head_var/1) cannot tell them apart - it flattens
 %(P $u) to [$u] - but only direct params get the boundness check in
 %translate_clause, so the strengthenings must key on THIS, not det_head_var/1.
-det_direct_param(H) :- catch(b_getval('$det_head_scope', scope(_, DPs)), _, fail),
+det_direct_param(H) :- catch(b_getval('$det_head_scope', scope(_, DPs, _)), _, fail),
                        member(V, DPs), V == H, !.
 
 %The commitment gate. Published alongside the head vars whenever a body's
-%determinism is analysed; true only when the analysis subject itself carries an
-%explicit -[det]->/-[semidet]-> arrow (validate_function_determinism), so its
-%direct params are guaranteed bound at runtime by the boundary check. A
-%transitive callee reached through body_determinism sets it from ITS OWN
-%declaration, which in practice is never committed (a committed callee is
-%answered from its declaration and never body-analysed), so it is false there -
-%wired explicitly, not left to happen by accident.
+%determinism is analysed; enforced(F, N) only when the analysis subject itself
+%carries an explicit -[det]->/-[semidet]-> arrow (validate_function_determinism),
+%so its direct params are guaranteed bound at runtime by the boundary check - and
+%it names the function so a consumption can be recorded against it. A transitive
+%callee reached through body_determinism sets it from ITS OWN declaration, which
+%in practice is never committed (a committed callee is answered from its
+%declaration and never body-analysed), so it is false there - wired explicitly,
+%not left to happen by accident.
 with_det_enforced(Bool, Goal) :- catch(b_getval('$det_enforced', Saved), _, Saved = false),
                                  setup_call_cleanup(b_setval('$det_enforced', Bool),
                                                     Goal,
                                                     b_setval('$det_enforced', Saved)).
 
-det_enforced_now :- catch(b_getval('$det_enforced', E), _, fail), E == true.
+det_enforced_now :- det_enforced_fn(_, _).
+
+%The (F, N) of the committed function currently under body analysis, or fail if
+%the gate is not raised (value false):
+det_enforced_fn(F, N) :- catch(b_getval('$det_enforced', E), _, fail), E = enforced(F, N).
 
 %A DIRECT parameter of a function under an explicit committed arrow: the
 %boundary check guarantees it is bound at runtime, so - unlike an arbitrary
 %typed argument, which may arrive unbound out of ordinary well-typed code - the
 %strengthenings below may treat it as bound. A destructured FIELD is not a
 %direct param and does NOT qualify (the boundary check is spine-level).
-enforced_bound_param(V) :- det_direct_param(V), det_enforced_now.
+%
+%Succeeding here is the determinism proof CONSUMING this parameter's boundness:
+%the certificate about to be issued relies on it, so record the consumption as a
+%det_bound_proviso(F, N, Pos) fact (Pos its 1-based head position). That per-
+%function union is exactly the set of parameters det_boundness_checks/3 will
+%guard - the check emitted is then precisely the proviso the proof relied on, and
+%a pure constructor that consumes no boundness gets no check. The record is an
+%assertz, which SURVIVES backtracking: a probe that ran inside a since-abandoned
+%analysis branch leaves its proviso behind, which only ever adds an extra runtime
+%check (over-consumption), never removes a needed one - the sound direction.
+enforced_bound_param(V) :- det_direct_param(V), det_enforced_fn(F, N),
+                           ignore(record_bound_consumed(F, N, V)).
+
+%Locate V's 1-based position among the published head Args (by identity - V is a
+%direct param, so it is a spine element of Args) and union it into the proviso
+%set for (F, N). ignore/1 above keeps a failure to locate (an unexpected scope
+%shape) from unravelling the strengthening: the boundness fact is still true.
+record_bound_consumed(F, N, V) :- b_getval('$det_head_scope', scope(_, _, Args)),
+                                  nth1(Pos, Args, A), A == V, !,
+                                  ( det_bound_proviso(F, N, Pos) -> true
+                                  ; assertz(det_bound_proviso(F, N, Pos)) ).
 
 %Whether the function whose body is about to be analysed carries an explicit
-%committed arrow, as the boolean the gate publishes:
-det_enforced_flag(F, N, Flag) :- ( explicit_committed_decl(F, N, _) -> Flag = true ; Flag = false ).
+%committed arrow, as the gate value the enforcement publishes (enforced(F, N)
+%carries the identity a consumption is recorded against):
+det_enforced_flag(F, N, Flag) :- ( explicit_committed_decl(F, N, _) -> Flag = enforced(F, N) ; Flag = false ).
 
 %A det body must neither branch nor fail; a semidet body is the same analysis
 %minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are

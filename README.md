@@ -395,18 +395,29 @@ discipline the `-[det]->` exhaustiveness check uses. This strengthens
 `examples/strictdet_builtin_arg_shapes.metta` pins the strengthened cases and
 `examples/fail_strictdet_min_atom_unknown_shape.metta` pins the fallback.
 
-**Boundness enforcement at a committed boundary.** The paragraph above says a
-*declared* type never qualifies, because "typed" does not imply "bound" — a
-`(Number Number)` or `Bool` parameter can arrive unbound out of ordinary
-well-typed code (`(P $u)` leaves its field unfilled), and no residual guard
-rules that out. An explicit `-[det]->`/`-[semidet]->` arrow changes that at its
-own boundary: the compiler emits a `nonvar` check per **variable** parameter,
-before the commit cut and the body, so the function *cannot begin* with an
-unbound argument. Passing one throws a clear `unbound_det_argument` error
-(`examples/fail_unbound_det_argument.metta`) — where the same call used to
-enumerate a finite type through `bool/1` or crash downstream inside a builtin's
-`=..`. Enforcement is **mode-independent**: it keys on the explicit arrow, not
-on `--strict-det`, because only the explicit arrow is an every-mode commitment.
+**Boundness enforcement at a committed boundary, need-based.** The paragraph
+above says a *declared* type never qualifies, because "typed" does not imply
+"bound" — a `(Number Number)` or `Bool` parameter can arrive unbound out of
+ordinary well-typed code (`(P $u)` leaves its field unfilled), and no residual
+guard rules that out. An explicit `-[det]->`/`-[semidet]->` arrow can change that
+at its own boundary, but only where the commitment actually depends on it: the
+compiler emits a `nonvar` check for a parameter **only when the clause's
+determinism proof consumed its boundness** — when one of the strengthenings
+below treated it as an enforced-bound direct parameter. The check emitted is
+then exactly the proviso the certificate relied on. A pure data constructor
+(`(= (pair-up $x $y) ($x $y))`) is genuinely `det` with unbound arguments,
+consumes no boundness, and gets **no** check — it compiles and runs with an
+unbound argument, the variable flowing through into the result
+(`examples/det_constructor_unbound_arg.metta`). Where a check *is* emitted,
+passing an unbound argument throws a clear `unbound_det_argument` error
+(`examples/fail_unbound_det_argument.metta`, whose body `(and $b true)` consumes
+its parameter's boundness) — where the same call used to enumerate a finite type
+through `bool/1` or crash downstream inside a builtin's `=..`. The consumed
+positions are unioned across the function's clauses, so a parameter any clause
+relies on is checked in every clause — a sound superset, since an extra `nonvar`
+check is never wrong. Enforcement is **mode-independent**: it keys on the
+explicit arrow, not on `--strict-det`, because only the explicit arrow is an
+every-mode commitment.
 
 Because "typed implies bound" now holds for those parameters, five call-site
 verdicts that a bare declared type could not earn become sound when the

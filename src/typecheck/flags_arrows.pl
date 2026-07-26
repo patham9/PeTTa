@@ -141,17 +141,20 @@ canonical_arrow(_, (->)).
 % that legitimately nest at different granularities). Inventory, so a reader
 % need not reconstruct it from the writer/reader sites:
 %
-%   $det_head_scope   (det_validate.pl)  scope(HeadVars, DirectParams).
+%   $det_head_scope   (det_validate.pl)  scope(HeadVars, DirectParams, Args).
 %       LIFETIME per CLAUSE BODY. Writer with_det_head_vars/2; readers
 %       det_head_var/1, det_direct_param/1 (-> unify_head_is_data/1,
 %       enforced_bound_param/1, the det strengthenings). The two lists were once
-%       two globals; they are captured from one head at one moment and merged.
-%   $det_enforced     (det_validate.pl)  the boolean commitment gate.
-%       LIFETIME per CLAUSE SET - strictly COARSER than $det_head_scope: it is
-%       set once around clause_set_determinism/2, which then opens one
+%       two globals; they are captured from one head at one moment and merged,
+%       and the whole Args list rides along so a consumed direct param can be
+%       located by its 1-based position (the det_bound_proviso record).
+%   $det_enforced     (det_validate.pl)  the commitment gate, enforced(F,N) or
+%       false. LIFETIME per CLAUSE SET - strictly COARSER than $det_head_scope:
+%       it is set once around clause_set_determinism/2, which then opens one
 %       $det_head_scope per clause body inside it. That is why it is a separate
 %       helper (with_det_enforced/2) and NOT folded into $det_head_scope.
-%       Reader det_enforced_now/0 (-> enforced_bound_param/1).
+%       Readers det_enforced_now/0, det_enforced_fn/2 (-> enforced_bound_param/1);
+%       enforced(F,N) names the function a consumed boundness is recorded against.
 %   $det_stack        (det_args.pl)      list, the body_determinism/3 recursion
 %       guard. LIFETIME per transitive-analysis call chain.
 %   $det_assume_stack (det_analysis.pl)  list, the SEPARATE recursion guard for
