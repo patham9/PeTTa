@@ -84,11 +84,11 @@ is_arrow_type(T) :- nonvar(T), T = [A|_], arrow_atom(A).
 
 list_type(T, ET) :- nonvar(T), T = [L, ET], L == 'List'.
 
-%A compound type with dedicated syntax and semantics - an arrow, a union, or a
-%(List T) - as opposed to a plain positional tuple. A [Head|Fields] term that is
-%NONE of these is read as a tagged/positional tuple, so the "is this an ordinary
-%tuple" sites exclude exactly this set (\+ special_compound_type/1):
-special_compound_type(T) :- ( is_arrow_type(T) ; is_union(T) ; list_type(T, _) ).
+%A compound type with dedicated syntax and semantics - an arrow, union, list,
+%or opaque foreign type - as opposed to a plain positional tuple. A
+%[Head|Fields] term that is NONE of these is read as a tagged/positional tuple,
+%so the "is this an ordinary tuple" sites exclude exactly this set:
+special_compound_type(T) :- ( is_arrow_type(T) ; is_union(T) ; list_type(T, _) ; foreign_type(T) ).
 
 %%% Attribute hooks (permissive merging; errors are raised by explicit checks):
 tknown:attr_unify_hook(Cs, Other) :-
@@ -388,4 +388,3 @@ var_conflict_in_rest(V, T, [V2|Vs], [T2|Ts]) :- ( V == V2, nonvar(T2), \+ wildca
                                                   \+ type_compat_soft(T, T2),
                                                   \+ type_compat_soft(T2, T) -> true
                                                 ; var_conflict_in_rest(V, T, Vs, Ts) ).
-

@@ -20,7 +20,10 @@ head_arg_soft(A, T) :- ( var(A) -> true
                        ; check_value(A, T, St) -> St \== mismatch
                        ; true ).
 
-bind_param_type(Arg, T) :- ( var(Arg) -> ( nonvar(T) -> ( \+ wildcard_type_t(T) -> add_known_type(Arg, T)
+bind_param_type(Arg, T) :- ( nonvar(Arg), Arg = [At, Whole, Inner], At == '@'
+                           -> bind_param_type(Whole, T),
+                              bind_param_type(Inner, T)
+                           ; var(Arg) -> ( nonvar(T) -> ( \+ wildcard_type_t(T) -> add_known_type(Arg, T)
                                                                                   ; true )
                                            %a variable type is the declaration instance: recording it
                                            %lets identical unknowns be recognized (e.g. rcons's $a):
@@ -188,7 +191,10 @@ bind_pattern_typed(P, T) :- bind_pattern_typed(P, T, []).
 %patterns recurse with [], since what an earlier branch matched at the top says
 %nothing about a nested field.
 bind_pattern_typed(P, T, Prior) :-
-                            ( var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
+                            ( nonvar(P), P = [At, Whole, Inner], At == '@'
+                              -> bind_pattern_typed(Whole, T, Prior),
+                                 bind_pattern_typed(Inner, T, Prior)
+                            ; var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
                             ; is_union(T), T = ['|'|Ms]        %a pattern narrows to the member it selects
                               -> ( findall(M, ( member(M, Ms), pattern_selects_member(P, M) ), [M1]),
                                    narrowing_sound(P, Ms, M1, Prior)
@@ -203,6 +209,8 @@ bind_pattern_typed(P, T, Prior) :-
                                  bind_pattern_typed(Rest, ['List', ET])
                             ; structural_pattern_fields(P, T, Fields, FieldTs)
                               -> maplist(bind_pattern_typed, Fields, FieldTs)
+                            ; atom(T), declared_newtype(T, R), \+ wildcard_type_t(R)
+                              -> bind_pattern_typed(P, R, Prior)
                             ; is_list(P), is_list(T), same_length(P, T),
                               \+ is_arrow_type(T)
                               -> maplist(bind_pattern_typed, P, T)
@@ -276,4 +284,3 @@ union_member_excluded(_, _, _) :- fail.
 member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
                         \+ fun(C),
                         nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).
-

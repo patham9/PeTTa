@@ -540,6 +540,13 @@ deterministic_expr([collapse, _], ok) :- !.
 deterministic_expr(['trace!', A, B], Result) :- !, combine_determinism_list([A, B], Result).
 deterministic_expr([once, Expr], Result) :- !, once_determinism(Expr, Result).
 deterministic_expr([quote, _], ok) :- !.
+%`data` explicitly constructs an expression. Its first argument is a field,
+%not a dynamic call target; only evaluations nested in the fields contribute
+%to determinism.
+deterministic_expr([data|Fields], Result) :- !, combine_determinism_list(Fields, Result).
+%`make-list` has the same non-callable-head discipline as data: only its
+%element evaluations contribute to determinism.
+deterministic_expr(['make-list'|Elements], Result) :- !, combine_determinism_list(Elements, Result).
 deterministic_expr([eval, _], unknown(dynamic_eval)) :- !.
 deterministic_expr([reduce, _], unknown(dynamic_reduce)) :- !.
 deterministic_expr([call, Expr], Result) :- !, deterministic_call_expr(Expr, Result).
@@ -691,4 +698,3 @@ combine_unify_operands([], ok).
 combine_unify_operands([A|As], R) :- unify_operand_determinism(A, R1),
                                      combine_unify_operands(As, R2),
                                      combine_det_results(R1, R2, R).
-

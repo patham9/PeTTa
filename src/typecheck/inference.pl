@@ -105,7 +105,9 @@ assume_pattern_vars([A|As], Ps0, Ps) :- ( var(A) -> ( known_singleton(A, _) -> P
 %equations is a function, and a function-headed pattern is compiled as an
 %inverted CALL of that function - its fields are solved, not destructured -
 %so its declaration says nothing about what the pattern variables hold.
-ctor_pattern_field_types(Arg) :- ( is_list(Arg), Arg = [Tag|Fs], atom(Tag), \+ fun(Tag), Fs \== [],
+ctor_pattern_field_types(Arg) :- ( nonvar(Arg), Arg = [At, _Whole, Inner], At == '@'
+                                   -> ctor_pattern_field_types(Inner)
+                                  ; is_list(Arg), Arg = [Tag|Fs], atom(Tag), \+ fun(Tag), Fs \== [],
                                    length(Fs, N), findall(ATs, fn_decl_arity(Tag, N, ATs, _), [ATs1])
                                    -> catch(maplist(bind_param_type, Fs, ATs1),
                                             error(literal_type_mismatch(_, _), typecheck), true)
@@ -202,4 +204,3 @@ merge_inferred(F, ATs, OT) :- length(ATs, N),
                                  ; assertz(inferred_fn_type(F, ATs, OT)) ).
 
 join_inferred(A, B, J) :- ( A =@= B -> J = A ; J = '%Undefined%' ).
-

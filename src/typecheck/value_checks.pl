@@ -74,6 +74,7 @@ check_value(V, T, St) :- ( V == true ; V == false ), !,
                          ; T == 'Bool' -> St = ok
                          ; prim_mismatch_status('Bool', T, St) ).
 check_value(V, T, St) :- var(T), !, ( value_single_type(V, VT) -> T = VT ; true ), St = ok.
+check_value(_, T, ok) :- foreign_type(T), !.
 check_value(_, T, St) :- wildcard_type_t(T), !, St = ok.
 check_value(V, T, St) :- is_union(T), !, T = ['|'|Ms],
                          ( member(M, Ms), check_value(V, M, SM), SM == ok -> St = ok
@@ -215,6 +216,13 @@ primitive_type('Bool').
 user_atom_type(T) :- atom(T), \+ primitive_type(T), \+ wildcard_type(T).
 tuple_type(C) :- is_list(C), C \= [->|_], C \= ['List', _].
 
+%Foreign types are nominal obligations over values supplied by native code.
+%Their optional parameters are checked structurally, but their runtime terms
+%are opaque and must never be inspected as tagged or positional tuples.
+foreign_type(T) :- atom(T), declared_foreign_type(T, 0).
+foreign_type(T) :- nonvar(T), T = [Name|Params], atom(Name),
+                   declared_foreign_type(Name, N), length(Params, N).
+
 %%% Tagged vs positional structural tuple types.
 %
 % A type of shape (H T1 ... Tn) is read in one of two ways, and the reading is
@@ -245,6 +253,7 @@ tagged_tuple_type(T, Tag, FieldTs) :- nonvar(T), T = [Tag|FieldTs],
 
 type_name_declared(Tag) :- ( declared_value_type(Tag, _) -> true
                            ; declared_newtype(Tag, _) -> true
+                           ; declared_foreign_type(Tag, _) -> true
                            ; declared_fn_type(Tag, _, _, _) ).
 
 %With an unresolved element type variable, a heterogeneous list is legal: the
@@ -442,4 +451,3 @@ constrain_var_type(V, T) :- ( get_attr(V, mreq, Rs)
 value_definitely_mismatch(V, T) :- copy_term(T, T2), check_value(V, T2, St), !, St == mismatch.
 
 goal_or_throw(Goal, Error) :- ( call(Goal) *-> true ; throw(Error) ).
-

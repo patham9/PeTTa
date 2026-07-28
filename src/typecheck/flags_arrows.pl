@@ -9,6 +9,9 @@
 :- dynamic declared_fn_type/4.     % declared_fn_type(F, ArgTypes, OutType, Det)
 :- dynamic declared_value_type/2.  % declared_value_type(Name, Type)
 :- dynamic declared_newtype/2.     % declared_newtype(Name, Representation) - erased nominal types
+:- dynamic declared_type_alias/2.  % declared_type_alias(Name, Representation) - erased structural names
+:- dynamic declared_foreign_type/2. % declared_foreign_type(Name, Arity) - opaque native types
+:- dynamic declared_space_type/2.  % declared_space_type(Name, RowType) - static space schemas
 :- dynamic strict_mode/1.
 
 :- dynamic strict_det/1.
@@ -111,6 +114,7 @@ infix_arrow_misuse(T) :- is_list(T), T = [H|_], nonvar(H), infix_arrow_misuse(H)
 %Normalize nested arrow types to canonical prefix form. Nondeterministic
 %arrows keep their marker so closure parameters carry the commitment:
 normalize_type(T, T) :- var(T), !.
+normalize_type(T, R) :- atom(T), declared_type_alias(T, R), !.
 normalize_type(T, T) :- atomic(T), !.
 normalize_type(T, TN) :- is_list(T), fn_type_shape(T, ATs, OT, _), !,
                          T = [Arrow|_],
@@ -174,4 +178,3 @@ canonical_arrow(_, (->)).
 %       captured during a snapshot. LIFETIME per snapshot scope. Uses nb_setval
 %       (non-backtrackable) with an explicit fail-branch restore; writer/reader
 %       ctor_deps/1 and the snapshot-scope helpers.
-

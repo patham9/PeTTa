@@ -283,10 +283,25 @@ let_determinism(Pat, Val, In, Result) :-
 %read off Val's declared tuple output type. Non-arrow, non-wildcard only: an
 %arrow or Atom field could legitimately carry a function, so it stays unknown.
 bind_destructured_field_types(Pat, Val) :-
+    nonvar(Pat), Pat = [At, Whole, Inner], At == '@', !,
+    call_output_type(Val, OT),
+    bind_det_pattern_type(Whole, OT),
+    bind_det_pattern_type(Inner, OT).
+bind_destructured_field_types(Pat, Val) :-
     is_list(Pat), Pat = [_|_],
     call_output_type(Val, OT),
     is_list(OT), same_length(Pat, OT),
     bind_pat_field_types(Pat, OT).
+
+bind_det_pattern_type(P, T) :- ( var(P), nonvar(T), \+ is_arrow_type(T), \+ wildcard_type_t(T)
+                                 -> add_known_type(P, T)
+                                ; nonvar(P), P = [At, Whole, Inner], At == '@'
+                                  -> bind_det_pattern_type(Whole, T),
+                                     bind_det_pattern_type(Inner, T)
+                                ; is_list(P), is_list(T), same_length(P, T),
+                                  \+ is_arrow_type(T)
+                                  -> bind_pat_field_types(P, T)
+                                ; true ).
 
 bind_pat_field_types([], []).
 bind_pat_field_types([P|Ps], [T|Ts]) :- ( var(P), nonvar(T), \+ is_arrow_type(T), \+ wildcard_type_t(T)

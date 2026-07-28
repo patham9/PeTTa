@@ -224,6 +224,48 @@ So: declare the field types of a positional tuple, and leave a tag undeclared
 (or declare it as a constructor). See `examples/strict_tuple_types.metta` and
 `examples/strict_positional_tuple_types.metta`.
 
+**Explicit data construction.** `(data E1 E2 ...)` constructs the expression
+whose fields are the evaluated values of `E1`, `E2`, and so on; `data` itself
+is erased. In particular, the first field is always data, even when it is an
+unbound variable or later holds a function:
+
+```metta
+(: pair (-> Atom Number (Atom Number)))
+(= (pair $head $value) (data $head $value))
+```
+
+This is the unambiguous form for positional tuples with a computed head.
+Existing parenthesized forms retain their call-or-data behavior.
+
+Because `list` is already used as data by an existing example,
+`(make-list E1 E2 ...)` is the explicit runtime-list constructor. Under an
+expected `(List T)`, each element is checked against `T` at compile time;
+elements of `(List Expression)` remain unevaluated source data. The same list
+expectation flows through `cons`/`cons-atom` chains and the empty list `()`.
+
+When a function declares a positional tuple result, that expected shape is
+propagated into `(data ...)` fields in result position, including through
+`if`, `case`, `let`/`let*`, and `chain`. Every field is checked against its
+position before the result is certified, so a mismatch is a compile-time
+error and an unresolved field remains a residual check (and is rejected by
+`--strict`). This is deliberately narrower than general bidirectional
+inference. One focused higher-order rule also applies: at a call with a unique
+declaration, closure arguments resolve shared type variables before the
+remaining arguments are translated. Positional accumulator or state arguments
+therefore receive contextual field typing, including when the closure is
+partially applied. When a `(data ...)` initializer is staged in an earlier
+`let*` binding, the same lookahead applies to any such call and carries that
+expectation back to its producer. A variable already carrying the required
+nested product type is accepted directly; it does not need a repeated
+`(the Type ...)` ascription. See
+`examples/strict_contextual_data_tuple.metta` and
+`examples/strict_nested_product_parameter.metta`.
+
+The as-pattern `(@ Whole InnerPattern)` is transparent to this typing:
+`Whole` receives the complete matched type and `InnerPattern` is destructured
+against that same type. This also works when `@` is nested below a `cons`
+pattern, so positional field types are retained in list-head destructuring.
+
 **Union types.** A heterogeneous position can declare its alternatives with
 `(| T1 T2 ...)` — for example `(List (| (CPU %Undefined% %Undefined%
 %Undefined%) (: %Undefined% %Undefined% %Undefined% TV)))` for a mixed
@@ -274,6 +316,31 @@ brand it explicitly with `(brand KB $x)`, an erased trust operation that
 rejects conflicting brands but generates no check (a role has no runtime
 witness). Declared relation schemas restore brands on `match`. Use
 `(the KB ...)` instead when you want the representation checked at runtime.
+
+**Structural type aliases.** `(: Row (Alias (Number String)))` gives a
+structural name to any type expression. The name is expanded when a
+declaration is processed, so it adds no runtime tag and no nominal
+distinctness — unlike `Newtype`, `Row` is exactly `(Number String)`. Aliases
+should normally be declared before use and may compose with other type forms,
+such as `(List Row)`. Because the checker retains the expanded representation,
+error messages show that representation rather than the alias name. If an
+alias does arrive late, prior declarations are re-normalized and any
+already-compiled functions that use them are recompiled against the expanded
+types.
+
+**Opaque foreign types.** `(: Agenda (Foreign))` declares an opaque type for
+values produced by native or foreign code; `(: Heap (Foreign 1))` declares a
+type constructor used as `(Heap T)`. Foreign types are tracked statically by
+name and optional parameter arity, erased at runtime, and never value-checked
+or structurally inspected. Unlike a bare type variable such as `$heap`, a
+foreign type does not unify with unrelated types.
+
+**Typed spaces.** `(: &jobs (SpaceOf (job-row Number String)))` declares the
+row type of a statically named space. Its `match` patterns receive the row's
+field types, including narrowing when the schema is a union of row shapes;
+definitely ill-typed `add-atom` and `remove-atom` payloads are compile-time
+errors. Payloads whose fields are filled dynamically are trusted, and spaces
+without a `SpaceOf` declaration retain their existing untyped behavior.
 
 **Determinism arrows.** `(: f (-[det]-> A B C))` — prefix, like `->` and
 every other MeTTa form — declares a deterministic function: the compiler validates
