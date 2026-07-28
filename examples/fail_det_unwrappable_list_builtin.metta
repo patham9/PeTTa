@@ -5,14 +5,10 @@
 ; is a static claim, and the residual guard that would back it up at run time
 ; is typecheck_or_error/2, which succeeds on an unbound variable.
 ;
-; So none of them can be det, and a -[det]-> body may not call them. The same
-; goes for PeTTa's own size-atom, union-atom, subtraction-atom,
-; intersection-atom, exclude-item and alpha-unique-atom, whose non_list/1
-; guard is true only of a term that can never BECOME a list and so lets an
-; open one through. sort-atom and unique-atom are the exceptions: msort/2 and
-; list_to_set/2 raise on an open list rather than enumerating, and an
-; exception is not an extra solution.
+; The wrapper is certifiable only through its proper-list boundary proviso.
+; Passing an unbound list violates that proviso before reverse/2 can enumerate
+; list shapes.
 (: rev (-[det]-> (List Number) (List Number)))
 (= (rev $xs) (reverse $xs))
 
-!(rev (1 2 3))
+!(rev $free)

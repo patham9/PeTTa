@@ -2,7 +2,7 @@
 ; the boundary, and every value of a nominal type is a constructor application
 ; (a nonempty list spine), so remove-atom/add-atom commit exactly once: det.
 (: Entry Type)
-(: entry (-> Number Entry))
+(: entry (-[det]-> Number Entry))
 
 (: remember (-[det]-> Entry Bool))
 (= (remember $e) (add-atom &self $e))

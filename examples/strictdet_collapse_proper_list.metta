@@ -9,7 +9,7 @@
 ; provably det on (collect-one $left), and collect-and-extend is a valid
 ; -[det]-> function.
 
-(: collect-one (-> Number (List Number)))
+(: collect-one (-[det]-> Number (List Number)))
 (= (collect-one $value)
    (collapse $value))
 
@@ -24,7 +24,7 @@
 ; The certificate is transitive within the file: recollect's clause result is a
 ; call to the already-certified collect-one, so recollect is certified too and
 ; the union-atom call in extend-twice is likewise det.
-(: recollect (-> Number (List Number)))
+(: recollect (-[det]-> Number (List Number)))
 (= (recollect $value)
    (collect-one $value))
 

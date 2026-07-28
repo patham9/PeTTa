@@ -1,6 +1,6 @@
 %%% Argument-aware transitive determinism through higher-order functions.
-%A function whose declared arrow is a plain -> (no det commitment outside
-%--strict-det) can still be deterministic CONDITIONALLY on its closure
+%A function whose declaration leaves a higher-order parameter uncommitted can
+%still be deterministic CONDITIONALLY on its closure
 %arguments: fold-flat is det exactly when the folded closure is det. The
 %unconditional body_determinism analyzes the callee's clauses in isolation -
 %the closure param applies with a plain -> head, which is not det evidence -
@@ -51,7 +51,7 @@ det_closure_positions([pos(Idx, M, _)|Ps], Args) :- nth0(Idx, Args, Arg),
 %fails:
 det_arg_evidence(Arg, _) :- var(Arg), !, known_singleton(Arg, K),
                             arrow_head_level(K, L),
-                            ( L == det -> true ; L == plain, strict_det(true) ).
+                            L == det.
 det_arg_evidence(['|->', _, LBody], _) :- !, deterministic_expr(LBody, ok).
 det_arg_evidence([F2|_], _) :- atom(F2), !, fn_own_arity(F2, A), det_atom_evidence(F2, A).
 det_arg_evidence(F2, M) :- atom(F2), !, det_atom_evidence(F2, M).
@@ -59,10 +59,9 @@ det_arg_evidence(F2, M) :- atom(F2), !, det_atom_evidence(F2, M).
 %A named function used as a VALUE is the same function it is when called, so
 %it is judged by the same relation - builtin table first, then the declared
 %arrow, then clause analysis. Reading only the declaration here is what let
-%(: or (-> Bool Bool Bool)) certify (fold-flat or False ...) as det under
-%--strict-det, where plain_arrow_det/1 turns a plain -> into a commitment,
-%while a direct call to or/2 in the same body was rejected: one symbol, two
-%verdicts. The table is the checker's own knowledge and outranks a
+%a declaration certify `or` as a deterministic fold accumulator while a
+%direct call to or/2 was rejected: one symbol, two verdicts. The table is the
+%checker's own knowledge and outranks a
 %declaration it contradicts, exactly as it does for a direct call and for the
 %oracle's wrapping decision (oracle_det_believed/3).
 det_atom_evidence(F2, M) :- catch(function_call_determinism(F2, M, Det), _, fail), Det == det.
@@ -209,13 +208,12 @@ case_coverage_determinism(KeyExpr, PairsExpr, Result) :-
        ; Result = ok ).
 
 %The scrutinee's type, when the checker already knows it: a parameter (or any
-%other variable) carrying a single known type, or a call to a function with a
-%unique declaration at that arity. Anything else has no type here and the
-%coverage question is simply not asked.
+%other variable) carrying a single known type, or any non-variable value for
+%which the ordinary value-typing relation yields one candidate. Reusing that
+%relation is important for literals (True/False in particular) as well as
+%declared-output calls; anything else leaves the coverage question unasked.
 case_scrutinee_type(K, T) :- var(K), !, known_singleton(K, T0), nonvar(T0), T = T0.
-case_scrutinee_type(K, T) :- nonvar(K), is_list(K), K = [F|Args], atom(F), fun(F),
-                             length(Args, N),
-                             findall(OT, fn_decl_arity(F, N, _, OT), [T0]),
+case_scrutinee_type(K, T) :- nonvar(K), value_candidate_types(K, [T0]),
                              nonvar(T0), T = T0.
 
 %The branch patterns, as single-argument "clause heads" for unmatched_case/5.
@@ -333,16 +331,14 @@ combine_pattern_list([E|Es], Result) :- deterministic_pattern(E, R1),
 %%% with no way out. The way out of a REAL incompleteness is -[semidet]->,
 %%% which commits (and therefore costs) exactly like -[det]->.
 %%%
-%%% Only an EXPLICIT -[det]-> is checked (explicit_det_decl/2). Under
-%%% --strict-det a plain -> also reads as det, but that is a mode-wide default
-%%% rather than a per-function promise, and holding every -> to totality would
-%%% reject most partial helpers in the standard library.
+%%% Only an EXPLICIT -[det]-> is checked (explicit_det_decl/2). Plain arrows
+%%% are uncommitted in default/--strict mode and illegal under --strict-det.
 %%%
 %%% Because the promise is per-function and written down, it is checked in
 %%% EVERY mode - like the overlap and body-determinism checks an explicit
 %%% -[det]-> already gets flaglessly. --strict-det forces you to make the
 %%% determinism claim; it is not what makes a claim you already made mean
-%%% something. If you did not mean det, write -> and nothing is checked.
+%%% something. Outside --strict-det, `->` remains the uncommitted form.
 %%%
 %%% This runs as a per-file PREPASS over the parsed forms (filereader.pl), for
 %%% the same reason type declarations are pre-cached there: exhaustiveness is a

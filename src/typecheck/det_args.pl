@@ -34,11 +34,9 @@ call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
 %narrowed to a nonempty value of a list type by an == ()-shaped condition, and a
 %unique declaration at the arity.
 %
-%KNOWN LIMITATION (the existing S4 exposure, not solved here): a clause added to
-%the callee LATER can invalidate this site verdict. det_analysis_cache and
-%det_assume_cache are retracted when a clause arrives (translate_clause), but a
-%CONSUMER already compiled against this verdict is not recompiled - consistent
-%with the boundness proviso and the det_analysis_cache consumers elsewhere.
+%Runtime add-atom/remove-atom changes recompile recorded callers transitively
+%(metta_on_function_changed/1), so a previously compiled consumer cannot keep
+%this upgrade after the callee's clauses invalidate it.
 semidet_site_upgraded_to_det(Fun, N, Args) :-
     N =:= 1,
     nth0(Idx, Args, A), var(A), nonempty_var(A),
@@ -206,7 +204,9 @@ data_headed(_).
 %answers once and then raises. That is exactly the assumption commit 6996b5b
 %removed from the flat table, and re-admitting it here would put it back.
 manifest_proper_list(X) :- X == [], !.
-manifest_proper_list(X) :- var(X), !, enforced_bound_tuple(X, _).
+manifest_proper_list(X) :- var(X), !,
+                           ( enforced_proper_list_param(X)
+                           ; enforced_bound_tuple(X, _) ).
 manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
                            manifest_proper_list(Tl).
@@ -277,12 +277,11 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %moment any clause fails to qualify (which also withdraws the fact). A function with
 %no clause yet, or one poisoned clause, is not certified.
 %
-%INVALIDATION / S4 exposure: a late clause of a certified F can break the
-%certificate. update_output_certs/3 re-runs on every new clause of F
-%(translate_clause), and both facts are cleared where det_bound_proviso is -
-%recompile_function_clauses (re-derived from scratch) and forget_symbol_types. A
-%CONSUMER already compiled against the certificate is not recompiled, the same
-%documented S4 exposure as det_analysis_cache and the boundness proviso.
+%INVALIDATION: a late clause of a certified F can break the certificate.
+%translate_clause/2 clears the transitive memo, and runtime add/remove changes
+%recompile recorded callers through metta_on_function_changed/1. The facts are
+%also cleared where the boundness provisos are re-derived:
+%recompile_function_clauses/1 and forget_symbol_types/1.
 %The store is parameterized by KIND - the same "every clause's result
 %provably has this shape" question serves both proper_list (a bound proper
 %list: collapse, literal spine, certified call) and bound_bool (a bound
@@ -518,13 +517,11 @@ overlapping_meta_pair(Metas) :- append(_, [fun_meta(A1, _)|Rest], Metas),
 deterministic_expr(Expr, ok) :- ( var(Expr) ; atomic(Expr) ; Expr = partial(_, _) ), !.
 %A variable head must not unify with the construct patterns below. An
 %explicit -[det]-> arrow (or nonfunction data type) on the head is det
-%evidence in every mode; a plain -> counts only under --strict-det, where
-%it is a commitment:
+%evidence in every mode. A plain arrow never proves a commitment:
 deterministic_expr([Head|Args], Result) :- var(Head), !,
     ( Args == [] -> Result = ok                    %singleton ($x) is data, not application
     ; known_singleton(Head, K), nonvar(K)
       -> ( arrow_head_level(K, det) -> combine_determinism_list(Args, Result)
-         ; arrow_head_level(K, plain), strict_det(true) -> combine_determinism_list(Args, Result)
          ; arrow_head_level(K, semidet)
            -> combine_determinism_list(Args, R0),
               combine_det_results(may_fail(semidet_closure), R0, Result)
@@ -614,22 +611,22 @@ deterministic_expr(['foldall', _, _, _], ok) :- !.
 %are given, which this table cannot express") and therefore `unspecified`.
 %That is what rejected lib_he's for-each-in-atom under --strict-det.
 %
-%LIMIT, shared with the pseudo-lambda clauses above and stated rather than
-%hidden: all six read the list argument as a PROPER list. It need not be one
-%- 'map-atom'([], _, []) and 'map-atom'([H|T], ...) both match an unbound
-%argument, so an open list enumerates lengths - but the closure's own
-%determinism is the question these constructs are asked, and requiring the
-%spine to be manifest would make (map-atom $l $f) unprovable for every
-%function that takes its list as a parameter, i.e. all of them.
-deterministic_expr(['foldl-atom', List, Init, _, _, Body], Result) :- !, combine_determinism_list([List, Init, Body], Result).
-deterministic_expr(['map-atom', List, _, Body], Result) :- !, combine_determinism_list([List, Body], Result).
-deterministic_expr(['filter-atom', List, _, Cond], Result) :- !, combine_determinism_list([List, Cond], Result).
+%All six also require the list input to be manifestly proper. A direct
+%committed parameter can establish that condition through a proper-list
+%boundary proviso; an open or partial list remains unprovable and cannot be
+%used to certify the traversal.
+deterministic_expr(['foldl-atom', List, Init, _, _, Body], Result) :- !,
+    list_builtin_determinism('foldl-atom', List, [List, Init, Body], Result).
+deterministic_expr(['map-atom', List, _, Body], Result) :- !,
+    list_builtin_determinism('map-atom', List, [List, Body], Result).
+deterministic_expr(['filter-atom', List, _, Cond], Result) :- !,
+    list_builtin_determinism('filter-atom', List, [List, Cond], Result).
 deterministic_expr(['foldl-atom', List, Init, F], Result) :- !,
-    closure_builtin_determinism('foldl-atom', F, 2, [List, Init], Result).
+    closure_builtin_determinism('foldl-atom', List, F, 2, [List, Init], Result).
 deterministic_expr(['map-atom', List, F], Result) :- !,
-    closure_builtin_determinism('map-atom', F, 1, [List], Result).
+    closure_builtin_determinism('map-atom', List, F, 1, [List], Result).
 deterministic_expr(['filter-atom', List, F], Result) :- !,
-    closure_builtin_determinism('filter-atom', F, 1, [List], Result).
+    closure_builtin_determinism('filter-atom', List, F, 1, [List], Result).
 deterministic_expr(['|->', _, _], ok) :- !.
 deterministic_expr([case, KeyExpr, PairsExpr], Result) :- !, case_expr_determinism(KeyExpr, PairsExpr, Result).
 deterministic_expr([Head|Args], Result) :- ( atomic(Head), ( \+ atom(Head) ; \+ fun(Head) )
@@ -641,9 +638,14 @@ deterministic_expr([Head|_], unknown(dynamic_head(Head))).
 %(map-atom L F), (foldl-atom L Init F) and (filter-atom L F): the data
 %arguments contribute their own determinism, and the closure has to prove
 %itself exactly as it does at a user-written higher-order call site.
-closure_builtin_determinism(Name, F, M, DataArgs, Result) :-
-    ( det_arg_evidence(F, M) -> combine_determinism_list(DataArgs, Result)
-                              ; Result = unknown(undetermined_closure(Name, F)) ).
+list_builtin_determinism(Name, List, Exprs, Result) :-
+    ( manifest_proper_list(List) -> combine_determinism_list(Exprs, Result)
+                                 ; Result = unknown(open_list(Name, List)) ).
+
+closure_builtin_determinism(Name, List, F, M, DataArgs, Result) :-
+    ( \+ manifest_proper_list(List) -> Result = unknown(open_list(Name, List))
+    ; det_arg_evidence(F, M) -> combine_determinism_list(DataArgs, Result)
+    ; Result = unknown(undetermined_closure(Name, F)) ).
 
 deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),

@@ -36,8 +36,9 @@ process_metta_string(S, Results, Space) :- metta_string_forms(S, Forms),
                                            maplist(parse_form, Forms, ParsedForms),
                                            %declaration prepass: every function type declaration in the
                                            %file is visible to every definition in it, independent of order
-                                           forall(member(parsed(expression, _, _, Decl), ParsedForms),
-                                                  precache_fn_type_decl(Space, Decl)),
+                                           forall(member(parsed(expression, FormStr, Line, Decl), ParsedForms),
+                                                  with_form_location(Line, FormStr,
+                                                                     precache_fn_type_decl(Space, Decl))),
                                            %clause-BODY prepass, same rationale: the output-certificate
                                            %prover (output_cert/3) may need a later definition's bodies
                                            %while an earlier one is validated - mutually recursive

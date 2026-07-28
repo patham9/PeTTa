@@ -1,14 +1,11 @@
-!(import! &self (library lib_roman))
-
-; Under --strict-det a plain -> is a determinism commitment: functions are
-; deterministic unless declared -[nondet]->. Overlapping clause heads,
-; superpose/match bodies, and dynamic eval all become compile errors for ->
+; Under --strict-det every arrow is explicit. Overlapping clause heads,
+; superpose/match bodies, and dynamic eval are compile errors for -[det]->
 ; functions; nondeterminism must be visible in the arrow.
 
-(: dec (-> Number Number))
+(: dec (-[det]-> Number Number))
 (= (dec $n) (- $n 1))
 
-(: countdown (-> Number Number))
+(: countdown (-[det]-> Number Number))
 (= (countdown $n) (if (< $n 1) 0 (countdown (dec $n))))
 
 !(test (countdown 5) 0)
@@ -19,10 +16,10 @@
 
 !(test (collapse (pick 9)) (1 2 9))
 
-; Higher-order functions are deterministic when their closure parameter's
-; arrow says so - a plain (-> $a $b) param is a det closure under this flag:
-!(test (fold-flat + 0 (1 2 3)) 6)
-!(test (map-flat dec (3 4 5)) (2 3 4))
+; Higher-order functions are deterministic when their closure carries
+; explicit det evidence:
+!(test (foldl-atom (1 2 3) 0 +) 6)
+!(test (map-atom (3 4 5) dec) (2 3 4))
 
 ; A nondet closure poisons the application point: wrapping it in a det
 ; function is rejected, declaring the wrapper nondet is fine.
@@ -33,14 +30,14 @@
 
 ; A variable head with a provably non-function type is data construction,
 ; not an application - deterministic like any other structure building:
-(: make-pair-list (-> Number Number (List (Number Number))))
+(: make-pair-list (-[det]-> Number Number (List (Number Number))))
 (= (make-pair-list $x $y) (cons ($x $y) ()))
 
 !(test (make-pair-list 1 2) ((1 2)))
 
 ; case and let patterns are matched, not executed: a variable-headed
 ; pattern is structure, not a dynamic call.
-(: select-tail (-> Expression Expression))
+(: select-tail (-[det]-> Expression Expression))
 (= (select-tail $value)
    (case $value
       ((($head $tail) $tail)
@@ -49,7 +46,7 @@
 !(test (select-tail (a b)) b)
 !(test (select-tail x) x)
 
-(: second (-> Expression %Undefined%))
+(: second (-[det]-> Expression %Undefined%))
 (= (second $pair) (let ($a $b) $pair $b))
 
 !(test (second (1 2)) 2)

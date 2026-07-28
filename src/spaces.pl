@@ -21,6 +21,7 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                  note_late_symbol_uses(Term, Ref),
                                  recompile_late_uses(FAtom),
                                  invalidate_specializations(FAtom),
+                                 metta_on_function_changed(FAtom),
                                  maybe_print_compiled_clause("added function", Term, Clause).
 
 %Add an atom to the space:
@@ -38,6 +39,7 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                        retractall(translated_from(_, Term)),
                                        metta_on_function_changed(F),
                                        invalidate_specializations(F),
+                                       metta_on_function_changed(F),
                                        ( \+ ( current_predicate(F/A), functor(H2, F, A), clause(H2, _, _) )
                                          -> retractall(fun(F)), metta_on_function_removed(F)
                                          ; true ),

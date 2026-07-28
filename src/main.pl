@@ -31,6 +31,8 @@ prolog:error_message(unknown_newtype(T)) -->
     [ 'brand requires a declared (Newtype ...) name, got ~p'-[T] ].
 prolog:error_message(infix_arrow_syntax(Name, Type)) -->
     [ 'Arrows are prefix - write (-[det]-> A B), not (A -[det]-> B) - in the declaration of ~p: ~p'-[Name, Type] ].
+prolog:error_message(strict_det_plain_arrow(Name)) -->
+    [ '--strict-det requires -[det]->, -[semidet]->, or -[nondet]-> in every arrow position of the declaration for ~p; plain -> is not allowed'-[Name] ].
 prolog:error_message(strict_runtime_typecheck(Context, Goal)) -->
     [ 'Strict mode rejected residual runtime type goal in ~p: ~p'-[Context, Goal] ].
 prolog:error_message(determinism_cardinality(Fun, Det, N)) -->
@@ -39,6 +41,8 @@ prolog:error_message(strict_missing_function_type(Fun, Arity)) -->
     [ 'Strict mode requires a declared or inferable type for ~p/~p'-[Fun, Arity] ].
 prolog:error_message(unbound_det_argument(Fun, Det)) -->
     [ 'Argument of ~p is unbound: a -[~w]-> function requires bound arguments'-[Fun, Det] ].
+prolog:error_message(det_argument_not_proper_list(Fun, Det)) -->
+    [ 'Argument of ~p is not a proper list: its -[~w]-> proof requires a bound proper list'-[Fun, Det] ].
 
 is_silent_flag(silent).
 is_silent_flag('--silent').

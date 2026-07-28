@@ -8,7 +8,7 @@
 (: first-list (-[semidet]-> (List (List Number)) (List Number)))
 (= (first-list (cons $head $_tail)) $head)
 
-(: pass-through (-> (List (List Number)) (List (List Number))))
+(: pass-through (-[det]-> (List (List Number)) (List (List Number))))
 (= (pass-through $xs) $xs)
 
 (: pick-first (-[det]-> (List (List Number)) (List Number)))

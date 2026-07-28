@@ -434,22 +434,21 @@ and `foldl-atom` come in two forms and both are live: the *pseudo-lambda* form
 MeTTa arguments plus the result. Either way the construct is exactly as
 deterministic as what it is handed, so the closure argument has to carry det
 evidence the same way it does at a user-written higher-order call site: an
-explicit `-[det]->`, an inline lambda with a deterministic body, or (under
-`--strict-det`) a plain `->`. A closure parameter therefore has to be
-*declared* as an arrow — `(: for-each-in-atom (-> $l (-> $a $b) %Undefined%))`,
-not `(-> $l $f ...)`, which says nothing about `$f` and leaves the wrapper
+explicit `-[det]->` or an inline lambda with a deterministic body. A closure
+parameter therefore has to be declared as an arrow, and under `--strict-det`
+that nested arrow must be explicit too:
+`(: for-each-in-atom (-[det]-> $l (-[det]-> $a $b) %Undefined%))`, not
+`(-[det]-> $l $f ...)`, which says nothing about `$f` and leaves the wrapper
 unprovable. See `examples/strictdet_higher_order_builtins.metta`. Both forms
-read the list argument as a proper list; that assumption is the one thing
-about them the analysis does not check.
+require a proper list input. A direct committed parameter earns that proof
+through a proper-list boundary proviso; an open or partial list is rejected
+before the traversal can enumerate list shapes.
 
 **The table outranks a declaration.** `lib_builtin_types.metta` gives many
-builtins a type, and a type carries an arrow head. Under `--strict-det` a
-plain `->` *is* a determinism commitment, so `(: or (-> Bool Bool Bool))` used
-to read as det wherever `or` appeared as a **value** — certifying
-`(fold-flat or False ...)` — while a direct call to `or` from the same det
-body was rejected, because a direct call consults the table. One symbol, two
-verdicts. A declared builtin now takes its arrow head from the table in both
-places, which is what an *undeclared* builtin always did. See
+builtins a type, while `det_builtins.pl` supplies their authoritative effect.
+A declared builtin therefore takes its arrow head from the table both as a
+value and at a direct call; a type signature cannot certify a nondeterministic
+builtin as deterministic in closure position. See
 `examples/fail_strictdet_nondet_builtin_closure.metta`.
 
 **Argument-aware verdicts.** A (name, arity) table has to give one worst-case
@@ -497,10 +496,10 @@ only `manifest_proper_list`, never `manifest_nonempty_list`.
 `examples/strictdet_collapse_proper_list.metta` pins the certificate (and its
 transitivity within a file) and `examples/fail_strictdet_collapse_proper_list.metta`
 pins the boundary where one non-certifying clause withdraws it. Invalidation is
-the documented late-knowledge exposure: a late clause of a certified `F`
-re-derives the certificate (and clears it in `recompile_function_clauses` /
-`forget_symbol_types`), but a consumer already compiled against it is not
-recompiled.
+transitive for runtime clause changes: a late clause of a certified `F`
+clears the certificate memo and recompiles recorded callers, while
+`recompile_function_clauses` / `forget_symbol_types` also clear the local
+certificate state.
 
 **Boundness enforcement at a committed boundary, need-based.** The paragraph
 above says a *declared* type never qualifies, because "typed" does not imply
@@ -522,9 +521,8 @@ its parameter's boundness) — where the same call used to enumerate a finite ty
 through `bool/1` or crash downstream inside a builtin's `=..`. The consumed
 positions are unioned across the function's clauses, so a parameter any clause
 relies on is checked in every clause — a sound superset, since an extra `nonvar`
-check is never wrong. Enforcement is **mode-independent**: it keys on the
-explicit arrow, not on `--strict-det`, because only the explicit arrow is an
-every-mode commitment.
+check is never wrong. Explicit `-[det]->`/`-[semidet]->` enforcement is
+**mode-independent**; plain arrows remain uncommitted where they are legal.
 
 Because "typed implies bound" now holds for those parameters, five call-site
 verdicts that a bare declared type could not earn become sound when the
@@ -562,8 +560,8 @@ rejects (`examples/fail_det_isvar_unenforced_bool.metta`).
 
 **A determinism commitment is never deferred to a runtime check.** Nothing a
 runtime type check can inspect tells a det function from a nondet one, so
-where a `-[det]->`/`-[semidet]->` (or, under `--strict-det`, a plain `->`)
-closure is required and the compiler could not *prove* the value fits, it
+where a `-[det]->`/`-[semidet]->` closure is required and the compiler could
+not *prove* the value fits, it
 rejects at compile time rather than emitting a guard that cannot decide it —
 the same reason a conflicting newtype brand rejects instead of guarding. This
 is why an undeclared function whose clauses do not analyse as deterministic
@@ -609,10 +607,8 @@ incompleteness, never a totality guarantee: it can only see the constructors
 declared before it, and it judges a function on the clauses visible in the file
 being loaded. `examples/strictdet_det_exhaustive_limits.metta` pins the
 conservative side; `examples/fail_nonexhaustive_det.metta` and
-`fail_nonexhaustive_ctor.metta` pin the two provable ones. Only an
-explicit `-[det]->` is checked — under `--strict-det` a plain `->` reads as
-deterministic too, but that is a mode-wide default rather than a per-function
-promise of totality.
+`fail_nonexhaustive_ctor.metta` pin the two provable ones. Only an explicit
+`-[det]->` carries and triggers this totality promise.
 
 **Partiality of `once`, `if` and `case`.** Exhaustiveness above is about clause
 *heads*; a clause with a single variable head is exhaustive at that level and
@@ -657,9 +653,9 @@ ever *upgrades* — any leg unproven leaves the `-[semidet]->` verdict standing 
 nothing new is rejected. `examples/strictdet_nonempty_branch.metta` pins the
 upgrade and `examples/fail_strictdet_nonempty_branch_failing_body.metta` pins the
 no-fail-body boundary: a callee whose body calls another `-[semidet]->` function
-keeps the semidet verdict at the narrowed site. The same late-knowledge exposure
-applies — a clause added to the callee later can invalidate the site verdict,
-and the consumer is not recompiled.
+keeps the semidet verdict at the narrowed site. Runtime clause additions and
+removals recompile recorded callers transitively, so a later callee change
+cannot leave this site verdict stale.
 
 **Knowledge that arrives late.** Type declarations are pre-cached per file, so
 within one file order never matters. Across files it does, and two kinds of
@@ -685,16 +681,22 @@ Both share one mechanism, and both are exercised by the multi-file cases in
 things late: nothing is recorded for a program that narrows no union and
 declares no `-[det]->`.
 
-**Strict determinism mode.** `--strict-det` (implies `--strict`) makes a
-plain `->` itself a determinism commitment: every declared function is
-validated as deterministic unless its arrow says `-[nondet]->`. Overlapping
-clause heads, `superpose`/`match` bodies and dynamic `eval` become compile
-errors on `->` functions — in MeTTa every matching clause fires, so each such
-error is either an accidental source of multiple results or a missing
-`-[nondet]->`. Closure parameters carry the same commitment: a
-`(-> $a $b)`-typed parameter may be applied inside a deterministic body,
-a `-[nondet]->` one may not. A clause that commits with `(cut)` may overlap
-with later clauses. See `examples/strictdet_basics.metta`.
+**Strict determinism mode.** `--strict-det` (implies `--strict`) requires every
+arrow in a function declaration to state its effect explicitly:
+`-[det]->`, `-[semidet]->`, or `-[nondet]->`. This requirement is recursive,
+so higher-order parameter and output arrows must be explicit as well. A plain
+`->` is accepted only in default and `--strict` (types-only) modes, where it
+remains uncommitted. The builtin signature file is an internal exception:
+builtin effects come authoritatively from `det_builtins.pl`.
+
+An explicit `-[det]->` function is validated for overlapping clause heads and
+for nondeterministic bodies such as `superpose`, `match`, or dynamic `eval`;
+`-[semidet]->` additionally permits failure, and `-[nondet]->` opts out.
+Closure parameters carry the same explicit commitment. A clause that commits
+with `(cut)` may overlap with later clauses. See
+`examples/strictdet_basics.metta`,
+`examples/fail_strictdet_plain_arrow.metta`, and
+`examples/fail_strictdet_plain_arrow_param.metta`.
 
 **Soundness oracles.** The checker discharges obligations statically and then
 emits nothing — which means a wrong certification leaves no trace at run time.

@@ -14,7 +14,7 @@
 (: first-list (-[semidet]-> (List (List Number)) (List Number)))
 (= (first-list (cons $head $_tail)) $head)
 
-(: collect-first-or-empty (-> Number (List Number)))
+(: collect-first-or-empty (-[det]-> Number (List Number)))
 (= (collect-first-or-empty $value)
    (let*
       (($ignored (quote ($value)))

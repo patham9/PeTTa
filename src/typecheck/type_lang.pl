@@ -20,8 +20,8 @@ type_unify(A, B) :- is_union(A), !, A = ['|'|As],
 type_unify(A, B) :- is_union(B), !, B = ['|'|Ms],
                     member(M, Ms), type_unify(A, M), !.
 type_unify(A, B) :- atom(A), !, A == B.
-%Arrows: a det closure fits anywhere, a nondet closure only fits a nondet
-%requirement once --strict-det makes plain -> a determinism commitment:
+%Arrows: a det closure fits anywhere, a nondet closure only fits an
+%uncommitted plain slot or an explicit nondet requirement:
 type_unify(A, B) :- is_arrow_type(A), is_arrow_type(B), !,
                     A = [HA|As], B = [HB|Bs],
                     det_arrow_fits(HA, HB),
@@ -64,16 +64,14 @@ brand_unify(A, B) :- is_union(B), !, B = ['|'|Ms], member(M, Ms), type_unify(A, 
 brand_unify(A, B) :- declared_newtype(A, RA), \+ wildcard_type_t(RA), type_unify(RA, B).
 
 %A closure fits a required arrow when it can produce no MORE results than the
-%requirement allows (det < semidet < nondet). An explicit -[det]->/-[semidet]->
-%requirement is a commitment in every mode, so a nondet closure never fits it;
-%a plain -> claims nothing outside --strict-det, where it becomes det:
+%requirement allows (det < semidet < nondet). A plain requirement is
+%uncommitted; a plain actual is never evidence for an explicit commitment:
 det_arrow_fits(HA, HB) :- arrow_atom_det(HA, LA), arrow_atom_det(HB, LB),
                           det_level_fits(LA, LB).
 
 det_level_fits(_, nondet) :- !.
-det_level_fits(LA, plain) :- !, ( LA == nondet -> \+ strict_det(true) ; true ).
-det_level_fits(LA, LB) :- ( LA == plain -> strict_det(true)
-                          ; LA == det -> true
+det_level_fits(_, plain) :- !.
+det_level_fits(LA, LB) :- ( LA == det -> true
                           ; LA == semidet -> LB == semidet ).
 
 is_union(T) :- nonvar(T), T = [P|_], P == '|'.
@@ -100,10 +98,10 @@ tknown:attr_unify_hook(Cs, Other) :-
 mreq:attr_unify_hook(Rs, Other) :-
     ( var(Other) -> ( get_attr(Other, mreq, R2) -> forall(member(A, Rs),
                                                           forall(member(B, R2), type_compat_soft(A, B))),
-                                                   append(Rs, R2, U),
+                                                   variant_union(Rs, R2, U),
                                                    put_attr(Other, mreq, U)
                                                  ; put_attr(Other, mreq, Rs) )
-                  ; forall(member(R, Rs), \+ value_definitely_mismatch(Other, R)) ).
+                  ; forall(member(R, Rs), typecheck_or_error(Other, R)) ).
 
 variant_member(X, [Y|_]) :- X =@= Y, !.
 variant_member(X, [_|T]) :- variant_member(X, T).

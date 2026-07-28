@@ -5,10 +5,10 @@
 ; returning a closure stays an application and stays excluded
 ; (fail_det_compound_head_apply.metta). From PeTTaChainer's
 ; typechecker_repros/det_min_computed_nonempty.metta.
-(: identity-number (-> Number Number))
+(: identity-number (-[det]-> Number Number))
 (= (identity-number $value) $value)
 
-(: min-computed-three (-> Number Number Number Number))
+(: min-computed-three (-[det]-> Number Number Number Number))
 (= (min-computed-three $a $b $c)
    (min-atom
       ((identity-number $a)

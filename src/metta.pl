@@ -43,8 +43,14 @@ parse(Str, R) :- sread(Str, R).
 '!='(A,B,R) :- (A==B -> R=false ; R=true).
 '='(A,B,R) :-  (A=B -> R=true ; R=false).
 '=?'(A,B,R) :- (\+ \+ A=B -> R=true ; R=false).
-'=alpha'(A,B,R) :- (A =@= B -> R=true ; R=false).
-'=@='(A,B,R) :- (A =@= B -> R=true ; R=false).
+attribute_free_variant(A, B) :-
+    copy_term_nat(A, AC),
+    copy_term_nat(B, BC),
+    AC =@= BC.
+
+'=alpha'(A,B,R) :- copy_term_nat(A, AC), copy_term_nat(B, BC),
+                    (AC =@= BC -> R=true ; R=false).
+'=@='(A,B,R) :- (attribute_free_variant(A, B) -> R=true ; R=false).
 '<='(A,B,R) :- (A =< B -> R=true ; R=false).
 '>='(A,B,R) :- (A >= B -> R=true ; R=false).
 min(A,B,R)  :- R is min(A,B).
@@ -127,7 +133,7 @@ alpha_list_to_set(List, Set) :-
 
 alpha_list_to_set_assoc([], _, []).
 alpha_list_to_set_assoc([H|T], SeenIn, R) :-
-    copy_term(H, HCopy),
+    copy_term_nat(H, HCopy),
     numbervars(HCopy, 0, _),
     term_hash(HCopy, Key),
     ( get_assoc(Key, SeenIn, _) ->
@@ -222,11 +228,11 @@ get_type_candidate(X, T) :- match('&self', [':',X,T], T, _).
 'readln!'(Out) :- read_line_to_string(user_input, Str),
                   sread(Str, Out).
 
-test(A,B,true) :- (A =@= B -> E = '✅' ; E = '❌'),
+test(A,B,true) :- (attribute_free_variant(A, B) -> E = '✅' ; E = '❌'),
                   swrite(A, RA),
                   swrite(B, RB),
                   format("is ~w, should ~w. ~w ~n", [RA, RB, E]),
-                  (A =@= B -> true ; halt(1)).
+                  (attribute_free_variant(A, B) -> true ; halt(1)).
 
 assert(Goal, true) :- ( call(Goal) -> true
                                     ; swrite(Goal, RG),

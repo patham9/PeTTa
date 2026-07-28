@@ -80,7 +80,7 @@ run_oracle_phases() {
         nod=$(echo "$nodout" | grep "should")
         if [ "$norm" != "$nod" ]; then
             echo "[FAIL det] $base: results differ without determinism commits"
-            FAILED=1
+            : > "$TMP_DIR/failed"
         fi
     fi
 

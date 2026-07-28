@@ -50,12 +50,10 @@ det_arrow_head(_, (->)).
 %The arrow head a declared symbol carries when it is used as a VALUE. The
 %builtin table OVERRIDES the declared determinism (table_det_override/4, shared
 %with the direct-call and oracle sites), then det_arrow_head/2 turns the
-%effective determinism into the head atom. lib_builtin_types declares
-%(: or (-> Bool Bool Bool)); plain_arrow_det/1 reads that plain arrow as a det
-%commitment under --strict-det, so without the override the same symbol was det
-%as a closure argument and nondet as a call. An undeclared builtin already got
-%this right, through inferred_arrow_head/3 - the declaration was the only thing
-%hiding the table:
+%effective determinism into the head atom. Without the override, a signature
+%could make the same builtin look different in closure position than it does
+%at a direct call. An undeclared builtin already got this right through
+%inferred_arrow_head/3; the declaration was the only thing hiding the table:
 value_arrow_head(F, N, Det, H) :- table_det_override(F, N, Det, Eff), det_arrow_head(Eff, H).
 
 bound_args_match(B, PTs) :- \+ \+ maplist(arg_soft_ok, B, PTs).
@@ -361,11 +359,8 @@ type_guard(Fun, AV, T, Gs) :- ( nonvar(T), \+ wildcard_type_t(T)
 %rejects rather than guards (brands are erased at runtime, determinism was
 %never there in the first place). Reaching type_guard/4 with such a type means
 %the commitment could not be established statically, so it is rejected here.
-%A plain -> claims nothing unless --strict-det makes it a commitment:
 undecidable_arrow_commitment(T) :- is_arrow_type(T), T = [H|_], arrow_atom_det(H, L),
-                                   ( committed_det(L) -> true
-                                   ; L == plain -> strict_det(true)
-                                   ; fail ).
+                                   committed_det(L).
 
 %Inline the primitive fast path into the compiled goal so hot code only pays a
 %native type test; the reflective check runs only when that test fails:
@@ -398,7 +393,6 @@ runtime_type_ok(V, 'Bool') :- ( V == true ; V == false ), !.
 runtime_type_ok(_, T) :- var(T), !.
 runtime_type_ok(_, T) :- wildcard_type_t(T), !.
 runtime_type_ok(V, T) :- list_type(T, ET), !,
-                         is_list(V),
                          runtime_list_ok(V, ET).
 runtime_type_ok(V, T) :- is_arrow_type(T), !, \+ value_definitely_mismatch(V, T).
 runtime_type_ok(V, T) :- is_union(T), !, T = ['|'|Ms],
@@ -423,8 +417,9 @@ runtime_type_ok(V, T) :- setup_call_cleanup(nb_setval('$in_typecheck', true),
                                             ( 'get-type'(V, T) *-> true ; 'get-metatype'(V, T) ),
                                             nb_setval('$in_typecheck', false)).
 
+runtime_list_ok(V, ET) :- var(V), !, constrain_var_type(V, ['List', ET]).
 runtime_list_ok([], _).
-runtime_list_ok([E|Es], ET) :- ( var(E) -> true ; runtime_type_ok(E, ET) ),
+runtime_list_ok([E|Es], ET) :- ( var(E) -> constrain_var_type(E, ET) ; runtime_type_ok(E, ET) ),
                                runtime_list_ok(Es, ET).
 
 %A constructor application whose unique declaration outputs T (fields still
@@ -437,7 +432,7 @@ nominal_value_ok(V, T) :- is_list(V), V = [Ctor|Fields], atom(Ctor), !,
 nominal_value_ok(V, T) :- atom(V), declared_value_type(V, VT), VT == T.
 
 runtime_tuple_ok([], []).
-runtime_tuple_ok([F|Fs], [T|Ts]) :- ( var(F) -> true ; runtime_type_ok(F, T) ),
+runtime_tuple_ok([F|Fs], [T|Ts]) :- ( var(F) -> constrain_var_type(F, T) ; runtime_type_ok(F, T) ),
                                     runtime_tuple_ok(Fs, Ts).
 
 constrain_var_type(V, T) :- ( get_attr(V, mreq, Rs)

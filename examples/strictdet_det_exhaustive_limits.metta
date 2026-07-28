@@ -37,7 +37,7 @@
 ; Number): the column consumes every declared constructor of Box, and what the
 ; fields do is not its business.
 (: Box Type)
-(: Boxed (-> Number Box))
+(: Boxed (-[det]-> Number Box))
 
 (: unbox (-[det]-> Box Number))
 (= (unbox (Boxed $n)) $n)

@@ -6,7 +6,7 @@
 %certificate relied on. Retracted per function in forget_symbol_types/1
 %(decl_store.pl) and at the top of recompile_function_clauses/1 (translator.pl),
 %so a late declaration re-derives the set from scratch.
-:- dynamic det_bound_proviso/3.   % det_bound_proviso(F, N, Pos)
+:- dynamic det_bound_proviso/4.   % det_bound_proviso(F, N, Pos, nonvar|proper_list)
 
 %Several declarations at one arity are overloads, and the function as a whole
 %can only be trusted with the WEAKEST commitment any of them makes: det and
@@ -109,7 +109,7 @@ det_enforced_now :- det_enforced_fn(_, _).
 %the gate is not raised (value false):
 det_enforced_fn(F, N) :- catch(b_getval('$det_enforced', E), _, fail), E = enforced(F, N).
 
-%A DIRECT parameter of a function under an explicit committed arrow: the
+%A DIRECT parameter of a function under an active committed arrow: the
 %boundary check guarantees it is bound at runtime, so - unlike an arbitrary
 %typed argument, which may arrive unbound out of ordinary well-typed code - the
 %strengthenings below may treat it as bound. A destructured FIELD is not a
@@ -117,7 +117,7 @@ det_enforced_fn(F, N) :- catch(b_getval('$det_enforced', E), _, fail), E = enfor
 %
 %Succeeding here is the determinism proof CONSUMING this parameter's boundness:
 %the certificate about to be issued relies on it, so record the consumption as a
-%det_bound_proviso(F, N, Pos) fact (Pos its 1-based head position). That per-
+%det_bound_proviso(F, N, Pos, Kind) fact (Pos its 1-based head position). That per-
 %function union is exactly the set of parameters det_boundness_checks/3 will
 %guard - the check emitted is then precisely the proviso the proof relied on, and
 %a pure constructor that consumes no boundness gets no check. The record is an
@@ -125,21 +125,32 @@ det_enforced_fn(F, N) :- catch(b_getval('$det_enforced', E), _, fail), E = enfor
 %analysis branch leaves its proviso behind, which only ever adds an extra runtime
 %check (over-consumption), never removes a needed one - the sound direction.
 enforced_bound_param(V) :- det_direct_param(V), det_enforced_fn(F, N),
-                           ignore(record_bound_consumed(F, N, V)).
+                           ignore(record_bound_consumed(F, N, V, nonvar)).
+
+%A list-enumerating builtin needs more than the generic boundness promise:
+%a partial list still enumerates its tail. Record the stronger proper-list
+%boundary proviso when its list input is a direct committed parameter.
+enforced_proper_list_param(V) :- det_direct_param(V), det_enforced_fn(F, N),
+                                 ignore(record_bound_consumed(F, N, V, proper_list)).
 
 %Locate V's 1-based position among the published head Args (by identity - V is a
 %direct param, so it is a spine element of Args) and union it into the proviso
 %set for (F, N). ignore/1 above keeps a failure to locate (an unexpected scope
 %shape) from unravelling the strengthening: the boundness fact is still true.
-record_bound_consumed(F, N, V) :- b_getval('$det_head_scope', scope(_, _, Args)),
-                                  nth1(Pos, Args, A), A == V, !,
-                                  ( det_bound_proviso(F, N, Pos) -> true
-                                  ; assertz(det_bound_proviso(F, N, Pos)) ).
+record_bound_consumed(F, N, V, Kind) :- b_getval('$det_head_scope', scope(_, _, Args)),
+                                        nth1(Pos, Args, A), A == V, !,
+                                        ( det_bound_proviso(F, N, Pos, Kind) -> true
+                                        ; assertz(det_bound_proviso(F, N, Pos, Kind)) ).
 
 %Whether the function whose body is about to be analysed carries an explicit
 %committed arrow, as the gate value the enforcement publishes (enforced(F, N)
 %carries the identity a consumption is recorded against):
-det_enforced_flag(F, N, Flag) :- ( explicit_committed_decl(F, N, _) -> Flag = enforced(F, N) ; Flag = false ).
+det_enforced_flag(F, N, Flag) :- ( boundary_commitment(F, N, _) -> Flag = enforced(F, N)
+                                                               ; Flag = false ).
+
+%Only explicit commitments are enforced. Plain arrows are uncommitted in the
+%modes that accept them and are rejected at declaration time by --strict-det.
+boundary_commitment(F, N, Det) :- explicit_committed_decl(F, N, Det).
 
 %A det body must neither branch nor fail; a semidet body is the same analysis
 %minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are
@@ -173,4 +184,3 @@ body_commits(E) :- nonvar(E),
 
 clause_heads_overlap(ArgsA, ArgsB) :- copy_term((ArgsA, ArgsB), (CA, CB)),
                                       unifiable(CA, CB, _).
-

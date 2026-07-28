@@ -1,3 +1,5 @@
+:- dynamic translated_from/2.
+
 %Pattern matching, structural and functional/relational constraints on arguments:
 constrain_args(X, X, []) :- (var(X); atomic(X)), !.
 constrain_args([F, A, B], Out, Goals) :- nonvar(F),
@@ -101,9 +103,9 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                append([DetChecks, GoalsPrefix, Commit, FinalGoals, OutChecks], Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
-%%% -[det]->/-[semidet]-> BOUNDNESS enforcement, NEED-BASED. An explicit
-%%% committed arrow is an every-mode promise (only the explicit arrow, never a
-%%% plain -> even under --strict-det - see the branch doctrine). A parameter is
+%%% Committed-arrow BOUNDNESS enforcement, NEED-BASED. Explicit det/semidet
+%%% arrows are every-mode promises; a plain arrow participates while
+%%% --strict-det makes it a commitment. A parameter is
 %%% checked nonvar on entry ONLY when the clause-set's determinism proof actually
 %%% CONSUMED its boundness - i.e. enforced_bound_param/1 succeeded on it during a
 %%% call-site strengthening (manifest_bool, enforced_bound_nominal,
@@ -113,7 +115,8 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
 %%% boundness, and gets NO check. Where a check IS emitted it throws a clear error
 %%% where the code previously enumerated a finite type or crashed in a builtin.
 %%%
-%%% The consumed positions are the per-function UNION det_bound_proviso(F,N,Pos),
+%%% The consumed positions are the per-function UNION
+%%% det_bound_proviso(F,N,Pos,Kind),
 %%% populated by validation (validate_function_determinism, run just before this).
 %%% A param consumed by ANY clause is checked in EVERY clause of the function -
 %%% a sound superset of the strict per-clause need (an extra check never unsound).
@@ -135,21 +138,25 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
 %guard shares the actual head-argument variable - collecting the goals through
 %findall would copy that variable and guard a disconnected fresh one instead.
 det_boundness_checks(F, Args, Checks) :-
-    ( length(Args, N), explicit_committed_decl(F, N, Det)
-      -> findall(Pos, det_bound_proviso(F, N, Pos), Ps0),
+    ( length(Args, N), boundary_commitment(F, N, Det)
+      -> findall(Pos, det_bound_proviso(F, N, Pos, _), Ps0),
          sort(Ps0, Ps),
-         det_pos_checks(Ps, F, Det, Args, Checks)
+         det_pos_checks(Ps, F, N, Det, Args, Checks)
        ; Checks = [] ).
 
-det_pos_checks([], _, _, _, []).
-det_pos_checks([Pos|Ps], F, Det, Args, Checks) :-
+det_pos_checks([], _, _, _, _, []).
+det_pos_checks([Pos|Ps], F, N, Det, Args, Checks) :-
     nth1(Pos, Args, A),
-    ( var(A) -> det_param_check(F, Det, A, Chk), Checks = [Chk|Rest]
+    ( var(A) -> det_param_check(F, N, Pos, Det, A, Chk), Checks = [Chk|Rest]
               ; Checks = Rest ),
-    det_pos_checks(Ps, F, Det, Args, Rest).
+    det_pos_checks(Ps, F, N, Det, Args, Rest).
 
-det_param_check(F, Det, A, ( nonvar(A) -> true
-                           ; throw(error(unbound_det_argument(F, Det), determinism)) )).
+det_param_check(F, N, Pos, Det, A, Check) :-
+    ( det_bound_proviso(F, N, Pos, proper_list)
+      -> Check = ( is_list(A) -> true
+                 ; throw(error(det_argument_not_proper_list(F, Det), determinism)) )
+    ; Check = ( nonvar(A) -> true
+              ; throw(error(unbound_det_argument(F, Det), determinism)) ) ).
 
 clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
@@ -191,7 +198,8 @@ recompile_clause(Ref, Term) :- ( clause(_, _, Ref)
                                   ; true ).
 
 drop_stale_fun_meta(G, Body) :- catch(nb_getval(G, Metas), _, fail),
-                                select(fun_meta(_, B), Metas, Rest), B =@= Body, !,
+                                select(fun_meta(_, B), Metas, Rest),
+                                attribute_free_variant(B, Body), !,
                                 nb_setval(G, Rest).
 drop_stale_fun_meta(_, _).
 
@@ -218,7 +226,7 @@ drop_stale_fun_meta(_, _).
 %%% arrived first - which is the whole point: enforced, or rejected.
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
                                  ( Us == [] -> true
-                                 ; retractall(det_bound_proviso(F, _, _)),  %re-derive the boundness union from scratch
+                                 ; retractall(det_bound_proviso(F, _, _, _)),  %re-derive the boundness union from scratch
                                    reset_output_certs(F),  %withdraw the output certificates for re-derivation
                                    nb_setval(F, []),
                                    forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
@@ -230,6 +238,56 @@ function_source_clauses(F, Us) :- findall(Ref-Term,
                                             Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F,
                                             clause(_, _, Ref) ),
                                           Us).
+
+%%% A runtime clause change invalidates transitive determinism proofs already
+%%% baked into callers. Walk recorded source terms to find named call sites,
+%%% recompile each caller with the changed callee visible, and continue only
+%%% when the caller's compiled form actually changed. The visited set breaks
+%%% recursion; recompile_function_clauses/1 supplies validation, cache reset,
+%%% and specialization invalidation. Errors deliberately propagate exactly as
+%%% they would during a fresh compilation.
+metta_on_function_changed(F) :- recompile_changed_callers([F], F).
+
+recompile_changed_callers(_, F) :-
+    direct_compiled_callers(F, Callers),
+    Callers == [], !.
+recompile_changed_callers(Visited, F) :-
+    direct_compiled_callers(F, Callers),
+    recompile_changed_caller_list(Callers, Visited).
+
+recompile_changed_caller_list([], _).
+recompile_changed_caller_list([G|Gs], Visited) :-
+    ( memberchk(G, Visited)
+      -> Visited1 = Visited
+    ; compiled_function_snapshot(G, Before),
+      recompile_function_clauses(G),
+      compiled_function_snapshot(G, After),
+      ( attribute_free_variant(Before, After)
+        -> Visited1 = [G|Visited]
+      ; recompile_changed_callers([G|Visited], G),
+        Visited1 = [G|Visited] ) ),
+    recompile_changed_caller_list(Gs, Visited1).
+
+direct_compiled_callers(F, Callers) :-
+    findall(G,
+            ( translated_from(Ref, Term), clause(_, _, Ref),
+              Term = [=, Head, Body], nonvar(Head), Head = [G|_],
+              G \== F, source_calls_named(Body, F) ),
+            Gs0),
+    sort(Gs0, Callers).
+
+source_calls_named(E, F) :-
+    nonvar(E), is_list(E), E = [H|Args],
+    ( atom(H), H == F
+    ; member(A, Args), source_calls_named(A, F) ).
+
+compiled_function_snapshot(F, Snapshot) :-
+    findall((H :- B),
+            ( translated_from(Ref, Term), clause(H, B, Ref),
+              Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F ),
+            Clauses),
+    copy_term_nat(Clauses, Snapshot),
+    numbervars(Snapshot, 0, _, [singletons(true)]).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.
@@ -1286,9 +1344,9 @@ translate_args([X|Xs], Goals, [V|Vs]) :- translate_expr(X, G1, V),
 foldall_out_type(AFV, Init, Out) :- ( atom(AFV),
                                       findall(OT, ( fn_decl_arity(AFV, 2, _, OT)
                                                   ; inferred_decl_arity(AFV, 2, _, OT) ), [OT1]),
-                                      ( var(Init) -> ( known_singleton(Init, IT) -> \+ \+ type_unify(IT, OT1) ; true )
-                                      ; value_single_type(Init, IT) -> \+ \+ type_unify(IT, OT1)
-                                      ; true )
+                                      ( var(Init) -> known_singleton(Init, IT)
+                                      ; value_single_type(Init, IT) ),
+                                      \+ \+ type_unify(IT, OT1)
                                       -> set_out_type(Out, OT1)
                                        ; true ).
 

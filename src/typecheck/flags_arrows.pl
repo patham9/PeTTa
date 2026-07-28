@@ -61,15 +61,13 @@ warn_residual_check(Ctx, T) :- ( warn_runtime_checks(true)
                                   ; true ).
 
 %%% Arrow shapes: prefix, like every MeTTa form - (-> A B), (-[det]-> A B),
-%%% (-[semidet]-> A B), (-[nondet]-> A B). Under --strict-det a plain -> is a
-%%% determinism commitment: functions are deterministic unless declared
-%%% -[nondet]->.
+%%% (-[semidet]-> A B), (-[nondet]-> A B). A plain -> carries no determinism
+%%% commitment. Under --strict-det it is rejected in declarations, including
+%%% nested higher-order positions, so only the three explicit levels remain.
 %%% Cardinality is a total order: det (exactly one) < semidet (zero or one)
 %%% < nondet (any). semidet commits exactly like det - it only adds the right
 %%% to fail - so it keeps the clause-entry cut and last-call optimization.
-plain_arrow_det(Det) :- ( strict_det(true) -> Det = det ; Det = unspecified ).
-
-arrow_det('->', Det) :- plain_arrow_det(Det).
+arrow_det('->', unspecified).
 arrow_det('-[det]->', det).
 arrow_det('-[deterministic]->', det).
 arrow_det('-[semidet]->', semidet).
@@ -81,9 +79,9 @@ arrow_det('-[nondeterministic]->', nondet).
 %%% canonical_arrow/2 produces) and the determinism each commits to. Every
 %%% site that used to spell out ('->' ; '-[det]->' ; '-[nondet]->') goes
 %%% through this - adding an arrow means adding a clause here, arrow_det/2 and
-%%% canonical_arrow/2, and nowhere else. `plain` is the mode-dependent -> (see
-%%% plain_arrow_det/1); it is deliberately NOT the atom det, so a site can ask
-%%% for an explicit commitment without accidentally matching -> :
+%%% canonical_arrow/2, and nowhere else. `plain` is the uncommitted ->; it is
+%%% deliberately NOT a determinism level, so a site can ask for an explicit
+%%% commitment without accidentally matching -> :
 arrow_atom_det('->', plain).
 arrow_atom_det('-[det]->', det).
 arrow_atom_det('-[semidet]->', semidet).

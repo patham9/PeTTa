@@ -9,7 +9,7 @@
 ; extend-maybe's -[det]-> promise is rejected. The two heads are non-overlapping
 ; (True vs False), so the rejection is the certificate boundary, not overlap.
 
-(: maybe-collect (-> Bool (List Number) (List Number)))
+(: maybe-collect (-[det]-> Bool (List Number) (List Number)))
 (= (maybe-collect True $fallback) (collapse 1))
 (= (maybe-collect False $fallback) $fallback)
 
