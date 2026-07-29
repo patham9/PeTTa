@@ -13,7 +13,7 @@
 %semidet both commit (semidet is the weaker of the two), while a nondet or an
 %uncommitted plain -> overload leaves the whole function uncommitted. A
 %det/nondet (or semidet/nondet) pair is a contradiction, not a weakening:
-fn_determinism(F, N, Det) :- findall(D, ( declared_fn_type(F, ATs, _, D), length(ATs, N) ), Ds0),
+fn_determinism(F, N, Det) :- findall(D, fn_decl_top_effect(F, N, D), Ds0),
                              sort(Ds0, Ds),
                              ( Ds == [] -> Det = unspecified
                              ; Ds = [D1] -> Det = D1
@@ -21,7 +21,19 @@ fn_determinism(F, N, Det) :- findall(D, ( declared_fn_type(F, ATs, _, D), length
                              ; Ds == [det, unspecified] -> Det = unspecified
                              ; Ds == [semidet, unspecified] -> Det = unspecified
                              ; Ds == [nondet, unspecified] -> Det = nondet
-                             ; throw(error(conflicting_determinism_declarations(F), determinism)) ).
+                             ; fn_decl_locations(F, N, Locations),
+                               throw(error(conflicting_determinism_declarations(F, Locations),
+                                           determinism)) ).
+
+fn_decl_top_effect(F, N, Det) :-
+    fn_decl(F, N, _, Effect, _, _),
+    effect_model_det(Effect, Det).
+
+fn_decl_locations(F, N, Locations) :-
+    findall(Location,
+            fn_decl(F, N, _, _, _, provenance(Location, _)),
+            Locations0),
+    sort(Locations0, Locations).
 
 validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
     length(Args, N),

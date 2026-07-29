@@ -6,7 +6,6 @@
 %   mreq   - runtime type constraints placed on still-unbound values by guards
 % Static errors are thrown during translation (never emitted and re-scanned).
 
-:- dynamic declared_fn_type/4.     % declared_fn_type(F, ArgTypes, OutType, Det)
 :- dynamic declared_value_type/2.  % declared_value_type(Name, Type)
 :- dynamic declared_newtype/2.     % declared_newtype(Name, Representation) - erased nominal types
 :- dynamic declared_type_alias/2.  % declared_type_alias(Name, Representation) - erased structural names

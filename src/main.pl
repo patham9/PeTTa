@@ -14,6 +14,8 @@ prolog:error_message(determinism_conflict(Fun, Reason)) -->
     [ 'Determinism check failed for ~p: ~p'-[Fun, Reason] ].
 prolog:error_message(conflicting_determinism_declarations(Fun)) -->
     [ 'Conflicting determinism declarations for ~p'-[Fun] ].
+prolog:error_message(conflicting_determinism_declarations(Fun, Locations)) -->
+    [ 'Conflicting determinism declarations for ~p at ~p'-[Fun, Locations] ].
 prolog:error_message(det_nonexhaustive(Fun, Pos, Missing)) -->
     { missing_case_text(Missing, Txt) },
     [ 'Deterministic function ~p is not exhaustive: argument ~w matches no clause for ~w - cover the remaining cases, or declare it -[semidet]-> (zero or one result, committed exactly like -[det]->)'-[Fun, Pos, Txt] ].

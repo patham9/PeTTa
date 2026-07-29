@@ -26,18 +26,16 @@
 %branches, but the determinism walker sees only F/Arity and cannot soundly
 %choose one of several effect equations.
 effect_poly_decl(F, N, Name, ATs, Positions) :-
-    findall(decl(As, O, D),
-            ( declared_fn_type(F, As, O, D), length(As, N) ),
-            [decl(ATs, _, effect(Name))]),
-    effect_var_positions(ATs, Name, Positions),
+    findall(decl(As, Effect),
+            fn_decl_copy(F, N, scheme(As, _), Effect, _, _),
+            [decl(ATs,
+                  effect_model(variable(Name),
+                               [effect_var(Name, StoredPositions)]))]),
+    maplist(stored_effect_position(Name), StoredPositions, Positions),
     Positions \== [].
 
-effect_var_positions(ATs, Name, Positions) :-
-    findall(pos(Idx, M, H),
-            ( nth0(Idx, ATs, T), is_arrow_type(T),
-              T = [H|Rest], arrow_atom_det(H, effect(Name)),
-              length(Rest, Len), M is Len - 1 ),
-            Positions).
+stored_effect_position(Name, closure_arg(Idx, M), pos(Idx, M, Arrow)) :-
+    effect_arrow_atom(Arrow, Name).
 
 %The declaration's intrinsic effect: analyze copied clause metadata with only
 %the $v closure slots assumed det. An unproved body remains unspecified rather

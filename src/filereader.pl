@@ -68,20 +68,29 @@ parse_form(form(S, L), parsed(T, S, L, Term)) :- sread(S, Term),
                                                                                   ; T=expression ).
 parse_form(runnable(S, L), parsed(runnable, S, L, Term)) :- sread(S, Term).
 
-%Report where a static type/determinism error was raised before rethrowing it:
-with_form_location(Line, FormStr, Goal) :- catch(Goal, error(E, Ctx),
-                                                 ( ( nonvar(Ctx), static_error_ctx(Ctx)
-                                                     -> current_metta_file(File),
-                                                        format(user_error, "Type error at ~w:~w in:~n  ~w~n",
-                                                               [File, Line, FormStr])
-                                                      ; true ),
-                                                   throw(error(E, Ctx)) )).
+%Report where a static type/determinism error was raised before rethrowing it,
+%and publish the same source location while declaration caching runs so the
+%canonical declaration record retains its provenance.
+with_form_location(Line, FormStr, Goal) :-
+    current_metta_file(File),
+    setup_call_cleanup(
+        asserta(declaration_provenance(source(File, Line)), Ref),
+        catch(Goal, error(E, Ctx),
+              ( ( nonvar(Ctx), static_error_ctx(Ctx)
+                  -> format(user_error, "Type error at ~w:~w in:~n  ~w~n",
+                            [File, Line, FormStr])
+                ; true ),
+                throw(error(E, Ctx)) )),
+        erase(Ref)).
 
 static_error_ctx(typecheck).
 static_error_ctx(determinism).
 
 %Second pass to compile / run / add the Terms:
-process_form(Space, parsed(expression, _, _, Term), []) :- 'add-atom'(Space, Term, true),
+process_form(Space, parsed(expression, FormStr, Line, Term), []) :-
+                                                           with_form_location(
+                                                               Line, FormStr,
+                                                               'add-atom'(Space, Term, true)),
                                                            ( silent(true) -> true ; swrite(Term,STerm),
                                                                                     format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
                                                                                     format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
