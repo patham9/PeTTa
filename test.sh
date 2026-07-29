@@ -137,6 +137,17 @@ if [ $status -eq 0 ]; then
     fi
 fi
 
+if [ $status -eq 0 ]; then
+    echo ""
+    echo "Running examples/builtin_registry_matrix.sh"
+    if sh examples/builtin_registry_matrix.sh; then
+        echo "OK: builtin_registry_matrix.sh"
+    else
+        echo "FAILURE in builtin_registry_matrix.sh"
+        status=1
+    fi
+fi
+
 # Soundness oracles (2 extra runs per example; skip with SKIP_SOUNDNESS=1):
 if [ $status -eq 0 ] && [ "${SKIP_SOUNDNESS:-0}" != "1" ]; then
     echo ""

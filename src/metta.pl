@@ -372,3 +372,7 @@ register_fun(N) :- assertz(fun(N)),
                           'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, exists_file, 'library-import!',
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate,
                           'add-translator-rule!', 'remove-translator-rule!', argv]).
+
+%Fail startup immediately when any of the independently implemented builtin
+%views drifts from the declarative registry.
+:- validate_builtin_registry.

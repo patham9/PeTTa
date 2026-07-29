@@ -16,6 +16,23 @@ call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Ar
 call_site_determinism(F, N, Args, Det) :- effect_poly_call_determinism(F, N, Args, Det), !.
 call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
 
+%The registry owns WHICH builtins have argument-sensitive cardinality. This
+%file owns only the irreducibly procedural meaning of each named rule.
+builtin_call_determinism_args(F, N, Args, Det) :-
+    builtin_argument_rule(F, N, Rule),
+    builtin_argument_rule_verdict(Rule, F, Args, Det).
+
+builtin_argument_rule_defined(proper_list_arg0).
+builtin_argument_rule_defined(proper_list_arg1).
+builtin_argument_rule_defined(nonempty_list_arg0).
+builtin_argument_rule_defined(manifest_indexed_list).
+builtin_argument_rule_defined(space_update).
+builtin_argument_rule_defined(manifest_foreign_goal).
+builtin_argument_rule_defined(bound_membership_probe).
+builtin_argument_rule_defined(manifest_booleans).
+
+builtin_conditional_rule_defined(higher_order_list).
+
 %%% FEATURE 1 - flow-sensitive nonemptiness upgrade %%%
 %
 %A -[semidet]-> USER-function call is det AT A NARROWED SITE. semidet means AT
@@ -80,28 +97,23 @@ nonempty_narrowing_var([Eq, A, B], V) :- Eq == '==',
 %--- Strengthened by a manifest list SPINE.
 %length/2, reverse/2, append/3 and friends invert over an open list; over a
 %proper one they answer exactly once. The properness is read off the source.
-builtin_call_determinism_args('size-atom', 1, [A], det) :- manifest_proper_list(A).
-builtin_call_determinism_args(length, 1, [A], det) :- manifest_proper_list(A).
-builtin_call_determinism_args(reverse, 1, [A], det) :- manifest_proper_list(A).
-builtin_call_determinism_args('alpha-unique-atom', 1, [A], det) :- manifest_proper_list(A).
+builtin_argument_rule_verdict(proper_list_arg0, _, [A], det) :-
+    manifest_proper_list(A).
 %append/3 and its aliases only need their FIRST list proper: the recursion is
 %driven by it and the second operand is copied through untouched.
-builtin_call_determinism_args('union-atom', 2, [A, _], det) :- manifest_proper_list(A).
-builtin_call_determinism_args(append, 2, [A, _], det) :- manifest_proper_list(A).
-%The multiset operations recurse on their first argument and commit to
-%select/3's first solution with -> ; the second operand's shape is irrelevant.
-builtin_call_determinism_args('subtraction-atom', 2, [A, _], det) :- manifest_proper_list(A).
-builtin_call_determinism_args('intersection-atom', 2, [A, _], det) :- manifest_proper_list(A).
+builtin_argument_rule_verdict(proper_list_arg0, _, [A, _], det) :-
+    manifest_proper_list(A).
 %exclude/3 walks its LIST argument, which is the second one here.
-builtin_call_determinism_args('exclude-item', 2, [_, L], det) :- manifest_proper_list(L).
+builtin_argument_rule_verdict(proper_list_arg1, _, [_, L], det) :-
+    manifest_proper_list(L).
 %last/2 and min/max_list/2 need the list NON-empty as well: they have no
 %answer for (), and min-atom's non_list/1 guard does not catch it.
-builtin_call_determinism_args(last, 1, [A], det) :- manifest_nonempty_list(A).
-builtin_call_determinism_args('min-atom', 1, [A], det) :- manifest_nonempty_list(A).
-builtin_call_determinism_args('max-atom', 1, [A], det) :- manifest_nonempty_list(A).
+builtin_argument_rule_verdict(nonempty_list_arg0, _, [A], det) :-
+    manifest_nonempty_list(A).
 %nth0/3 enumerates only when the index is unbound; with a literal index it is
 %semidet (out of range fails, and the range is not manifest).
-builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), manifest_proper_list(A).
+builtin_argument_rule_verdict(manifest_indexed_list, _, [A, I], semidet) :-
+    integer(I), manifest_proper_list(A).
 
 %--- Strengthened by a manifest expression ARGUMENT.
 %'add-atom'/3 and 'remove-atom'/3 (src/spaces.pl) are keyed semidet because
@@ -113,8 +125,8 @@ builtin_call_determinism_args('index-atom', 2, [A, I], semidet) :- integer(I), m
 %[=,_,_]) is equally det - so exactly one clause commits: the call is det.
 %A DECLARED type never qualifies (see manifest_proper_list's note); only a
 %literal spine built at the call site does.
-builtin_call_determinism_args('add-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
-builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- manifest_nonempty_list(T).
+builtin_argument_rule_verdict(space_update, _, [_, T], det) :-
+    manifest_nonempty_list(T).
 %--- callPredicate: argument-sensitive via DECLARED foreign promises.
 %callPredicate calls an arbitrary Prolog goal and stays nondet by default.
 %But when the goal is built in place - (callPredicate (Predicate (g A1..An)))
@@ -126,7 +138,7 @@ builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- manifest_nonempt
 %erase/1; user code declares its own the same way). Not audited by
 %--oracle-det, which wraps registered functions, not inner Prolog goals -
 %the promise is the author's, as every foreign claim here is.
-builtin_call_determinism_args(callPredicate, 1, [Arg], Det) :-
+builtin_argument_rule_verdict(manifest_foreign_goal, _, [Arg], Det) :-
     nonvar(Arg), Arg = [P, Goal], P == 'Predicate',
     nonvar(Goal), Goal = [G|GArgs], atom(G), is_list(GArgs),
     length(GArgs, N),
@@ -138,8 +150,8 @@ builtin_call_determinism_args(callPredicate, 1, [Arg], Det) :-
 %once. The boundary check supplies the one fact the manifest-literal entries got
 %from the source - that the argument is bound - which is why this is sound now
 %and was not when the argument could arrive unbound out of well-typed code.
-builtin_call_determinism_args('add-atom', 2, [_, T], det) :- enforced_bound_nominal(T).
-builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- enforced_bound_nominal(T).
+builtin_argument_rule_verdict(space_update, _, [_, T], det) :-
+    enforced_bound_nominal(T).
 
 %--- Strengthened by a bound probe against a ground, duplicate-free literal.
 %is-member(X, L) is member(X, L) ; \+ member(X, L) - two mutually exclusive
@@ -149,7 +161,7 @@ builtin_call_determinism_args('remove-atom', 2, [_, T], det) :- enforced_bound_n
 %det. A duplicate in L would let clause one succeed twice, and an unbound X
 %would let it enumerate - hence both conditions. The runtime predicate is left
 %untouched: its generator mode is load-bearing (examples/functionhead3.metta).
-builtin_call_determinism_args('is-member', 2, [Probe, L], det) :-
+builtin_argument_rule_verdict(bound_membership_probe, _, [Probe, L], det) :-
     is_member_probe_bound(Probe),
     manifest_ground_dupfree_list(L).
 
@@ -157,11 +169,8 @@ builtin_call_determinism_args('is-member', 2, [Probe, L], det) :-
 %and/2, or/2, not/1, xor/2 and implies/2 are nondet because bool/1 INVENTS a
 %boolean it was not given. Where every operand is manifestly one already, that
 %generator is a test and the if-then-else below it yields exactly one answer.
-builtin_call_determinism_args(and, 2, Args, det) :- maplist(manifest_bool, Args).
-builtin_call_determinism_args(or, 2, Args, det) :- maplist(manifest_bool, Args).
-builtin_call_determinism_args(xor, 2, Args, det) :- maplist(manifest_bool, Args).
-builtin_call_determinism_args(implies, 2, Args, det) :- maplist(manifest_bool, Args).
-builtin_call_determinism_args(not, 1, Args, det) :- maplist(manifest_bool, Args).
+builtin_argument_rule_verdict(manifest_booleans, _, Args, det) :-
+    maplist(manifest_bool, Args).
 
 %A source expression whose head is DATA rather than a function being applied.
 %For a variable head this is the translator's own test (nonfunction_type/1 at

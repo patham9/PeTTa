@@ -15,6 +15,7 @@
 :- include('typecheck/oracles.pl').        %--oracle-det cardinality oracle
 :- include('typecheck/inference.pl').      %param promises, local inference for undeclared fns
 :- include('typecheck/det_validate.pl').   %committed-arrow validation, boundness enforcement
+:- include('typecheck/builtin_registry.pl'). %one declarative builtin metadata registry
 :- include('typecheck/det_builtins.pl').   %the builtin determinism table, read off the sources
 :- include('typecheck/det_args.pl').       %argument-aware verdicts, manifest shapes, HO closures
 :- include('typecheck/det_analysis.pl').   %body analysis: lattice, case coverage, exhaustiveness

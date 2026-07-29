@@ -580,6 +580,48 @@ pattern_value_shape([C, V, _Ty], V) :- C == (:), !.
 pattern_value_shape(P, Shape) :- is_list(P), !, maplist(pattern_value_shape, P, Shape).
 pattern_value_shape(P, P).
 
+%The registry owns the mapping from builtin/arity to these procedural lowering
+%hooks. Keeping this explicit list beside the implementations lets its
+%load-time validator reject a misspelled or removed hook.
+builtin_codegen_rule_defined(and_then).
+builtin_codegen_rule_defined(arithmetic_native).
+builtin_codegen_rule_defined(brand).
+builtin_codegen_rule_defined(case).
+builtin_codegen_rule_defined(catch).
+builtin_codegen_rule_defined(collapse_all).
+builtin_codegen_rule_defined(cut).
+builtin_codegen_rule_defined(dynamic_reduce).
+builtin_codegen_rule_defined(eval_source).
+builtin_codegen_rule_defined(explicit_data).
+builtin_codegen_rule_defined(explicit_list).
+builtin_codegen_rule_defined(filter_pseudo_lambda).
+builtin_codegen_rule_defined(foldall).
+builtin_codegen_rule_defined(foldl_pseudo_lambda).
+builtin_codegen_rule_defined(forall).
+builtin_codegen_rule_defined(hyperpose).
+builtin_codegen_rule_defined(if_then).
+builtin_codegen_rule_defined(if_then_else).
+builtin_codegen_rule_defined(lambda).
+builtin_codegen_rule_defined(let_bind).
+builtin_codegen_rule_defined(let_star).
+builtin_codegen_rule_defined(manual_call).
+builtin_codegen_rule_defined(map_pseudo_lambda).
+builtin_codegen_rule_defined(once).
+builtin_codegen_rule_defined(or_else).
+builtin_codegen_rule_defined(progn).
+builtin_codegen_rule_defined(prog1).
+builtin_codegen_rule_defined(quote).
+builtin_codegen_rule_defined(reified_comparison).
+builtin_codegen_rule_defined(sealed).
+builtin_codegen_rule_defined(superpose_literal).
+builtin_codegen_rule_defined(test_collect).
+builtin_codegen_rule_defined(transaction).
+builtin_codegen_rule_defined(translate_predicate).
+builtin_codegen_rule_defined(type_ascription).
+builtin_codegen_rule_defined(typed_space_match).
+builtin_codegen_rule_defined(typed_space_update).
+builtin_codegen_rule_defined(with_mutex).
+
 %Turn MeTTa code S-expression into goals list:
 translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
 translate_expr([H0|T0], Goals, Out) :-
@@ -598,17 +640,21 @@ translate_expr([H0|T0], Goals, Out) :-
         %--- Unambiguous expression-data construction. `data` is erased: its
         %arguments become the fields of the resulting expression, and its
         %first field is never interpreted as a function/closure to call.
-        ; HV == data -> translate_explicit_data(T, none, GsD, Out),
+        ; special_builtin_form(HV, T, explicit_data)
+          -> translate_explicit_data(T, none, GsD, Out),
                         append(GsH, GsD, Goals)
         %--- Explicit runtime-list construction. Like `data`, `make-list`
         %erases and never dispatches its first element as a callable head.
-        ; HV == 'make-list' -> translate_explicit_list(T, none, GsL, Out),
+        ; special_builtin_form(HV, T, explicit_list)
+          -> translate_explicit_list(T, none, GsL, Out),
                                append(GsH, GsL, Goals)
         %--- Non-determinism ---:
-        ; HV == superpose, T = [Args], is_list(Args) -> build_superpose_branches(Args, Out, Branches),
+        ; special_builtin_form(HV, T, superpose_literal),
+          T = [Args], is_list(Args) -> build_superpose_branches(Args, Out, Branches),
                                                         disj_list(Branches, Disj),
                                                         append(GsH, [Disj], Goals)
-        ; HV == collapse, T = [E] -> translate_expr_to_conj(E, Conj, EV),
+        ; special_builtin_form(HV, T, collapse_all), T = [E]
+          -> translate_expr_to_conj(E, Conj, EV),
                                      %always a list; a single element type is carried, several
                                      %become a union (an open variable would later unify with a
                                      %concrete requirement and wrongly certify a mixed list):
@@ -620,9 +666,11 @@ translate_expr([H0|T0], Goals, Out) :-
                                      set_out_type(Out, ['List', ET]),
                                      ( ElemKnown == true -> true ; note_unknown_candidate(Out) ),
                                      append(GsH, [findall(EV, Conj, Out)], Goals)
-        ; HV == cut, T = [] -> append(GsH, [(!)], Goals),
+        ; special_builtin_form(HV, T, cut), T = []
+          -> append(GsH, [(!)], Goals),
                                Out = true
-        ; HV == test, T = [Expr, Expected] -> translate_expr_to_conj(Expr, Conj, Val),
+        ; special_builtin_form(HV, T, test_collect), T = [Expr, Expected]
+          -> translate_expr_to_conj(Expr, Conj, Val),
                                               translate_expr(Expected, GsE, ExpVal),
                                               Goal1 = ( findall(Val, Conj, Results),
                                                         (Results = [Actual] -> true
@@ -630,9 +678,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                               append(GsH, [Goal1], G1),
                                               append(G1, GsE, G2),
                                               append(G2, [test(Actual, ExpVal, Out)], Goals)
-        ; HV == once, T = [X] -> translate_expr_to_conj(X, Conj, Out),
+        ; special_builtin_form(HV, T, once), T = [X]
+          -> translate_expr_to_conj(X, Conj, Out),
                                  append(GsH, [once(Conj)], Goals)
-        ; HV == hyperpose, T = [L]
+        ; special_builtin_form(HV, T, hyperpose), T = [L]
           -> ( nonvar(L), is_list(L)
                -> build_hyperpose_branches(L, Branches),
                   maplist({Out}/[(_,Res)]>>note_candidates(Out, Res), Branches),
@@ -640,27 +689,33 @@ translate_expr([H0|T0], Goals, Out) :-
                ; translate_expr(L, GsL, LV),
                  append(GsH, GsL, Inner),
                  append(Inner, [hyperpose_runtime(LV, Out)], Goals) )
-        ; HV == with_mutex, T = [M,X] -> translate_expr_to_conj(X, Conj, Out),
+        ; special_builtin_form(HV, T, with_mutex), T = [M,X]
+          -> translate_expr_to_conj(X, Conj, Out),
                                          append(GsH, [with_mutex(M,Conj)], Goals)
-        ; HV == transaction, T = [X] -> translate_expr_to_conj(X, Conj, Out),
+        ; special_builtin_form(HV, T, transaction), T = [X]
+          -> translate_expr_to_conj(X, Conj, Out),
                                         append(GsH, [transaction(Conj)], Goals)
         %--- Sequential execution ---:
-        ; HV == progn, T = Exprs -> translate_args(Exprs, GsList, Outs),
+        ; special_builtin_form(HV, T, progn), T = Exprs
+          -> translate_args(Exprs, GsList, Outs),
                                     append(GsH, GsList, Tmp),
                                     last(Outs, Out),
                                     Goals = Tmp
-        ; HV == prog1, T = Exprs -> Exprs = [First|Rest],
+        ; special_builtin_form(HV, T, prog1), T = Exprs
+          -> Exprs = [First|Rest],
                                     translate_expr(First, GsF, Out),
                                     translate_args(Rest, GsRest, _),
                                     append(GsH, GsF, Tmp1),
                                     append(Tmp1, GsRest, Goals)
         %--- Conditionals ---:
-        ; HV == if, T = [Cond, Then] -> translate_if_cond(Cond, ConC, CondGoal),
+        ; special_builtin_form(HV, T, if_then), T = [Cond, Then]
+          -> translate_if_cond(Cond, ConC, CondGoal),
                                         translate_expr_to_conj(Then, ConT, Tv),
                                         build_branch(ConT, Tv, Out, BT),
                                         ( ConC == true -> append(GsH, [ ( CondGoal -> BT ) ], Goals)
                                                         ; append(GsH, [ ( ConC, ( CondGoal -> BT ) ) ], Goals) )
-        ; HV == if, T = [Cond, Then, Else] -> translate_if_cond(Cond, ConC, CondGoal),
+        ; special_builtin_form(HV, T, if_then_else), T = [Cond, Then, Else]
+          -> translate_if_cond(Cond, ConC, CondGoal),
                                               translate_expr_to_conj(Then, ConT, Tv),
                                               translate_expr_to_conj(Else, ConE, Ev),
                                               build_branch(ConT, Tv, Out, BT),
@@ -670,11 +725,13 @@ translate_expr([H0|T0], Goals, Out) :-
         %A case whose arguments do not fit (case Key ((Pattern Value) ...))
         %compiles as a data list - warn, because that is rarely intended and
         %the downstream errors do not mention case at all:
-        ; HV == case, \+ ( T = [_, Ps], is_list(Ps), forall(member(Pr, Ps), (is_list(Pr), length(Pr, 2))) )
+        ; builtin_codegen_symbol(HV, case),
+          \+ ( T = [_, Ps], is_list(Ps), forall(member(Pr, Ps), (is_list(Pr), length(Pr, 2))) )
           -> format(user_error, "Warning: (case ...) does not match (case Key ((Pattern Value) ...)) and compiles as plain data~n", []),
              eval_data_list([HV|T], GsD, Out),
              append(GsH, GsD, Goals)
-        ; HV == case, T = [KeyExpr, PairsExpr] -> ( select(Found0, PairsExpr, Rest0),
+        ; special_builtin_form(HV, T, case), T = [KeyExpr, PairsExpr]
+          -> ( select(Found0, PairsExpr, Rest0),
                                                     subsumes_term(['Empty', _], Found0),
                                                     Found0 = ['Empty', DefaultExpr],
                                                     NormalCases = Rest0
@@ -689,14 +746,16 @@ translate_expr([H0|T0], Goals, Out) :-
                                                        translate_case(PairsExpr, Kv, Out, IfGoal, KeyGoal),
                                                        append([GsH, Gk, KeyGoal, [IfGoal]], Goals) )
         %--- Short-circuit boolean operators ---:
-        ; HV == 'and-then', T = [A, B] -> translate_expr_to_conj(A, ConjA, Av),
+        ; special_builtin_form(HV, T, and_then), T = [A, B]
+          -> translate_expr_to_conj(A, ConjA, Av),
                                            translate_expr_to_conj(B, ConjB, Bv),
                                            check_call_arg(declared, 'and-then', Av, 'Bool', GsA),
                                            check_call_arg(declared, 'and-then', Bv, 'Bool', GsB),
                                            goals_list_to_conj(GsA, GA), goals_list_to_conj(GsB, GB),
                                            set_out_type(Out, 'Bool'),
                                            append(GsH, [(ConjA, GA, (Av == true -> (ConjB, GB, Out = Bv) ; Out = false))], Goals)
-        ; HV == 'or-else', T = [A, B] -> translate_expr_to_conj(A, ConjA, Av),
+        ; special_builtin_form(HV, T, or_else), T = [A, B]
+          -> translate_expr_to_conj(A, ConjA, Av),
                                           translate_expr_to_conj(B, ConjB, Bv),
                                           check_call_arg(declared, 'or-else', Av, 'Bool', GsA),
                                           check_call_arg(declared, 'or-else', Bv, 'Bool', GsB),
@@ -704,19 +763,22 @@ translate_expr([H0|T0], Goals, Out) :-
                                           set_out_type(Out, 'Bool'),
                                           append(GsH, [(ConjA, GA, (Av == true -> Out = true ; (ConjB, GB, Out = Bv)))], Goals)
         %--- Unification constructs ---:
-        ; (HV == let ; HV == chain), T = [Pat, Val, In] -> translate_expr(Pat, Gp, Pv),
+        ; special_builtin_form(HV, T, let_bind), T = [Pat, Val, In]
+          -> translate_expr(Pat, Gp, Pv),
                                                            translate_let_value(Pat, Val, In, Gv, V),
                                                            note_candidates(Pv, V),        %the bound variable gets the value's type
                                                            bind_pattern_from(Pat, V),     %destructuring patterns type their fields
                                                            translate_expr(In,  Gi, Out),
                                                            append([GsH,[(Pv=V)],Gp,Gv,Gi], Goals)
-        ; HV == 'let*', T = [Binds, Body] -> letstar_to_rec_let(Binds,Body,RecLet),
+        ; special_builtin_form(HV, T, let_star), T = [Binds, Body]
+          -> letstar_to_rec_let(Binds,Body,RecLet),
                                              translate_expr(RecLet,  Goals, Out)
-        ; HV == sealed, T = [Vars, Expr] -> translate_expr_to_conj(Expr, Con, Val),
+        ; special_builtin_form(HV, T, sealed), T = [Vars, Expr]
+          -> translate_expr_to_conj(Expr, Con, Val),
                                             note_candidates(Out, Val),
                                             Goals = [copy_term(Vars,[Con,Val],_,[Ncon,Out]),Ncon]
         %--- Iterating over non-deterministic generators without reification ---:
-        ; HV == 'forall', T = [GF, TF]
+        ; special_builtin_form(HV, T, forall), T = [GF, TF]
           -> ( is_list(GF) -> GF = [GFH|GFA],
                               translate_expr(GFH, GsGFH, GFHV),
                               translate_args(GFA, GsGFA, GFAv),
@@ -731,7 +793,7 @@ translate_expr([H0|T0], Goals, Out) :-
              append(GsH, GsTF, Tmp0),
              set_out_type(Out, 'Bool'),
              append(Tmp0, [( forall(GenGoal, ( reduce(TestList, Truth), Truth == true )) -> Out = true ; Out = false )], Goals)
-        ; HV == 'foldall', T = [AF, GF, InitS]
+        ; special_builtin_form(HV, T, foldall), T = [AF, GF, InitS]
           -> translate_expr_to_conj(InitS, ConjInit, Init),
              translate_expr(AF, GsAF, AFV),
              ( GF = [M|_], (M==match ; M==let ; M=='let*') -> LambdaGF = ['|->', [], GF],
@@ -749,7 +811,8 @@ translate_expr([H0|T0], Goals, Out) :-
              foldall_out_type(AFV, Init, Out),
              append(Tmp2, [ConjInit, foldall(agg_reduce(AFV, V), reduce(GenList, V), Init, Out)], Goals)
         %--- Higher-order functions with pseudo-lambdas and lambdas ---:
-        ; HV == 'foldl-atom', T = [List, Init, AccVar, XVar, Body]
+        ; special_builtin_form(HV, T, foldl_pseudo_lambda),
+          T = [List, Init, AccVar, XVar, Body]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Init, ConjInit, InitV),
              note_list_elem_type(XVar, L),
@@ -757,7 +820,8 @@ translate_expr([H0|T0], Goals, Out) :-
              exclude(==(true), [ConjList, ConjInit], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [foldl([XVar, AccVar, NewAcc]>>(BodyConj, ( number(BG) -> NewAcc is BG ; NewAcc = BG )), L, InitV, Out)], Goals)
-        ; HV == 'map-atom', T = [List, XVar, Body]
+        ; special_builtin_form(HV, T, map_pseudo_lambda),
+          T = [List, XVar, Body]
           -> translate_expr_to_conj(List, ConjList, L),
              note_list_elem_type(XVar, L),
              translate_expr_to_conj(Body, BodyCallConj, BodyCall),
@@ -765,14 +829,16 @@ translate_expr([H0|T0], Goals, Out) :-
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
-        ; HV == 'filter-atom', T = [List, XVar, Cond]
+        ; special_builtin_form(HV, T, filter_pseudo_lambda),
+          T = [List, XVar, Cond]
           -> translate_expr_to_conj(List, ConjList, L),
              note_list_elem_type(XVar, L),
              translate_expr_to_conj(Cond, CondConj, CondGoal),
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [include([XVar]>>(CondConj, CondGoal), L, Out)], Goals)
-        ; HV == '|->', T = [Args, Body] -> next_lambda_name(F),
+        ; special_builtin_form(HV, T, lambda), T = [Args, Body]
+          -> next_lambda_name(F),
                                            % find free (non-argument) variables in Body
                                            term_variables(Body, AllVars),
                                            term_variables(Args, ArgVars),
@@ -791,27 +857,30 @@ translate_expr([H0|T0], Goals, Out) :-
                                            ( FreeVars == [] -> Out = F
                                                              ; Out = partial(F, FreeVars) )
         %--- Spaces ---:
-        ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [Space,Atom] ->
+        ; special_builtin_form(HV, T, typed_space_update), T = [Space, Atom] ->
                                                                    check_typed_space_value(Space, Atom),
                                                                    translate_expr(Space, G1, S),
                                                                    Goal =.. [HV,S,Atom,Out],
                                                                    set_out_type(Out, 'Bool'),
-                                                                   append(GsH, [Goal], Goals)
-        ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
+                                                                   append([GsH,G1,[Goal]], Goals)
+        ; special_builtin_form(HV, T, typed_space_match),
+          T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      type_match_pattern(Pattern),
                                                      bind_typed_space_pattern(Space, Pattern),
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
         %--- Predicate to compiled goal ---:
-        ; HV == translatePredicate, T = [Expr] -> Expr = [S|Args],
+        ; special_builtin_form(HV, T, translate_predicate), T = [Expr]
+          -> Expr = [S|Args],
                                                   translate_args(Args, GsArgs, ArgsOut),
                                                   Goal =.. [S|ArgsOut],
                                                   append(GsH, GsArgs, Inner),
                                                   append(Inner, [Goal], Goals)
         %--- Manual dispatch options: ---
         %Generate a predicate call on compilation, translating Args for nesting:
-        ; HV == call,  T = [Expr] -> Expr = [F|Args],
+        ; special_builtin_form(HV, T, manual_call), T = [Expr]
+          -> Expr = [F|Args],
                                      translate_args(Args, GsArgs, ArgsOut),
                                      append(GsH, GsArgs, Inner),
                                      append(ArgsOut, [Out], CallArgs),
@@ -822,7 +891,8 @@ translate_expr([H0|T0], Goals, Out) :-
                                      append(Inner, GuardGs, Inner1),
                                      append(Inner1, [Goal], Goals)
         %Produce a dynamic dispatch, translating Args for nesting:
-        ; HV == reduce, T = [Expr] -> ( var(Expr) -> translate_expr(Expr, GsH, ExprOut),
+        ; special_builtin_form(HV, T, dynamic_reduce), T = [Expr]
+          -> ( var(Expr) -> translate_expr(Expr, GsH, ExprOut),
                                                      Goals = [reduce(ExprOut, Out)|GsH]
                                                    ; Expr = [F|Args],
                                                      translate_args(Args, GsArgs, ArgsOut),
@@ -834,12 +904,14 @@ translate_expr([H0|T0], Goals, Out) :-
                                                      append(Inner, GuardGs, Inner1),
                                                      append(Inner1, [reduce(ExprOut, Out)], Goals) )
         %Invoke translator to evaluate MeTTa code as data/list:
-        ; HV == eval, T = [Arg] -> ( nonvar(Arg), Arg = [Q, Quoted], Q == quote
+        ; special_builtin_form(HV, T, eval_source), T = [Arg]
+          -> ( nonvar(Arg), Arg = [Q, Quoted], Q == quote
                                      -> translate_expr(Quoted, GsQ, Out),           %(eval (quote E)) == E
                                         append(GsH, GsQ, Goals)
                                       ; append(GsH, [eval(Arg, Out)], Goals) )
         %Erased branding of a semantic role: knowledge only, no runtime goal:
-        ; HV == brand, T = [TypeExpr, Expr] -> translate_expr(Expr, GsE, Out0),
+        ; special_builtin_form(HV, T, brand), T = [TypeExpr, Expr]
+          -> translate_expr(Expr, GsE, Out0),
                                                normalize_type(TypeExpr, TN),
                                                brand_type(Out0, TN),
                                                ( nonvar(Out0)               %a branded literal keeps its brand
@@ -848,7 +920,8 @@ translate_expr([H0|T0], Goals, Out) :-
                                                   ; Out = Out0,
                                                     append(GsH, GsE, Goals) )
         %Explicit type ascription for dynamically typed values:
-        ; HV == the, T = [TypeExpr, Expr] -> translate_expr(Expr, GsE, Out0),
+        ; special_builtin_form(HV, T, type_ascription),
+          T = [TypeExpr, Expr] -> translate_expr(Expr, GsE, Out0),
                                              normalize_type(TypeExpr, TN),
                                              ascribe_type(Out0, TN, GsA),
                                              %An ascribed literal keeps the author's type when it is
@@ -860,10 +933,11 @@ translate_expr([H0|T0], Goals, Out) :-
                                                 ; Out = Out0,
                                                   append([GsH, GsE, GsA], Goals) )
         %Force arg to remain data/list:
-        ; HV == quote, T = [Expr] -> append(GsH, [], Inner),
+        ; special_builtin_form(HV, T, quote), T = [Expr]
+          -> append(GsH, [], Inner),
                                      Out = Expr,
                                      Goals = Inner
-        ; HV == 'catch', T = [Expr] ->
+        ; special_builtin_form(HV, T, catch), T = [Expr] ->
           translate_expr(Expr, GsExpr, ExprOut),
           append(GsH, [], Inner),
           goals_list_to_conj(GsExpr, Conj),
@@ -1226,7 +1300,8 @@ overload_branch_guard(Fun, AV, T, G) :- ( arg_statically_ok(AV, T) -> G = []
 
 %Type-resolved builtin arithmetic compiles to native is/2, constant-folded when
 %both operands are literals. Only while the builtin definition is untouched:
-arith_inline(Fun, [A, B], Out, Gs) :- arith_op(Fun, A, B, Expr),
+arith_inline(Fun, [A, B], Out, Gs) :- builtin_codegen_hook(Fun, 2, arithmetic_native),
+                                      arith_op(Fun, A, B, Expr),
                                       builtin_untouched(Fun),
                                       ( number(A), number(B)
                                         -> catch((Out is Expr, Gs = []), _, Gs = [Out is Expr])
@@ -1250,6 +1325,7 @@ translate_if_cond(Cond, PreConj, CondGoal) :- translate_expr(Cond, GsC, Cv),
                                                  ; goals_list_to_conj(GsC, PreConj), CondGoal = (Cv == true) ).
 
 reified_cond(G, Cv, Native) :- nonvar(G), G =.. [F, A, B, R], R == Cv,
+                               builtin_codegen_hook(F, 2, reified_comparison),
                                cmp_native(F, A, B, Native),
                                builtin_untouched(F).
 

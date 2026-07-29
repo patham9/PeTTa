@@ -72,22 +72,35 @@ structural_pattern_fields(Arg, T, Fields, FieldTs) :- is_list(Arg), Arg = [Tag|F
 
 %Contextual output typing for deliberately-undeclared builtins (one clause per
 %builtin; the translator consults this after translating an undeclared call):
-untyped_call_out(cons, [H, Tl], Out) :- cons_out_type(H, Tl, Out).
-untyped_call_out('cons-atom', [H, Tl], Out) :- cons_out_type(H, Tl, Out).
-untyped_call_out('union-atom', [A, B], Out) :- union_atom_out_type(A, B, Out).
-untyped_call_out(append, [A, B], Out) :- union_atom_out_type(A, B, Out).
-untyped_call_out('subtraction-atom', [A, _], Out) :- first_list_out_type(A, Out).
-untyped_call_out(list_to_set, [A], Out) :- first_list_out_type(A, Out).
+untyped_call_out(F, Args, Out) :-
+        length(Args, N),
+        builtin_contextual_typing(F, N, Rule),
+        builtin_contextual_output_rule(Rule, Args, Out).
+
+builtin_contextual_typing_rule_defined(cons_list).
+builtin_contextual_typing_rule_defined(union_list).
+builtin_contextual_typing_rule_defined(first_list).
+builtin_contextual_typing_rule_defined(list_element).
+builtin_contextual_typing_rule_defined(list_tail).
+
+builtin_contextual_output_rule(cons_list, [H, Tl], Out) :-
+        cons_out_type(H, Tl, Out).
+builtin_contextual_output_rule(union_list, [A, B], Out) :-
+        union_atom_out_type(A, B, Out).
+builtin_contextual_output_rule(first_list, [A, _], Out) :-
+        first_list_out_type(A, Out).
+builtin_contextual_output_rule(first_list, [A], Out) :-
+        first_list_out_type(A, Out).
 %The ACCESSORS, which nobody typed: only the constructors above were here, so
 %a (List Choice) went in and an untyped value came out. That is what forced a
 %runtime guard on every element use and made --strict reject
 %(probe (car-atom $xs)) - the loss was at the accessor, not at match or
 %collapse. first/2 is a lib_roman pair helper, a different function; only the
 %one-argument builtin is typed here.
-untyped_call_out('car-atom', [A], Out) :- list_elem_out_type(A, Out).
-untyped_call_out(first, [A], Out) :- list_elem_out_type(A, Out).
-untyped_call_out(last, [A], Out) :- list_elem_out_type(A, Out).
-untyped_call_out('cdr-atom', [A], Out) :- cdr_atom_out_type(A, Out).
+builtin_contextual_output_rule(list_element, [A], Out) :-
+        list_elem_out_type(A, Out).
+builtin_contextual_output_rule(list_tail, [A], Out) :-
+        cdr_atom_out_type(A, Out).
 
 %(List T) -> T. The element type is what the accessor projects; whether the
 %call SUCCEEDS is a separate question and belongs to the determinism table

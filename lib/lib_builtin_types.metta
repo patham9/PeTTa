@@ -48,6 +48,7 @@
 (: or (-> Bool Bool Bool))
 (: not (-> Bool Bool))
 (: xor (-> Bool Bool Bool))
+(: implies (-> Bool Bool Bool))
 
 ;; Type definitions of predicates and reflection helpers
 (: is-var (-> $a Bool))
