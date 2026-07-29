@@ -1,7 +1,7 @@
 ;; Reduced from PeTTaChainer goal-results, the "map-flat + --strict" report.
 ;;
 ;; A -[det]-> function map-flats a helper over a list. The helper
-;; (normalize-entry) is a plain -> function whose body returns a VAR-HEADED
+;; (normalize-entry) is explicitly deterministic and returns a VAR-HEADED
 ;; tuple ($k ...): its head is a data parameter, so this is deterministic
 ;; data construction. A -[det]-> function's determinism is verified by
 ;; TRANSITIVELY analysing its callees' clauses. That analysis reads a callee's
@@ -13,7 +13,8 @@
 ;; map-flat bug. Passes in normal mode, --strict, and --strict-det.
 !(import! &self (library lib_roman))
 
-(: normalize-entry (-> (Number (List Number)) (Number (List Number))))
+(: normalize-entry
+   (-[det]-> (Number (List Number)) (Number (List Number))))
 (= (normalize-entry ($k $v)) ($k (list_to_set $v)))
 
 (: normalize-all

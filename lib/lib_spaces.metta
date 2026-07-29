@@ -12,7 +12,7 @@
           (Empty False))))
 
 ;Check whether a predicate succeeds
-(: succeedsPredicate (-> Atom Bool))
+(: succeedsPredicate (-[det]-> Expression Bool))
 (= (succeedsPredicate $pattern)
    (quote (case (translatePredicate (catch (Predicate $pattern) $_ fail))
                 (($item True)
@@ -24,6 +24,6 @@
    (collapse (match $space $x (remove-atom $space $x))))
 
 ;Efficiently count the amount of particular items in the space without listifying the items:
-(: match-count (-> %Undefined% Expression Number))
+(: match-count (-[det]-> %Undefined% Expression Number))
 (= (match-count $space $pattern)
    (foldall + (match $space $pattern 1) 0))

@@ -32,7 +32,13 @@ prolog:error_message(unknown_newtype(T)) -->
 prolog:error_message(infix_arrow_syntax(Name, Type)) -->
     [ 'Arrows are prefix - write (-[det]-> A B), not (A -[det]-> B) - in the declaration of ~p: ~p'-[Name, Type] ].
 prolog:error_message(strict_det_plain_arrow(Name)) -->
-    [ '--strict-det requires -[det]->, -[semidet]->, or -[nondet]-> in every arrow position of the declaration for ~p; plain -> is not allowed'-[Name] ].
+    [ '--strict-det requires -[det]->, -[semidet]->, -[nondet]->, or -[$v]-> in every arrow position of the declaration for ~p; plain -> is not allowed'-[Name] ].
+prolog:error_message(effect_variable_multiple(Name, Vars)) -->
+    [ 'Effect-polymorphic declaration for ~p uses more than one effect variable ~p; v1 permits one'-[Name, Vars] ].
+prolog:error_message(effect_variable_bad_position(Name, Var)) -->
+    [ 'Effect variable $~w in the declaration for ~p may appear only on the top-level arrow or a direct closure parameter arrow'-[Var, Name] ].
+prolog:error_message(effect_variable_uninstantiable(Name, Var)) -->
+    [ 'Effect variable $~w on the top-level arrow of ~p is never instantiated by a closure argument'-[Var, Name] ].
 prolog:error_message(strict_runtime_typecheck(Context, Goal)) -->
     [ 'Strict mode rejected residual runtime type goal in ~p: ~p'-[Context, Goal] ].
 prolog:error_message(determinism_cardinality(Fun, Det, N)) -->

@@ -19,6 +19,118 @@
 %-[det]-> for the var-head application in deterministic_expr - and it stays
 %scoped to the copy; the stored metas are never mutated.
 :- dynamic det_assume_cache/3.
+:- dynamic effect_body_cache/4.  % effect_body_cache(F, Arity, Name, det|semidet|nondet|unspecified)
+
+%A bounded effect-polymorphic declaration is used analytically only when it is
+%the unique declaration at this arity. Overload dispatch has its own type
+%branches, but the determinism walker sees only F/Arity and cannot soundly
+%choose one of several effect equations.
+effect_poly_decl(F, N, Name, ATs, Positions) :-
+    findall(decl(As, O, D),
+            ( declared_fn_type(F, As, O, D), length(As, N) ),
+            [decl(ATs, _, effect(Name))]),
+    effect_var_positions(ATs, Name, Positions),
+    Positions \== [].
+
+effect_var_positions(ATs, Name, Positions) :-
+    findall(pos(Idx, M, H),
+            ( nth0(Idx, ATs, T), is_arrow_type(T),
+              T = [H|Rest], arrow_atom_det(H, effect(Name)),
+              length(Rest, Len), M is Len - 1 ),
+            Positions).
+
+%The declaration's intrinsic effect: analyze copied clause metadata with only
+%the $v closure slots assumed det. An unproved body remains unspecified rather
+%than being mislabeled nondet; either verdict rejects a det/semidet consumer,
+%but preserving unknown matters to callers that report why no proof exists.
+%The separate recursion stack is the same coinductive assumption used by
+%body_determinism_assuming/3.
+effect_body_determinism(F, N, Name, Det) :-
+    effect_body_cache(F, N, Name, D0), !, Det = D0.
+effect_body_determinism(F, N, Name, det) :-
+    catch(b_getval('$effect_assume_stack', St), _, St = []),
+    memberchk(effect(F, N, Name), St), !.
+effect_body_determinism(F, N, Name, Det) :-
+    effect_poly_decl(F, N, Name, ATs, Positions),
+    catch(nb_getval(F, Metas0), _, Metas0 = []),
+    include(arity_meta(N), Metas0, Metas),
+    Metas \== [],
+    maplist(assume_det_meta(ATs, Positions), Metas, Upgraded),
+    catch(b_getval('$effect_assume_stack', St), _, St = []),
+    setup_call_cleanup(
+        b_setval('$effect_assume_stack', [effect(F, N, Name)|St]),
+        ( with_det_enforced(enforced(F, N),
+                            clause_set_determinism(Upgraded, Raw)),
+          effect_public_level(Raw, Det) ),
+        b_setval('$effect_assume_stack', St)),
+    assertz(effect_body_cache(F, N, Name, Det)).
+
+effect_public_level(det, det).
+effect_public_level(semidet, semidet).
+effect_public_level(nondet, nondet).
+effect_public_level(unspecified, unspecified).
+
+%Instantiate $v from every corresponding closure argument and join it with the
+%intrinsic body verdict. A missing closure verdict stays `unspecified`: this is
+%accepted as an unknown call effect in ordinary code and rejected naturally
+%when a committed caller needs stronger evidence.
+effect_poly_call_determinism(F, N, Args, Det) :-
+    effect_poly_decl(F, N, Name, _, Positions),
+    effect_body_determinism(F, N, Name, BodyDet),
+    effect_positions_instantiation(Positions, Args, Inst),
+    effect_join(BodyDet, Inst, Det).
+
+effect_positions_instantiation([], _, det).
+effect_positions_instantiation([pos(Idx, M, _)|Ps], Args, Det) :-
+    ( nth0(Idx, Args, Arg), closure_effect_level(Arg, M, Here)
+      -> true
+    ; Here = unspecified ),
+    effect_positions_instantiation(Ps, Args, Rest),
+    effect_join(Here, Rest, Det).
+
+closure_effect_level(Arg, _, Det) :-
+    var(Arg), !,
+    known_singleton(Arg, K), arrow_head_level(K, L),
+    concrete_effect_level(L, Det).
+closure_effect_level(['|->', _, Body], _, Det) :- !,
+    deterministic_expr(Body, R), det_result_effect(R, Det).
+closure_effect_level(partial(F, _), M, Det) :- !,
+    named_closure_effect(F, M, Det).
+%A source-level partial application of a closure parameter, e.g.
+%($pred $x), is still a closure value when $pred has more arguments left.
+%The effect of applying that resulting closure is the parameter arrow's
+%effect; the ordinary expression walk separately accounts for evaluating the
+%bound arguments while forming it.
+closure_effect_level([F|Bound], M, Det) :- var(F), !,
+    known_singleton(F, K), arrow_head_level(K, L),
+    K = [_|Rest], length(Rest, Len), Total is Len - 1,
+    length(Bound, B), M is Total - B,
+    concrete_effect_level(L, Det).
+closure_effect_level([F|_], _, Det) :- atom(F), !,
+    fn_own_arity(F, A), named_closure_effect(F, A, Det).
+closure_effect_level(F, M, Det) :- atom(F), !,
+    named_closure_effect(F, M, Det).
+
+named_closure_effect(F, M, Det) :-
+    catch(function_call_determinism(F, M, D0), _, fail),
+    concrete_effect_level(D0, Det).
+
+concrete_effect_level(det, det).
+concrete_effect_level(semidet, semidet).
+concrete_effect_level(nondet, nondet).
+
+det_result_effect(ok, det).
+det_result_effect(may_fail(_), semidet).
+det_result_effect(nondeterministic(_), nondet).
+det_result_effect(unknown(_), unspecified).
+
+effect_join(unspecified, _, unspecified) :- !.
+effect_join(_, unspecified, unspecified) :- !.
+effect_join(nondet, _, nondet) :- !.
+effect_join(_, nondet, nondet) :- !.
+effect_join(semidet, _, semidet) :- !.
+effect_join(_, semidet, semidet) :- !.
+effect_join(det, det, det).
 
 %Declared arrow parameter positions (any head but -[nondet]->, whose det-ness
 %is irrelevant because it is already handled as nondet), as
@@ -49,12 +161,7 @@ det_closure_positions([pos(Idx, M, _)|Ps], Args) :- nth0(Idx, Args, Arg),
 %commits to det; a lambda with a det body; a (partial) application or bare
 %atom naming a function that is det at the relevant arity. Anything else
 %fails:
-det_arg_evidence(Arg, _) :- var(Arg), !, known_singleton(Arg, K),
-                            arrow_head_level(K, L),
-                            L == det.
-det_arg_evidence(['|->', _, LBody], _) :- !, deterministic_expr(LBody, ok).
-det_arg_evidence([F2|_], _) :- atom(F2), !, fn_own_arity(F2, A), det_atom_evidence(F2, A).
-det_arg_evidence(F2, M) :- atom(F2), !, det_atom_evidence(F2, M).
+det_arg_evidence(Arg, M) :- closure_effect_level(Arg, M, det).
 
 %A named function used as a VALUE is the same function it is when called, so
 %it is judged by the same relation - builtin table first, then the declared
@@ -369,7 +476,8 @@ stored_clause_head(F, N, Args) :- catch(nb_getval(F, Metas), _, fail),
                                   member(fun_meta(Args, _), Metas), length(Args, N).
 
 check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
-    ( explicit_det_decl(F, N)
+    ( ( explicit_det_decl(F, N)
+      ; effect_det_exhaustiveness_required(ParsedForms, F, N) )
       -> findall(Args, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N)
                        ; stored_clause_head(F, N, Args) ), Heads),
          once(( parsed_clause_head(ParsedForms, Line, Str, F, A0), length(A0, N) )),
@@ -382,6 +490,29 @@ check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
          retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
          assertz(det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str))
        ; true ).
+
+%An effect-polymorphic declaration promises exactly one result at its det
+%instantiation only when the intrinsic body verdict (with $v slots assumed
+%det) is itself det. Derive that verdict from the whole parsed clause group so
+%the same exhaustiveness check used by -[det]-> runs before any clause is
+%compiled. The scoped recursion assumption lets a map/fold call itself.
+effect_det_exhaustiveness_required(ParsedForms, F, N) :-
+    effect_poly_decl(F, N, Name, ATs, Positions),
+    findall(fun_meta(Args, Body),
+            ( member(parsed(function, _, _, Form), ParsedForms),
+              Form = [Eq, Head, Body], Eq == (=),
+              Head = [F0|Args], F0 == F, length(Args, N)
+            ; catch(nb_getval(F, Stored), _, fail),
+              member(fun_meta(Args, Body), Stored), length(Args, N) ),
+            Metas),
+    Metas \== [],
+    maplist(assume_det_meta(ATs, Positions), Metas, Upgraded),
+    catch(b_getval('$effect_assume_stack', St), _, St = []),
+    setup_call_cleanup(
+        b_setval('$effect_assume_stack', [effect(F, N, Name)|St]),
+        with_det_enforced(enforced(F, N),
+                          clause_set_determinism(Upgraded, det)),
+        b_setval('$effect_assume_stack', St)).
 
 %The declaration must be unique at this arity: several declarations are typed
 %overloads, and the clauses then belong to no single argument-type vector.

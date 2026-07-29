@@ -30,6 +30,7 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
                             with_det_enforced(Enf,
                                 with_det_head_vars(Args, BodyExpr, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
+    ; Det = effect(Name) -> effect_body_determinism(F, N, Name, _)
                           ; true ).
 
 %Publish the clause's HEAD variables for the duration of a body determinism
@@ -151,6 +152,7 @@ det_enforced_flag(F, N, Flag) :- ( boundary_commitment(F, N, _) -> Flag = enforc
 %Only explicit commitments are enforced. Plain arrows are uncommitted in the
 %modes that accept them and are rejected at declaration time by --strict-det.
 boundary_commitment(F, N, Det) :- explicit_committed_decl(F, N, Det).
+boundary_commitment(F, N, effect(Name)) :- effect_poly_decl(F, N, Name, _, _).
 
 %A det body must neither branch nor fail; a semidet body is the same analysis
 %minus the may-not-fail part - (empty) and calls to -[semidet]-> functions are

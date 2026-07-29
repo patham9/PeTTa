@@ -1,3 +1,16 @@
+:- thread_local loading_origin/1.
+:- dynamic decl_origin/2.
+
+%A curated library load is a dynamic scope, not a sticky global mode. Nested
+%plain-file imports inherit the surrounding library origin; a nested curated
+%import temporarily records its own library and restores the outer one.
+with_library_origin(Name, Goal) :-
+    setup_call_cleanup(asserta(loading_origin(library(Name)), Ref),
+                       Goal,
+                       erase(Ref)).
+
+trusted_library_decl(F) :- decl_origin(F, library(_)).
+
 %%% Store maintenance, called from add_sexp/remove_sexp and forget_symbol.
 %%% Caching is idempotent so seeded builtins and imports do not duplicate:
 %A function type declared for a parenthesized name - (: (/?\) (-> ...)) - is a
@@ -13,6 +26,7 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %runtime; the brand lives purely in the checker.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [NT, R]],
                                       C == (:), atom(Name), NT == 'Newtype', !,
+                                      prepare_decl_origin(Name, [NT, R]),
                                       normalize_type(R, RN),
                                       ( declared_newtype(Name, R2)
                                         -> ( R2 =@= RN -> true
@@ -39,6 +53,7 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %declarations below.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [A, R]],
                                       C == (:), atom(Name), A == 'Alias', !,
+                                      prepare_decl_origin(Name, [A, R]),
                                       normalize_type(R, RN),
                                       ( declared_type_alias(Name, R2)
                                         -> ( R2 =@= RN -> true
@@ -66,6 +81,7 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                       C == (:), atom(Name), F == 'Foreign',
                                       ( Spec == [] -> Arity = 0
                                       ; Spec = [Arity], integer(Arity), Arity > 0 ), !,
+                                      prepare_decl_origin(Name, [F|Spec]),
                                       ( declared_foreign_type(Name, A2)
                                         -> ( A2 == Arity -> true
                                            ; format(user_error,
@@ -89,6 +105,7 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %like Newtype/Alias/Foreign, this declaration is source-ordered, not hoisted.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [SO, R]],
                                       C == (:), atom(Name), SO == 'SpaceOf', !,
+                                      prepare_decl_origin(Name, [SO, R]),
                                       normalize_type(R, RN),
                                       ( declared_space_type(Name, R2)
                                         -> ( R2 =@= RN -> true
@@ -110,10 +127,12 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                       ; assertz(declared_space_type(Name, RN)) ).
 maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = [C, Name, Type],
                                         C == (:), atom(Name)
-                                        -> ( nonvar(Type), infix_arrow_misuse(Type)
+                                        -> ( prepare_decl_origin(Name, Type),
+                                             nonvar(Type), infix_arrow_misuse(Type)
                                              -> throw(error(infix_arrow_syntax(Name, Type), typecheck))
                                            ; nonvar(Type), fn_type_shape(Type, ATs, OT, Det)
-                                             -> require_explicit_det_arrows(Name, Type),
+                                             -> validate_effect_variable_decl(Name, Type),
+                                                require_explicit_det_arrows(Name, Type),
                                                 maplist(normalize_type, ATs, ATN),
                                                 normalize_type(OT, OTN),
                                                 remove_unexpanded_fn_precache(Name, ATs, OT, Det, ATN, OTN),
@@ -130,6 +149,94 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                 ; assertz(declared_value_type(Name, TN)),
                                                   note_constructor_set_change(Name) ) )
                                          ; true ).
+
+%Origin is deliberately symbol-level: one user declaration opts the whole
+%callable back into conservative guards, including all of its overloads. A
+%library may mark a symbol only when it is introducing it (or continuing a
+%library-origin declaration); importing a library after a user declaration
+%must not silently turn that user symbol into trusted code.
+prepare_decl_origin(Name, Type) :-
+    ( loading_origin(Origin)
+      -> ( decl_origin(Name, _)
+           -> true
+         ; cached_symbol_declaration(Name)
+           -> true
+         ; assertz(decl_origin(Name, Origin)) )
+    ; decl_origin(Name, library(Library))
+      -> warn_user_library_redeclaration(Name, Type, Library),
+         retractall(decl_origin(Name, _))
+    ; true ).
+
+cached_symbol_declaration(Name) :- declared_fn_type(Name, _, _, _), !.
+cached_symbol_declaration(Name) :- declared_value_type(Name, _), !.
+cached_symbol_declaration(Name) :- declared_newtype(Name, _), !.
+cached_symbol_declaration(Name) :- declared_type_alias(Name, _), !.
+cached_symbol_declaration(Name) :- declared_foreign_type(Name, _), !.
+cached_symbol_declaration(Name) :- declared_space_type(Name, _).
+
+warn_user_library_redeclaration(Name, Type, Library) :-
+    ( cached_declaration_matches(Name, Type)
+      -> true
+    ; format(user_error,
+             "Warning: user declaration for ~w differs from trusted library ~w declaration: ~p~n",
+             [Name, Library, Type]) ).
+
+cached_declaration_matches(Name, Type) :-
+    nonvar(Type), fn_type_shape(Type, ATs, OT, Det), !,
+    maplist(normalize_type, ATs, ATN),
+    normalize_type(OT, OTN),
+    declared_fn_type(Name, A2, O2, D2),
+    (A2-O2-D2) =@= (ATN-OTN-Det).
+cached_declaration_matches(Name, [NT, R]) :- NT == 'Newtype', !,
+    normalize_type(R, RN), declared_newtype(Name, R2), R2 =@= RN.
+cached_declaration_matches(Name, [A, R]) :- A == 'Alias', !,
+    normalize_type(R, RN), declared_type_alias(Name, R2), R2 =@= RN.
+cached_declaration_matches(Name, [F|Spec]) :- F == 'Foreign', !,
+    ( Spec == [] -> Arity = 0 ; Spec = [Arity] ),
+    declared_foreign_type(Name, Arity).
+cached_declaration_matches(Name, [SO, R]) :- SO == 'SpaceOf', !,
+    normalize_type(R, RN), declared_space_type(Name, R2), R2 =@= RN.
+cached_declaration_matches(Name, Type) :-
+    normalize_type(Type, TN),
+    declared_value_type(Name, T2),
+    T2 =@= TN.
+
+%Bounded v1 effect-variable syntax. The only legal occurrences are the
+%top-level arrow head and direct arrow-typed parameter heads. Names are atoms
+%extracted from -[$name]->, so declaration copies never share a logic binding.
+validate_effect_variable_decl(Name, Type) :-
+    normalize_type(Type, Normalized),
+    findall(V, effect_var_occurrence(Normalized, V), Vs0),
+    sort(Vs0, Vs),
+    ( Vs = []
+      -> true
+    ; Vs = [V]
+      -> validate_effect_variable_positions(Name, Normalized, V)
+    ; throw(error(effect_variable_multiple(Name, Vs), determinism)) ).
+
+effect_var_occurrence(T, V) :-
+    nonvar(T), is_list(T), T = [H|Rest],
+    ( effect_arrow_atom(H, V)
+    ; member(E, Rest), effect_var_occurrence(E, V) ).
+
+validate_effect_variable_positions(Name, Type, V) :-
+    fn_type_shape(Type, ATs, OT, TopDet),
+    ( member(A, ATs), forbidden_effect_parameter_occurrence(A)
+      -> throw(error(effect_variable_bad_position(Name, V), determinism))
+    ; effect_var_occurrence(OT, _)
+      -> throw(error(effect_variable_bad_position(Name, V), determinism))
+    ; TopDet = effect(V), \+ direct_effect_parameter(ATs, V)
+      -> throw(error(effect_variable_uninstantiable(Name, V), determinism))
+    ; true ).
+
+direct_effect_parameter(ATs, V) :-
+    member(T, ATs), nonvar(T), is_arrow_type(T),
+    T = [H|_], effect_arrow_atom(H, V), !.
+
+forbidden_effect_parameter_occurrence(T) :-
+    ( nonvar(T), is_arrow_type(T), T = [H|Rest], effect_arrow_atom(H, _)
+      -> member(E, Rest), effect_var_occurrence(E, _)
+    ; effect_var_occurrence(T, _) ).
 
 %Strict determinism is an explicit-effect mode: every arrow in a function
 %declaration, including arrows nested in parameter/output positions (and
@@ -325,6 +432,7 @@ uncache_type_decl(Name, [NT, R]) :- NT == 'Newtype', !,
     ( clause(declared_newtype(Name, R2), true, Ref), R2 =@= RN
       -> affected_decl_functions([Name], Fs),
          erase(Ref),
+         retractall(decl_origin(Name, _)),
          recompile_decl_functions(Fs)
     ; true ).
 uncache_type_decl(Name, [A, R]) :- A == 'Alias', !,
@@ -339,6 +447,7 @@ uncache_type_decl(Name, [F|Spec]) :-
     ( clause(declared_foreign_type(Name, A2), true, Ref), A2 == Arity
       -> affected_decl_functions([Name], Fs),
          erase(Ref),
+         retractall(decl_origin(Name, _)),
          recompile_decl_functions(Fs)
     ; true ).
 uncache_type_decl(Name, [SO, R]) :- SO == 'SpaceOf', !,
@@ -346,6 +455,7 @@ uncache_type_decl(Name, [SO, R]) :- SO == 'SpaceOf', !,
     ( clause(declared_space_type(Name, R2), true, Ref), R2 =@= RN
       -> affected_decl_functions([Name], Fs),
          erase(Ref),
+         retractall(decl_origin(Name, _)),
          recompile_decl_functions(Fs)
     ; true ).
 uncache_type_decl(Name, Type) :-
@@ -355,6 +465,7 @@ uncache_type_decl(Name, Type) :-
          ( clause(declared_fn_type(Name, A2, O2, D2), true, Ref),
            (A2-O2-D2) =@= (ATN-OTN-Det)
            -> erase(Ref),
+              retractall(decl_origin(Name, _)),
               length(ATN, N),
               recache_remaining_fn_decls(Name, N),
               recompute_explicit_decl_metadata(Name, N),
@@ -362,7 +473,8 @@ uncache_type_decl(Name, Type) :-
          ; true )
     ; normalize_type(Type, TN),
       ( clause(declared_value_type(Name, T2), true, Ref), T2 =@= TN
-        -> erase(Ref)
+        -> erase(Ref),
+           retractall(decl_origin(Name, _))
       ; true ) ).
 
 recache_remaining_fn_decls(Name, N) :-
@@ -404,9 +516,19 @@ alias_removal_rebuild(Name, Ref) :-
     append(Fs0, Fs1, Fs2), sort(Fs2, Fs),
     forall(member(T, Terms), erase_cached_declaration_only(T)),
     erase(Ref),
-    forall(member(T, Terms), maybe_cache_type_decl('&self', T)),
+    retractall(decl_origin(Name, _)),
+    forall(member(T, Terms), recache_type_decl_preserving_origin(T)),
     forall(member(F, Fs), recompute_all_explicit_metadata(F)),
     recompile_decl_functions(Fs).
+
+%Alias removal temporarily erases and rebuilds dependent cache entries, but
+%their source declarations were not removed. Preserve any library provenance
+%across that internal rebuild; only the removed alias itself loses origin.
+recache_type_decl_preserving_origin(Term) :-
+    Term = [_, Name, _],
+    ( decl_origin(Name, library(Library))
+      -> with_library_origin(Library, maybe_cache_type_decl('&self', Term))
+    ; maybe_cache_type_decl('&self', Term) ).
 
 dependent_type_names(All, Names0, Names) :-
     findall(N,
@@ -471,6 +593,7 @@ affected_decl_functions(Names, Fs) :-
 recompile_decl_functions(Fs) :-
     retractall(det_analysis_cache(_, _, _)),
     retractall(det_assume_cache(_, _, _)),
+    retractall(effect_body_cache(_, _, _, _)),
     reset_output_certs(_),
     forall(member(F, Fs), recompile_function_clauses(F)).
 
@@ -503,6 +626,7 @@ enforce_late_declaration(Name) :-
        ; true ).
 
 forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
+                             retractall(decl_origin(Name, _)),
                              retractall(explicit_det_decl(Name, _)),
                              retractall(explicit_committed_decl(Name, _, _)),
                              retractall(declared_value_type(Name, _)),
@@ -512,6 +636,7 @@ forget_symbol_types(Name) :- retractall(declared_fn_type(Name, _, _, _)),
                              retractall(declared_space_type(Name, _)),
                              retractall(inferred_fn_type(Name, _, _)),
                              retractall(det_bound_proviso(Name, _, _, _)),
+                             retractall(effect_body_cache(Name, _, _, _)),
                              reset_output_certs(Name).  %withdraw the output certificates
 
 %%% Store lookup (each retrieval yields a fresh copy of the declaration):

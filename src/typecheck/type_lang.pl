@@ -71,6 +71,7 @@ det_arrow_fits(HA, HB) :- arrow_atom_det(HA, LA), arrow_atom_det(HB, LB),
 
 det_level_fits(_, nondet) :- !.
 det_level_fits(_, plain) :- !.
+det_level_fits(_, effect(_)) :- !.
 det_level_fits(LA, LB) :- ( LA == det -> true
                           ; LA == semidet -> LB == semidet ).
 

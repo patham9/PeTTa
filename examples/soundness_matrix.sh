@@ -13,10 +13,10 @@
 # it almost never differs. Kept because it is cheap and it is the only phase
 # that tests the commit itself.
 #
-# Phase C (--oracle-det): every call to a -[det]-> / -[semidet]-> function
-# counts its solutions and throws on zero (det) or on two or more (either).
-# This is what catches BODY-level determinism violations, which Phase B is
-# blind to.
+# Phase C (--oracle-det): every call believed det/semidet — including a
+# -[$e]-> call instantiated by its closure arguments — counts its solutions
+# and throws on zero (det) or on two or more (either). This is what catches
+# BODY-level determinism violations, which Phase B is blind to.
 #
 # Phase D (counterexample cases): MULTI-FILE programs that would violate a
 # certification, each pinned to the exact finding that must reject it. Unlike
@@ -49,6 +49,15 @@ mode_arg_for() {
     esac
 }
 
+#SWI's printed names for otherwise identical free variables depend on clause
+#allocation details (including whether commit cuts were emitted). Canonicalize
+#them per result line while preserving repeated-variable identity, so Phase B
+#compares answers rather than allocator-generated suffixes.
+normalize_test_results() {
+    grep "should" |
+        perl -pe 'my (%v, $n); s{\$_[0-9]+}{$v{$&} //= "\$_V" . ++$n}ge'
+}
+
 # Phases A-C for one example. Failure is signalled through $TMP_DIR/failed
 # (this runs inside a pooled background worker, where a shell variable would
 # be lost - the same convention Phase D already uses):
@@ -76,8 +85,8 @@ run_oracle_phases() {
     if [ $st1 -eq 124 ] || [ $st1 -eq 137 ] || [ $st2 -eq 124 ] || [ $st2 -eq 137 ]; then
         echo "[SKIP-TIMEOUT no-det-cut] $base"
     else
-        norm=$(echo "$normout" | grep "should")
-        nod=$(echo "$nodout" | grep "should")
+        norm=$(echo "$normout" | normalize_test_results)
+        nod=$(echo "$nodout" | normalize_test_results)
         if [ "$norm" != "$nod" ]; then
             echo "[FAIL det] $base: results differ without determinism commits"
             : > "$TMP_DIR/failed"

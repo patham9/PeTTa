@@ -13,6 +13,7 @@
 %hold unbound elements, and a builtin that raises on one (min_list/2 on a
 %non-number) is still det, because an exception is not a solution.
 call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
+call_site_determinism(F, N, Args, Det) :- effect_poly_call_determinism(F, N, Args, Det), !.
 call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
 
 %%% FEATURE 1 - flow-sensitive nonemptiness upgrade %%%

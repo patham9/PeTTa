@@ -9,9 +9,10 @@
 %solution's bindings. The callee is executed exactly ONCE (findall/3 drives it
 %to exhaustion), so side effects are not duplicated - but last-call
 %optimization is gone for wrapped calls, which is the price of counting.
-oracle_det_wrap(Fun, NArgs, Out, Goal, Wrapped) :-
+oracle_det_wrap(Fun, Args, Out, Goal, Wrapped) :-
     ( oracle_det_mode(true), atom(Fun),
-      oracle_det_believed(Fun, NArgs, Det), committed_det(Det)
+      length(Args, NArgs),
+      oracle_det_believed(Fun, NArgs, Args, Det), committed_det(Det)
       -> Wrapped = oracle_det_call(Fun, Det, Out, Goal)
        ; Wrapped = Goal ).
 
@@ -23,9 +24,12 @@ oracle_det_wrap(Fun, NArgs, Out, Goal, Wrapped) :-
 %--strict-det while the checker knows empty is the canonical semidet bottom,
 %and auditing that call against the declaration would make the oracle stricter
 %than the thing it audits - a false positive by construction.
-oracle_det_believed(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
-                                  Det0 \== unspecified,
-                                  table_det_override(F, N, Det0, Det).
+oracle_det_believed(F, N, Args, Det) :-
+    ( effect_poly_call_determinism(F, N, Args, PolyDet)
+      -> Det0 = PolyDet
+    ; catch(fn_determinism(F, N, Det0), _, fail),
+      Det0 \== unspecified ),
+    table_det_override(F, N, Det0, Det).
 
 %A call whose RESULT argument is already bound is not asking the function for
 %its answer, it is testing a candidate one: (let True (> (myplus $x 2) 3) $x)
@@ -95,4 +99,3 @@ parametric_output_check(F, ExpOut) :- ( var(ExpOut)
 %rejected the same way: the declaration has to name the type the body needs.
 parametric_param_snapshot(out(_, ATs), Vars) :- !, term_variables(ATs, Vars).
 parametric_param_snapshot(_, []).
-

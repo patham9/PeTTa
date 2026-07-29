@@ -352,6 +352,24 @@ nondeterminism. Result cardinality is a total order: `-[det]->` (exactly one)
 < `-[semidet]->` (zero or one) < `-[nondet]->` (any), and a closure fits an
 arrow that allows at least as many results as it can produce.
 
+**Effect-polymorphic arrows.** `-[$e]->` gives one declaration a bounded
+cardinality variable. For example,
+`(: map (-[$e]-> (-[$e]-> $a $b) (List $a) (List $b)))` says that `map` has the
+join of its own intrinsic effect and the effect of the supplied closure:
+passing a det closure can prove a det call, while passing a nondet closure
+makes the call nondet. If several direct closure parameters use `$e`, their
+effects are joined (`det < semidet < nondet`). An unknown closure effect leaves
+the call effect unknown.
+
+Version 1 permits one effect-variable name per declaration. It may occur only
+on the top-level declared arrow and on direct arrow-typed parameter positions;
+it may not be nested inside those parameter arrows or appear in an output
+type. A top-level effect variable must occur on at least one closure parameter,
+so every call can instantiate it. Effect-polymorphic functions compile without
+commit cuts: the conditional cardinality proof belongs to each call site, not
+to one globally specialized body. See
+`examples/strictdet_effect_polymorphism.metta`.
+
 **Inferred closure determinism (in every mode).** A closure over an *undeclared*
 function — an inline `|->` lambda, or a bare/underapplied reference to a function
 with no arrow declaration — has no written arrow, so the compiler derives one
@@ -683,11 +701,12 @@ declares no `-[det]->`.
 
 **Strict determinism mode.** `--strict-det` (implies `--strict`) requires every
 arrow in a function declaration to state its effect explicitly:
-`-[det]->`, `-[semidet]->`, or `-[nondet]->`. This requirement is recursive,
-so higher-order parameter and output arrows must be explicit as well. A plain
-`->` is accepted only in default and `--strict` (types-only) modes, where it
-remains uncommitted. The builtin signature file is an internal exception:
-builtin effects come authoritatively from `det_builtins.pl`.
+`-[det]->`, `-[semidet]->`, `-[nondet]->`, or the bounded polymorphic form
+`-[$e]->`. This requirement is recursive, so higher-order parameter and output
+arrows must be explicit as well. A plain `->` is accepted only in default and
+`--strict` (types-only) modes, where it remains uncommitted. The builtin
+signature file is an internal exception: builtin effects come authoritatively
+from `det_builtins.pl`.
 
 An explicit `-[det]->` function is validated for overlapping clause heads and
 for nondeterministic bodies such as `superpose`, `match`, or dynamic `eval`;
@@ -709,11 +728,12 @@ only what a program verifies as it runs, never which programs compile.
   at call sites. If the checker certified a type the value does not have, the
   call site that certified it throws, instead of the program limping on to some
   unrelated Prolog error.
-- `--oracle-det` counts the solutions of every call to a `-[det]->` or
-  `-[semidet]->` function and throws on zero (for `det`) or on two or more (for
-  either). This is the only check on a determinism *claim*: nothing else in the
-  compiled program verifies it, and the clause-entry commit actively prunes the
-  choicepoints that would reveal a violation. Zero-solution violations are
+- `--oracle-det` counts the solutions of every call believed `det` or `semidet`,
+  including a `-[$e]->` call whose closure arguments instantiate it to one of
+  those levels. It throws on zero (for `det`) or on two or more (for either).
+  This is the only check on a determinism *claim*: nothing else in the compiled
+  program verifies it, and a fixed arrow's clause-entry commit actively prunes
+  the choicepoints that would reveal a violation. Zero-solution violations are
   adjudicated only where the call site left the result unbound — a call whose
   result is already bound is being used as a filter, and is allowed to fail.
 - `--no-det-cut` suppresses the determinism commit itself, exposing

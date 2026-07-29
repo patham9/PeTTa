@@ -34,6 +34,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
                                                retractall(det_analysis_cache(_, _, _)),  %clause set changed
                                                retractall(det_assume_cache(_, _, _)),  %conditional-det results depend on clauses too
+                                               retractall(effect_body_cache(_, _, _, _)), %effect equations depend on clauses too
                                                %clause set changed: the output-certificate memos (proper_list,
                                                %bound_bool) depend on clause sets transitively, so they reset
                                                %alongside the det caches above (see output_cert/3):
@@ -225,6 +226,7 @@ drop_stale_fun_meta(_, _).
 %%% overlap throws exactly the error the declaration would have caused had it
 %%% arrived first - which is the whole point: enforced, or rejected.
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
+                                 retractall(effect_body_cache(F, _, _, _)),
                                  ( Us == [] -> true
                                  ; retractall(det_bound_proviso(F, _, _, _)),  %re-derive the boundness union from scratch
                                    reset_output_certs(F),  %withdraw the output certificates for re-derivation
@@ -527,6 +529,11 @@ rewrite_streamops([unique, Arg],
                   [call, [superpose, ['unique-atom', [collapse, Arg]]]]).
 rewrite_streamops(['alpha-unique', Arg],
                   [call, [superpose, ['alpha-unique-atom', [collapse, Arg]]]]).
+%Only the one-argument standard-library resolver is curated. Two-argument
+%library paths can come from git-import!, and ordinary file imports remain
+%user-origin.
+rewrite_streamops(['import!', Space, [library, Name]],
+                  ['library-import!', Space, Name]).
 rewrite_streamops([union, [superpose|A], [superpose|B]],
                   [call, [superpose, ['union-atom', [collapse, [superpose|A]],
                                                     [collapse, [superpose|B]]]]]).
@@ -1137,18 +1144,23 @@ resolve_source_arrow_args([A|As], [T|Ts], BinderI, I) :-
 
 source_callable_arrow(G, Arrow) :-
         atom(G),
-        findall(ft(ArgTs, OutT), fn_decl_arity(G, _N, ArgTs, OutT),
-                [ft(ArgTs, OutT)]),
+        findall(ft(ArgTs, OutT, H),
+                ( declared_fn_type(G, ArgTs, OutT, Det),
+                  length(ArgTs, N),
+                  value_arrow_head(G, N, Det, H) ),
+                [ft(ArgTs, OutT, H)]),
         append(ArgTs, [OutT], Tail),
-        Arrow = ['->'|Tail].
+        Arrow = [H|Tail].
 source_callable_arrow(Source, Arrow) :-
         nonvar(Source), Source = [G|Bound], atom(G), is_list(Bound),
         length(Bound, N),
-        findall(pt(RTs, OutT),
-                fn_decl_partial(G, N, _PTs, RTs, OutT),
-                [pt(RTs, OutT)]),
+        findall(pt(RTs, OutT, H),
+                ( fn_decl_partial(G, N, _PTs, RTs, OutT, Det),
+                  length(RTs, NR), Total is N + NR,
+                  value_arrow_head(G, Total, Det, H) ),
+                [pt(RTs, OutT, H)]),
         append(RTs, [OutT], Tail),
-        Arrow = ['->'|Tail].
+        Arrow = [H|Tail].
 
 %A provided arg position stays untranslated data iff every declaration types it
 %Expression; the effective type feeds translate_args_by_type, which only ever
@@ -1200,12 +1212,16 @@ overload_branch(Fun, AVs, Out, ft(ATs, OT), Branch) :- maplist(overload_branch_g
 overload_out_guard(MultiDecl, Fun, Out, OT, Extra) :- ( MultiDecl == true, ground(OT), \+ wildcard_type_t(OT)
                                                         -> ( strict_mode(true)
                                                              -> throw(error(strict_runtime_typecheck(Fun, typecheck_match(Out, OT)), typecheck))
+                                                            ; trusted_library_decl(Fun)
+                                                              -> Extra = []
                                                               ; Extra = [typecheck_match(Out, OT)] )
                                                          ; Extra = [] ).
 
 overload_branch_guard(Fun, AV, T, G) :- ( arg_statically_ok(AV, T) -> G = []
                                         ; strict_mode(true)
                                           -> throw(error(strict_runtime_typecheck(Fun, typecheck_match(AV, T)), typecheck))
+                                        ; trusted_library_decl(Fun)
+                                          -> G = []
                                            ; G = [typecheck_match(AV, T)] ).
 
 %Type-resolved builtin arithmetic compiles to native is/2, constant-folded when
@@ -1246,8 +1262,7 @@ cmp_native('!=', A, B, (A \== B)).
 
 %Generate actual function call or partial if arity not complete:
 build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) :- ( maybe_specialize_call(Fun, AVs, Out, Goal)
-                                                               -> length(AVs, N),
-                                                                  oracle_det_wrap(Fun, N, Out, Goal, Goal1),
+                                                               -> oracle_det_wrap(Fun, AVs, Out, Goal, Goal1),
                                                                   append(Inner, [Goal1|Extra], Goals)
                                                                 ; build_direct_call(Fun, AVs, Out, Inner, Extra, Goals) ).
 
@@ -1258,7 +1273,7 @@ build_direct_call(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                            -> append(AVs, [Out], CallArgs),
                                                               Goal0 =.. [Fun|CallArgs],
                                                               %--oracle-det: count this call's solutions
-                                                              oracle_det_wrap(Fun, N, Out, Goal0, Goal),
+                                                              oracle_det_wrap(Fun, AVs, Out, Goal0, Goal),
                                                               append(Inner, [Goal|Extra], Goals)
                                                          ; incomplete_application_kind(Fun, Arity, partial)
                                                            -> Out = partial(Fun, AVs),

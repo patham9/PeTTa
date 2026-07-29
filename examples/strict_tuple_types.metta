@@ -106,7 +106,7 @@
 ; $first : Item, $rest : (List Item), no ascriptions needed.
 !(import! &self (library lib_roman))
 (: Item Type)
-(: Wrap (-> Number Item))
+(: Wrap (-[det]-> Number Item))
 (: item-val (-> Item Number))
 (= (item-val (Wrap $n)) $n)
 

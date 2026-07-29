@@ -61,9 +61,10 @@ warn_residual_check(Ctx, T) :- ( warn_runtime_checks(true)
                                   ; true ).
 
 %%% Arrow shapes: prefix, like every MeTTa form - (-> A B), (-[det]-> A B),
-%%% (-[semidet]-> A B), (-[nondet]-> A B). A plain -> carries no determinism
-%%% commitment. Under --strict-det it is rejected in declarations, including
-%%% nested higher-order positions, so only the three explicit levels remain.
+%%% (-[semidet]-> A B), (-[nondet]-> A B), and the bounded effect-polymorphic
+%%% form (-[$v]-> A B). A plain -> carries no determinism commitment. Under
+%%% --strict-det it is rejected in declarations, including nested higher-order
+%%% positions; fixed explicit levels and effect variables remain.
 %%% Cardinality is a total order: det (exactly one) < semidet (zero or one)
 %%% < nondet (any). semidet commits exactly like det - it only adds the right
 %%% to fail - so it keeps the clause-entry cut and last-call optimization.
@@ -74,6 +75,7 @@ arrow_det('-[semidet]->', semidet).
 arrow_det('-[semideterministic]->', semidet).
 arrow_det('-[nondet]->', nondet).
 arrow_det('-[nondeterministic]->', nondet).
+arrow_det(A, effect(Name)) :- effect_arrow_atom(A, Name).
 
 %%% The single enumeration of the CANONICAL arrow atoms (what
 %%% canonical_arrow/2 produces) and the determinism each commits to. Every
@@ -86,6 +88,21 @@ arrow_atom_det('->', plain).
 arrow_atom_det('-[det]->', det).
 arrow_atom_det('-[semidet]->', semidet).
 arrow_atom_det('-[nondet]->', nondet).
+arrow_atom_det(A, effect(Name)) :- effect_arrow_atom(A, Name).
+
+%The reader keeps -[$v]-> as one atom. Parse (and, when A is open, rebuild)
+%the textual slot without turning it into a Prolog or MeTTa logic variable:
+effect_arrow_atom(A, Name) :-
+    ( atom(A)
+      -> atom_concat('-[', Rest, A),
+         atom_concat(Slot, ']->', Rest),
+         atom_chars(Slot, ['$'|NameChars]),
+         NameChars \== [],
+         atom_chars(Name, NameChars)
+    ; nonvar(Name), atom(Name),
+      atom_concat('$', Name, Slot),
+      atom_concat('-[', Slot, Prefix),
+      atom_concat(Prefix, ']->', A) ).
 
 arrow_atom(A) :- nonvar(A), arrow_atom_det(A, _).
 
@@ -132,6 +149,7 @@ canonical_arrow('-[semidet]->', '-[semidet]->') :- !.
 canonical_arrow('-[semideterministic]->', '-[semidet]->') :- !.
 canonical_arrow('-[nondet]->', '-[nondet]->') :- !.
 canonical_arrow('-[nondeterministic]->', '-[nondet]->') :- !.
+canonical_arrow(A, A) :- effect_arrow_atom(A, _), !.
 canonical_arrow(_, (->)).
 
 %%%%%%%%%% Clause-analysis context: the checker's global scratch state %%%%%%%%%%

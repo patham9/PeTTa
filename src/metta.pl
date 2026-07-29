@@ -322,6 +322,14 @@ ensure_metta_ext(Path, PathWithExt) :- file_name_extension(Path, metta, PathWith
                                       ( import_error_propagates(E)
                                         -> throw(E) ; fail )).
 
+%The translator preserves the source-level distinction between
+%(import! ... (library Name)) and a plain pathname by rewriting only the
+%former to this helper.
+'library-import!'(Space, Name, true) :-
+    with_library_origin(Name,
+                        ( library(Name, File),
+                          importer_helper(Space, File) )).
+
 import_error_propagates(error(syntax_error(_), _)).
 import_error_propagates(error(_, Ctx)) :- nonvar(Ctx), static_error_ctx(Ctx).
 importer_helper(Space, File) :- atom_string(File, SFile),
@@ -361,6 +369,6 @@ register_fun(N) :- assertz(fun(N)),
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
-                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, exists_file,
+                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, exists_file, 'library-import!',
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate,
                           'add-translator-rule!', 'remove-translator-rule!', argv]).

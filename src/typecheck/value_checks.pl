@@ -348,6 +348,8 @@ type_guard(Fun, AV, T, Gs) :- ( nonvar(T), \+ wildcard_type_t(T)
                                      -> throw(error(determinism_conflict(Fun, unproven_closure(AV, T)), determinism))
                                    ; strict_mode(true)
                                      -> throw(error(strict_runtime_typecheck(Fun, typecheck_or_error(AV, T)), typecheck))
+                                   ; trusted_library_decl(Fun)
+                                     -> Gs = []
                                       ; warn_residual_check(Fun, T),
                                         guard_goal(AV, T, G), Gs = [G] )
                                  ; Gs = [] ).

@@ -51,7 +51,7 @@ run_expected_fail_test() {
         echo "Expected non-zero exit status, got success"
         return 1
     fi
-    echo "$output" | grep -E -q "Type mismatch|Type conflict|Determinism check failed|Conflicting determinism declarations|Deterministic function .* overlapping clauses|Deterministic function .* is not exhaustive|Strict mode rejected residual runtime type goal|Strict mode requires a declared or inferable type|No matching typed overload|Declared output type variable|Declared parametric parameter|Arrows are prefix|--strict-det requires -\[det\]->, -\[semidet\]->, or -\[nondet\]->|car-atom expects a non-empty expression|Syntax error|is unbound: a -\[.*\]-> function requires bound arguments|is not a proper list: its -\[.*\]-> proof requires a bound proper list"
+    echo "$output" | grep -E -q "Type mismatch|Type conflict|Determinism check failed|Conflicting determinism declarations|Deterministic function .* overlapping clauses|Deterministic function .* is not exhaustive|Strict mode rejected residual runtime type goal|Strict mode requires a declared or inferable type|No matching typed overload|Declared output type variable|Declared parametric parameter|Arrows are prefix|--strict-det requires|Effect-polymorphic declaration|Effect variable|car-atom expects a non-empty expression|Syntax error|is unbound: a -\[.*\]-> function requires bound arguments|is not a proper list: its -\[.*\]-> proof requires a bound proper list"
     if [ $? -ne 0 ]; then
         echo "FAILURE in $f:"
         echo "Expected type error output"
@@ -122,6 +122,17 @@ if [ $status -eq 0 ]; then
         echo "OK: type_dispatch_matrix.sh"
     else
         echo "FAILURE in type_dispatch_matrix.sh"
+        status=1
+    fi
+fi
+
+if [ $status -eq 0 ]; then
+    echo ""
+    echo "Running examples/lib_trust_matrix.sh"
+    if sh examples/lib_trust_matrix.sh; then
+        echo "OK: lib_trust_matrix.sh"
+    else
+        echo "FAILURE in lib_trust_matrix.sh"
         status=1
     fi
 fi

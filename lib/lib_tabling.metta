@@ -3,7 +3,7 @@
           (translatePredicate (load_files user ((Predicate (stream $S)))))
           True))
 
-(: tabled (-> Atom %Undefined%))
+(: tabled (-[nondet]-> Expression Atom))
 (= (tabled $call)
    (progn (translatePredicate (atom_string (car-atom $call) $strname))
           (translatePredicate (atom_string (+ 1 (length (cdr-atom $call))) $strarity))

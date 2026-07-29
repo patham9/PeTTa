@@ -15,7 +15,7 @@
 
 (: Count (Newtype Expression))
 
-(: keep-counts (-> (Count Count) Number (Count Count)))
+(: keep-counts (-[det]-> (Count Count) Number (Count Count)))
 (= (keep-counts $state $_item) $state)
 
 (: folded-counts (-> (List Number) (Count Count)))
@@ -27,10 +27,10 @@
 ; The same propagation must work when the accumulator closure has one bound
 ; argument, as in (in_fold $formula).
 (: keep-five-counts
-   (-> Atom
-       (Count Count Count Count Count)
-       Number
-       (Count Count Count Count Count)))
+   (-[det]-> Atom
+              (Count Count Count Count Count)
+              Number
+              (Count Count Count Count Count)))
 (= (keep-five-counts $_formula $state $_item) $state)
 
 (: folded-five-counts

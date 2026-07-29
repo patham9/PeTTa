@@ -5,27 +5,27 @@
 ;Equality and Reduction
 ; Branch-polymorphic helpers: then/else may have different types, so the
 ; output is declared dynamic (%Undefined%) rather than forced to one type.
-(: if-equal (-> $a $b $then $else %Undefined%))
+(: if-equal (-[det]-> $a $b $then $else %Undefined%))
 (= (if-equal $A $B $Then $Else)
    (if (== $A $B) $Then $Else))
 
-(: if-equal2 (-> $a $b $then $else %Undefined%))
+(: if-equal2 (-[det]-> $a $b $then $else %Undefined%))
 (= (if-equal2 $A $B $Then $Else)
    (if (== $A $B) $Then $Else))
 
-(: assertEqual (-> $a $b Bool))
+(: assertEqual (-[det]-> $a $b Bool))
 (= (assertEqual $A $B)
    (assert (== $A $B)))
 
-(: assertAlphaEqual (-> $a $b Bool))
+(: assertAlphaEqual (-[det]-> $a $b Bool))
 (= (assertAlphaEqual $A $B)
    (assert (=alpha $A $B)))
 
-(: assertEqualToResult (-> $a $b Bool))
+(: assertEqualToResult (-[det]-> $a $b Bool))
 (= (assertEqualToResult $A $B)
    (assertEqual $A $B))
 
-(: assertAlphaEqualToResult (-> $a $b Bool))
+(: assertAlphaEqualToResult (-[det]-> $a $b Bool))
 (= (assertAlphaEqualToResult $A $B)
    (assertAlphaEqual $A $B))
 
@@ -51,12 +51,12 @@
          (add-atom $space (= $head $bodyreduced))))
 
 ;Error Handling
-(: if-error (-> $x $a $b %Undefined%))
+(: if-error (-[det]-> $x $a $b %Undefined%))
 (= (if-error $X $A $B)
    (if (= $X (cons Error $_)) 
        $A $B))
 
-(: return-on-error (-> $r $b %Undefined%))
+(: return-on-error (-[det]-> $r $b %Undefined%))
 (= (return-on-error $result $B)
    (if-error $result
              $result
@@ -65,8 +65,8 @@
 ;Evaluation control
 ;The second parameter is applied to every element, so it is an arrow, not an
 ;anonymous $f: naming its shape is what lets the checker carry the closure's
-;determinism through map-atom to this function's own -> commitment.
-(: for-each-in-atom (-> $l (-> $a $b) %Undefined%))
+;determinism through map-atom to this function's own effect.
+(: for-each-in-atom (-[$e]-> $l (-[$e]-> $a $b) %Undefined%))
 (= (for-each-in-atom $L $f)
    (map-atom $L $f))
 
@@ -80,12 +80,12 @@
    (let $cut (cut) (eval $A)))
 (= (unquote $A) (quote (unquote $A)))
 
-(: noreduce-eq (-> Atom Atom Bool))
+(: noreduce-eq (-[det]-> Expression Expression Bool))
 (= (noreduce-eq $A $B)
    (== $A $B))
 
 ;Types
-(: is-function (-> $a Bool))
+(: is-function (-[det]-> $a Bool))
 (= (is-function (-> $A $B)) (let $temp (cut) True))
 (= (is-function $X) False)
 
@@ -96,10 +96,10 @@
 (= (get-type-space &self $x)
    (get-type $x))
 
-(: match-types (-> $a $b $then $else %Undefined%))
+(: match-types (-[det]-> $a $b $then $else %Undefined%))
 (= (match-types $A $B $Then $Else)
    (if (== $A $B) $Then $Else))
 
-(: match-type-or (-> $v $t1 $t2 %Undefined%))
+(: match-type-or (-[det]-> $v $t1 $t2 %Undefined%))
 (= (match-type-or $value $type1 $type2)
    (match-types $type1 $type2 True $value))
