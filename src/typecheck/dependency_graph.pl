@@ -13,6 +13,9 @@
 :- dynamic compiled_deps/4.     % compiled_deps(ClauseRef, F/N, SourceFile, Dependencies)
 :- dynamic compiled_dep_edge/3. % compiled_dep_edge(Dependency, ClauseRef, F/N)
 :- dynamic validation_deps/2.   % validation_deps(ValidationKey, Dependencies)
+:- dynamic validation_dep_edge/2. % validation_dep_edge(Dependency, ValidationKey)
+:- dynamic constructor_dependency_owner/2. % constructor_dependency_owner(Type, Owner)
+:- dynamic constructor_dependency_type/1.  % exact active set, one fact per Type
 
 record_compiled_dependencies(Ref, F/N, Dependencies) :-
     current_metta_file(File),
@@ -21,15 +24,20 @@ record_compiled_dependencies(Ref, F/N, Dependencies) :-
 record_compiled_dependencies(Ref, F/N, File, Dependencies) :-
     retractall(compiled_deps(Ref, _, _, _)),
     retractall(compiled_dep_edge(_, Ref, _)),
-    copy_term_nat(Dependencies, Copy),
+    forget_constructor_dependency_owner(compiled(Ref)),
+    ( ground(Dependencies)
+      -> Copy = Dependencies
+      ; copy_term_nat(Dependencies, Copy) ),
     sort(Copy, Deps),
     assertz(compiled_deps(Ref, F/N, File, Deps)),
     forall(member(Dependency, Deps),
-           assertz(compiled_dep_edge(Dependency, Ref, F/N))).
+           assertz(compiled_dep_edge(Dependency, Ref, F/N))),
+    record_constructor_dependency_owner(compiled(Ref), Deps).
 
 forget_compiled_dependencies(Ref) :-
     retractall(compiled_deps(Ref, _, _, _)),
-    retractall(compiled_dep_edge(_, Ref, _)).
+    retractall(compiled_dep_edge(_, Ref, _)),
+    forget_constructor_dependency_owner(compiled(Ref)).
 
 compiled_dependency_origin(Ref, File) :-
     compiled_deps(Ref, _, File, _), !.
@@ -45,33 +53,41 @@ compiled_function_dependencies(F, Dependencies) :-
     sort(Ds0, Dependencies).
 
 recorded_constructor_dependency_types(Types) :-
-    findall(T,
-            ( compiled_dep_edge(ctor_set(T), Ref, _),
-              clause(_, _, Ref),
-              atom(T) ),
-            Compiled),
-    findall(T,
-            ( validation_deps(_, Dependencies),
-              member(ctor_set(T), Dependencies),
-              atom(T) ),
-            Validations),
-    findall(T,
-            ( analysis_memo(_, Proof),
-              analysis_proof_dependencies(Proof, Dependencies),
-              member(ctor_set(T), Dependencies),
-              atom(T) ),
-            Memos),
-    append([Compiled, Validations, Memos], Ts0),
-    sort(Ts0, Types).
+    findall(T, constructor_dependency_type(T), Types).
+
+record_constructor_dependency_owner(Owner, Dependencies) :-
+    forall(( member(ctor_set(Type), Dependencies), atom(Type) ),
+           ( assertz(constructor_dependency_owner(Type, Owner)),
+             ( constructor_dependency_type(Type)
+               -> true
+               ; assertz(constructor_dependency_type(Type)) ) )).
+
+forget_constructor_dependency_owner(Owner) :-
+    findall(Type, constructor_dependency_owner(Type, Owner), Types0),
+    sort(Types0, Types),
+    retractall(constructor_dependency_owner(_, Owner)),
+    forall(member(Type, Types),
+           ( constructor_dependency_owner(Type, _)
+             -> true
+             ; retractall(constructor_dependency_type(Type)) )).
 
 record_validation_dependencies(Key, Dependencies) :-
     retractall(validation_deps(Key, _)),
-    copy_term_nat(Dependencies, Copy),
+    retractall(validation_dep_edge(_, Key)),
+    forget_constructor_dependency_owner(validation(Key)),
+    ( ground(Dependencies)
+      -> Copy = Dependencies
+      ; copy_term_nat(Dependencies, Copy) ),
     sort(Copy, Deps),
-    assertz(validation_deps(Key, Deps)).
+    assertz(validation_deps(Key, Deps)),
+    forall(member(Dependency, Deps),
+           assertz(validation_dep_edge(Dependency, Key))),
+    record_constructor_dependency_owner(validation(Key), Deps).
 
 forget_validation_dependencies(Key) :-
-    retractall(validation_deps(Key, _)).
+    retractall(validation_deps(Key, _)),
+    retractall(validation_dep_edge(_, Key)),
+    forget_constructor_dependency_owner(validation(Key)).
 
 % Mutation vocabulary:
 %   clause_changed(F/N, prevalidated|runtime|derived)
@@ -193,9 +209,8 @@ revalidate_affected_consumers(Event,
                               graph_state(Fs, Validated0),
                               graph_state(Fs, Validated)) :-
     findall(Key,
-            ( validation_deps(Key, Dependencies),
-              member(Dependency, Dependencies),
-              mutation_dependency_matches(Event, Dependency),
+            ( mutation_candidate_dependency(Event, Dependency),
+              validation_dep_edge(Dependency, Key),
               \+ memberchk(Key, Validated0) ),
             Keys0),
     sort(Keys0, Keys),

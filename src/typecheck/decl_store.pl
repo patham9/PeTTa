@@ -34,7 +34,10 @@
 
 fn_decl_copy(F, N, Scheme, Effect, Origin, Provenance) :-
     fn_decl(F, N, S0, E0, Origin, P0),
-    copy_term(S0-E0-P0, Scheme-Effect-Provenance).
+    Stored = S0-E0-P0,
+    ( ground(Stored)
+      -> Scheme-Effect-Provenance = Stored
+      ; copy_term(Stored, Scheme-Effect-Provenance) ).
 
 declared_fn_type(F, ATs, OT, Det) :-
     fn_decl_copy(F, _, scheme(ATs, OT), Effect, _, _),
