@@ -18,9 +18,6 @@
 %position. The net effect is identical - the copy's param var reads as
 %-[det]-> for the var-head application in deterministic_expr - and it stays
 %scoped to the copy; the stored metas are never mutated.
-:- dynamic det_assume_cache/3.
-:- dynamic effect_body_cache/4.  % effect_body_cache(F, Arity, Name, det|semidet|nondet|unspecified)
-
 %A bounded effect-polymorphic declaration is used analytically only when it is
 %the unique declaration at this arity. Overload dispatch has its own type
 %branches, but the determinism walker sees only F/Arity and cannot soundly
@@ -44,11 +41,18 @@ stored_effect_position(Name, closure_arg(Idx, M), pos(Idx, M, Arrow)) :-
 %The separate recursion stack is the same coinductive assumption used by
 %body_determinism_assuming/3.
 effect_body_determinism(F, N, Name, Det) :-
-    effect_body_cache(F, N, Name, D0), !, Det = D0.
-effect_body_determinism(F, N, Name, det) :-
+    effect_body_determinism_proof(F, N, Name, Proof),
+    analysis_proof_verdict(Proof, Det),
+    analysis_reemit_proof(Proof).
+
+effect_body_determinism_proof(F, N, Name, Proof) :-
+    analysis_cache_lookup(effect(F, N, Name), Proof), !.
+effect_body_determinism_proof(F, N, Name, Proof) :-
     catch(b_getval('$effect_assume_stack', St), _, St = []),
-    memberchk(effect(F, N, Name), St), !.
-effect_body_determinism(F, N, Name, Det) :-
+    memberchk(effect(F, N, Name), St), !,
+    analysis_make_proof(effect_body(F/N, Name), det, [],
+                        [effect(F/N), decl(F/N), clause_set(F/N)], Proof).
+effect_body_determinism_proof(F, N, Name, Proof) :-
     effect_poly_decl(F, N, Name, ATs, Positions),
     catch(nb_getval(F, Metas0), _, Metas0 = []),
     include(arity_meta(N), Metas0, Metas),
@@ -58,10 +62,22 @@ effect_body_determinism(F, N, Name, Det) :-
     setup_call_cleanup(
         b_setval('$effect_assume_stack', [effect(F, N, Name)|St]),
         ( with_det_enforced(enforced(F, N),
-                            clause_set_determinism(Upgraded, Raw)),
-          effect_public_level(Raw, Det) ),
+                            clause_set_determinism_proof(Upgraded, ClauseProof)),
+          analysis_proof_verdict(ClauseProof, Raw),
+          effect_public_level(Raw, Det),
+          analysis_proof_requirements(ClauseProof, Bounds),
+          analysis_proof_certificates(ClauseProof, Certs),
+          analysis_proof_dependencies(ClauseProof, ClauseDeps),
+          analysis_term_dependencies(Upgraded, TermDeps),
+          append([[effect(F/N), decl(F/N), clause_set(F/N)],
+                  ClauseDeps, TermDeps], Ds0),
+          sort(Ds0, Deps),
+          Proof = analysis_proof(effect_body(F/N, Name), Det,
+                                 requirements(Bounds),
+                                 certificates(Certs),
+                                 dependencies(Deps)) ),
         b_setval('$effect_assume_stack', St)),
-    assertz(effect_body_cache(F, N, Name, Det)).
+    analysis_cache_store(effect(F, N, Name), Proof).
 
 effect_public_level(det, det).
 effect_public_level(semidet, semidet).
@@ -91,7 +107,7 @@ closure_effect_level(Arg, _, Det) :-
     known_singleton(Arg, K), arrow_head_level(K, L),
     concrete_effect_level(L, Det).
 closure_effect_level(['|->', _, Body], _, Det) :- !,
-    deterministic_expr(Body, R), det_result_effect(R, Det).
+    deterministic_expr_core(Body, R), det_result_effect(R, Det).
 closure_effect_level(partial(F, _), M, Det) :- !,
     named_closure_effect(F, M, Det).
 %A source-level partial application of a closure parameter, e.g.
@@ -183,23 +199,46 @@ fn_own_arity(F2, A) :- catch(nb_getval(F2, Metas), _, fail), member(fun_meta(As,
 %separate cache memoizes the argument-independent ("det GIVEN det closures")
 %result. Never reuses body_determinism's $det_stack - that would let the
 %unconditional analysis wrongly certify a plain -> as det.
-body_determinism_assuming(F, N, Det) :- det_assume_cache(F, N, Det0), !, Det = Det0.
-body_determinism_assuming(F, _, det) :- catch(b_getval('$det_assume_stack', St), _, St = []),
-                                        memberchk(F, St), !.
-body_determinism_assuming(F, N, Det) :- catch(nb_getval(F, Metas0), _, Metas0 = []),
-                                        include(arity_meta(N), Metas0, Metas),
-                                        Metas \== [],
-                                        findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs1]),
-                                        arrow_det_positions(ATs1, Positions),
-                                        Positions \== [],
-                                        maplist(assume_det_meta(ATs1, Positions), Metas, Upgraded),
-                                        catch(b_getval('$det_assume_stack', St), _, St = []),
-                                        b_setval('$det_assume_stack', [F|St]),
-                                        det_enforced_flag(F, N, Enf),
-                                        with_det_enforced(Enf, clause_set_determinism(Upgraded, Det0)),
-                                        b_setval('$det_assume_stack', St),
-                                        Det = Det0,
-                                        assertz(det_assume_cache(F, N, Det)).
+body_determinism_assuming(F, N, Det) :-
+    body_determinism_assuming_proof(F, N, Proof),
+    analysis_proof_verdict(Proof, Det),
+    analysis_reemit_proof(Proof).
+
+body_determinism_assuming_proof(F, N, Proof) :-
+    analysis_cache_lookup(assume(F, N), Proof), !.
+body_determinism_assuming_proof(F, N, Proof) :-
+    catch(b_getval('$det_assume_stack', St), _, St = []),
+    memberchk(F, St), !,
+    analysis_make_proof(conditional_body(F/N), det, [],
+                        [effect(F/N), decl(F/N), clause_set(F/N)], Proof).
+body_determinism_assuming_proof(F, N, Proof) :-
+    catch(nb_getval(F, Metas0), _, Metas0 = []),
+    include(arity_meta(N), Metas0, Metas),
+    Metas \== [],
+    findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs1]),
+    arrow_det_positions(ATs1, Positions),
+    Positions \== [],
+    maplist(assume_det_meta(ATs1, Positions), Metas, Upgraded),
+    catch(b_getval('$det_assume_stack', St), _, St = []),
+    setup_call_cleanup(
+        b_setval('$det_assume_stack', [F|St]),
+        ( det_enforced_flag(F, N, Enf),
+          with_det_enforced(Enf,
+              clause_set_determinism_proof(Upgraded, ClauseProof)),
+          analysis_proof_verdict(ClauseProof, Det),
+          analysis_proof_requirements(ClauseProof, Bounds),
+          analysis_proof_certificates(ClauseProof, Certs),
+          analysis_proof_dependencies(ClauseProof, ClauseDeps),
+          analysis_term_dependencies(Upgraded, TermDeps),
+          append([[effect(F/N), decl(F/N), clause_set(F/N)],
+                  ClauseDeps, TermDeps], Ds0),
+          sort(Ds0, Deps),
+          Proof = analysis_proof(conditional_body(F/N), Det,
+                                 requirements(Bounds),
+                                 certificates(Certs),
+                                 dependencies(Deps)) ),
+        b_setval('$det_assume_stack', St)),
+    analysis_cache_store(assume(F, N), Proof).
 
 %Copy the clause meta (attributes copy with the term) and, at each arrow
 %position, attach the det form of the declared arrow to the COPIED head var -
@@ -248,7 +287,7 @@ underapplied_closure(Fun, N) :- CallArity is N + 1,
 %Note this is a REFINEMENT as well as a tightening: once(nondeterministic) and
 %once(unknown) used to be discarded, and are now the strictly more precise
 %may_fail (zero or one), which -[semidet]-> accepts.
-once_determinism(Expr, Result) :- deterministic_expr(Expr, R),
+once_determinism(Expr, Result) :- deterministic_expr_core(Expr, R),
                                   ( R == ok -> Result = ok
                                   ; R = may_fail(_) -> Result = R
                                   ; R = nondeterministic(Why) -> Result = may_fail(once(Why))
@@ -266,7 +305,7 @@ combine_det_results(A, B, R) :- det_result_rank(A, RA), det_result_rank(B, RB),
                                 ( RB > RA -> R = B ; R = A ).
 
 combine_determinism_list([], ok).
-combine_determinism_list([Expr|Exprs], Result) :- deterministic_expr(Expr, First),
+combine_determinism_list([Expr|Exprs], Result) :- deterministic_expr_core(Expr, First),
                                                   ( det_result_final(First) -> Result = First
                                                   ; combine_determinism_list(Exprs, Rest),
                                                     combine_det_results(First, Rest, Result) ).
@@ -277,12 +316,12 @@ combine_determinism_list([Expr|Exprs], Result) :- deterministic_expr(Expr, First
 %narrowing all apply per binding with no second copy of the logic. The old
 %pattern_then_exprs walk analyzed each pair in isolation, which is exactly
 %how the let refinements failed to reach let*:
-binds_and_body_determinism([], Body, Result) :- deterministic_expr(Body, Result).
+binds_and_body_determinism([], Body, Result) :- deterministic_expr_core(Body, Result).
 binds_and_body_determinism([[Pat, Val]|Rest], Body, Result) :-
     ( Rest == [] -> In = Body ; In = ['let*', Rest, Body] ),
     let_determinism(Pat, Val, In, Result).
 
-case_expr_determinism(KeyExpr, PairsExpr, Result) :- deterministic_expr(KeyExpr, KeyResult),
+case_expr_determinism(KeyExpr, PairsExpr, Result) :- deterministic_expr_core(KeyExpr, KeyResult),
                                                      ( det_result_final(KeyResult) -> Result = KeyResult
                                                      ; case_pairs_determinism(PairsExpr, R2),
                                                        case_coverage_determinism(KeyExpr, PairsExpr, R3),
@@ -357,7 +396,7 @@ pattern_then_exprs(Pat, Exprs, Result) :- deterministic_pattern(Pat, R0),
 let_determinism(Pat, Val, In, Result) :-
     deterministic_pattern(Pat, R0),
     ( det_result_final(R0) -> Result = R0
-    ; deterministic_expr(Val, RVal),
+    ; deterministic_expr_core(Val, RVal),
       ( det_result_final(RVal) -> Result = RVal
       ; copy_term(Pat-In, PatC-InC),
         ignore(bind_destructured_field_types(PatC, Val)),
@@ -378,7 +417,7 @@ let_determinism(Pat, Val, In, Result) :-
         %the copies so they read as parameters, not as fresh locals:
         term_variables(PatC, FVs),
         maplist(mark_field_unless_typed, FVs),
-        deterministic_expr(InC, RIn),
+        deterministic_expr_core(InC, RIn),
         combine_det_results(RVal, RIn, RVI),
         combine_det_results(R0, RVI, Result) ) ).
 
@@ -416,7 +455,7 @@ mark_field_unless_typed(V) :- ( get_attr(V, tknown, _) -> true ; note_unknown_ca
 call_output_type([F|Args], OT) :- atom(F), length(Args, N), fn_decl_arity(F, N, _, OT), nonvar(OT).
 
 deterministic_pattern(P, ok) :- ( var(P) ; atomic(P) ; P = partial(_, _) ), !.
-deterministic_pattern([H|T], Result) :- atom(H), fun(H), !, deterministic_expr([H|T], Result).
+deterministic_pattern([H|T], Result) :- atom(H), fun(H), !, deterministic_expr_core([H|T], Result).
 deterministic_pattern(P, Result) :- combine_pattern_list(P, Result).
 
 combine_pattern_list([], ok).
@@ -482,12 +521,27 @@ check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
          %the verdict is a snapshot of the constructor sets it consulted, so
          %it is kept along with WHICH sets those were - a constructor declared
          %later re-runs exactly the verdicts its type takes part in:
-         with_ctor_snapshot_types(
-             with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads)), Types),
+         with_form_location(
+             Line, Str,
+             det_exhaustiveness_proof(Consts, F, N, Heads, ExhaustiveProof)),
+         analysis_proof_dependencies(ExhaustiveProof, ExhaustiveDeps),
+         findall(T, member(ctor_set(T), ExhaustiveDeps), Types0),
+         sort(Types0, Types),
          current_metta_file(File),
          retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
          assertz(det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str))
        ; true ).
+
+det_exhaustiveness_proof(Consts, F, N, Heads, Proof) :-
+    with_ctor_snapshot_types(
+        check_det_exhaustive(Consts, F, N, Heads), Types),
+    findall(ctor_set(T), member(T, Types), CtorDeps),
+    analysis_term_dependencies(Heads, TermDeps),
+    analysis_function_decl_dependencies(F, DeclDeps),
+    append([[decl(F/N), clause_set(F/N)], CtorDeps, TermDeps, DeclDeps], Ds0),
+    sort(Ds0, Dependencies),
+    analysis_make_proof(exhaustiveness(F/N), exhaustive, [],
+                        Dependencies, Proof).
 
 %An effect-polymorphic declaration promises exactly one result at its det
 %instantiation only when the intrinsic body verdict (with $v slots assumed

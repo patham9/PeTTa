@@ -9,6 +9,7 @@
 :- include('typecheck/flags_arrows.pl').   %mode flags, oracle switches, the arrow atoms
 :- include('typecheck/decl_store.pl').     %declaration store, caching, LATE declarations
 :- include('typecheck/type_lang.pl').      %type_unify/2, brands, unions, knowledge attrs, markers
+:- include('typecheck/analysis_proofs.pl').%functional proof records + the single memo boundary
 :- include('typecheck/value_checks.pl').   %value typing, check_value/3, tuples, call-site args
 :- include('typecheck/clause_checks.pl').  %clause output certification, strict gates, narrowing
 :- include('typecheck/ctor_snapshots.pl'). %constructor-set snapshots and revalidation

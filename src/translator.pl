@@ -32,9 +32,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                                 ; Args1 = Args0, GoalsPrefix = [] ),
                                                catch(nb_getval(F, Prev), _, Prev = []),
                                                nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
-                                               retractall(det_analysis_cache(_, _, _)),  %clause set changed
-                                               retractall(det_assume_cache(_, _, _)),  %conditional-det results depend on clauses too
-                                               retractall(effect_body_cache(_, _, _, _)), %effect equations depend on clauses too
+                                               analysis_cache_invalidate_clause_change, %all analysis memos depend on clause sets
                                                %clause set changed: the output-certificate memos (proper_list,
                                                %bound_bool) depend on clause sets transitively, so they reset
                                                %alongside the det caches above (see output_cert/3):
@@ -226,7 +224,7 @@ drop_stale_fun_meta(_, _).
 %%% overlap throws exactly the error the declaration would have caused had it
 %%% arrived first - which is the whole point: enforced, or rejected.
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
-                                 retractall(effect_body_cache(F, _, _, _)),
+                                 analysis_cache_invalidate(effect(F)),
                                  ( Us == [] -> true
                                  ; retractall(det_bound_proviso(F, _, _, _)),  %re-derive the boundness union from scratch
                                    reset_output_certs(F),  %withdraw the output certificates for re-derivation
@@ -261,9 +259,11 @@ recompile_changed_caller_list([], _).
 recompile_changed_caller_list([G|Gs], Visited) :-
     ( memberchk(G, Visited)
       -> Visited1 = Visited
-    ; compiled_function_snapshot(G, Before),
+    ; compiled_function_snapshot_proof(G, BeforeProof),
       recompile_function_clauses(G),
-      compiled_function_snapshot(G, After),
+      compiled_function_snapshot_proof(G, AfterProof),
+      analysis_proof_verdict(BeforeProof, snapshot(Before)),
+      analysis_proof_verdict(AfterProof, snapshot(After)),
       ( attribute_free_variant(Before, After)
         -> Visited1 = [G|Visited]
       ; recompile_changed_callers([G|Visited], G),
@@ -284,12 +284,18 @@ source_calls_named(E, F) :-
     ; member(A, Args), source_calls_named(A, F) ).
 
 compiled_function_snapshot(F, Snapshot) :-
+    compiled_function_snapshot_proof(F, Proof),
+    analysis_proof_verdict(Proof, snapshot(Snapshot)).
+
+compiled_function_snapshot_proof(F, Proof) :-
     findall((H :- B),
             ( translated_from(Ref, Term), clause(H, B, Ref),
               Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F ),
             Clauses),
     copy_term_nat(Clauses, Snapshot),
-    numbervars(Snapshot, 0, _, [singletons(true)]).
+    numbervars(Snapshot, 0, _, [singletons(true)]),
+    analysis_term_dependencies(Clauses, Dependencies),
+    analysis_snapshot_proof(compiled(F), Snapshot, Dependencies, Proof).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.

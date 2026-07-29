@@ -312,17 +312,35 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %no. The memo is written only for OUTERMOST proofs (empty stack on entry):
 %inner members of a cycle are re-derived when asked directly, which costs
 %recomputation, never correctness.
-:- dynamic output_cert_memo/4.   % output_cert_memo(Kind, F, N, yes|no)
-
-output_cert(Kind, F, N) :- output_cert_memo(Kind, F, N, A), !, A == yes.
-output_cert(Kind, F, N) :- cert_on_stack(Kind, F, N), !.       %coinductive assumption
 output_cert(Kind, F, N) :-
+    output_cert_proof(Kind, F, N, Proof),
+    analysis_proof_verdict(Proof, yes),
+    analysis_reemit_proof(Proof).
+
+output_cert_proof(Kind, F, N, Proof) :-
+    analysis_cache_lookup(output(Kind, F, N), Proof), !.
+output_cert_proof(Kind, F, N, Proof) :-
+    output_cert_core(Kind, F, N, [], Verdict, Dependencies),
+    ( Verdict == yes -> CertEvents = [certificate(Kind, F/N)]
+                      ; CertEvents = [] ),
+    analysis_make_proof(output_cert(Kind, F/N), Verdict, CertEvents,
+                        [output_cert(Kind, F/N)|Dependencies], Proof),
+    analysis_cache_store(output(Kind, F, N), Proof).
+
+%The coinductive proof stack is an explicit core input.  It used to be the
+%$cert_stack b_setval scope; returning dependencies from the recursion makes
+%the proof usable by the next phase without reconstructing that hidden stack.
+output_cert_core(Kind, F, N, Stack, yes, [output_cert(Kind, F/N)]) :-
+    memberchk(c(Kind, F, N), Stack), !.
+output_cert_core(Kind, F, N, Stack, Verdict, Dependencies) :-
     atom(F),
-    cert_clause_bodies(F, N, Bodies), Bodies \== [],
-    catch(b_getval('$cert_stack', St0), _, St0 = []),
-    ( with_cert_stack(Kind, F, N, all_bodies_qualify(Kind, Bodies)) -> A = yes ; A = no ),
-    ( St0 == [] -> assertz(output_cert_memo(Kind, F, N, A)) ; true ),
-    A == yes.
+    cert_clause_bodies(F, N, Bodies),
+    ( Bodies == []
+      -> Verdict = no,
+         Dependencies = [clause_set(F/N)]
+    ; output_bodies_verdict(Kind, Bodies, [c(Kind, F, N)|Stack],
+                            Verdict, BodyDeps),
+      append([clause_set(F/N), decl(F/N)], BodyDeps, Dependencies) ).
 
 %Every clause body of F/N the prover can see: the compiled store, PLUS the
 %current file's pending prepass bodies (filereader.pl) - a later definition's
@@ -339,17 +357,12 @@ cert_clause_bodies(F, N, Bodies) :-
     findall(B, pending_clause_body(File, F, N, B), Ps),
     append(Rs, Ps, Bodies).
 
-cert_on_stack(Kind, F, N) :- catch(b_getval('$cert_stack', St), _, fail),
-                             member(c(K, F1, N1), St), K == Kind, F1 == F, N1 == N, !.
-
-with_cert_stack(Kind, F, N, Goal) :- catch(b_getval('$cert_stack', St), _, St = []),
-                                     setup_call_cleanup(b_setval('$cert_stack', [c(Kind, F, N)|St]),
-                                                        Goal,
-                                                        b_setval('$cert_stack', St)).
-
-all_bodies_qualify(_, []).
-all_bodies_qualify(Kind, [B|Bs]) :- output_result_qualifies(Kind, B),
-                                    all_bodies_qualify(Kind, Bs).
+output_bodies_verdict(_, [], _, yes, []).
+output_bodies_verdict(Kind, [B|Bs], Stack, Verdict, Dependencies) :-
+    output_result_qualifies_core(Kind, B, Stack, Here, HereDeps),
+    output_bodies_verdict(Kind, Bs, Stack, Rest, RestDeps),
+    ( Here == yes, Rest == yes -> Verdict = yes ; Verdict = no ),
+    append(HereDeps, RestDeps, Dependencies).
 
 proper_list_output(F, N) :- output_cert(proper_list, F, N).
 bool_output(F, N) :- output_cert(bound_bool, F, N).
@@ -357,10 +370,88 @@ bool_output(F, N) :- output_cert(bound_bool, F, N).
 %The memo is stale the moment ANY clause set changes - a certificate depends
 %on callees transitively - so invalidation is global, exactly like
 %det_analysis_cache (translate_clause retracts both on every new clause):
-reset_output_certs(_) :- retractall(output_cert_memo(_, _, _, _)).
+reset_output_certs(_) :- analysis_cache_invalidate(output).
 
-output_result_qualifies(proper_list, Body) :- clause_result_proper_list(Body).
-output_result_qualifies(bound_bool, Body) :- clause_result_bool(Body).
+output_result_qualifies(Kind, Body) :-
+    output_result_qualifies_core(Kind, Body, [], yes, _).
+
+output_result_qualifies_core(proper_list, Body, Stack, Verdict, Dependencies) :-
+    clause_result_proper_list_core(Body, Stack, Verdict, Dependencies).
+output_result_qualifies_core(bound_bool, Body, Stack, Verdict, Dependencies) :-
+    clause_result_bool_core(Body, Stack, Verdict, Dependencies).
+
+clause_result_bool_core(Body, _, yes, []) :-
+    ( Body == true ; Body == false ), !.
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [F|Args], bool_logic_builtin(F), !,
+    cert_bool_args(Args, Stack, Verdict, Dependencies).
+clause_result_bool_core(Body, _, yes, [effect(F/N), decl(F/N)]) :-
+    nonvar(Body), Body = [F|Args], atom(F), is_list(Args), length(Args, N),
+    \+ bool_logic_builtin(F),
+    ( builtin_call_determinism_args(F, N, Args, det)
+    ; builtin_call_determinism(F, N, det) ),
+    findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool', !.
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [If, _, T, E], If == if, !,
+    output_result_qualifies_core(bound_bool, T, Stack, TV, TD),
+    output_result_qualifies_core(bound_bool, E, Stack, EV, ED),
+    ( TV == yes, EV == yes -> Verdict = yes ; Verdict = no ),
+    append(TD, ED, Dependencies).
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [If, _, T], If == if, !,
+    output_result_qualifies_core(bound_bool, T, Stack, Verdict, Dependencies).
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [Let, _, _, In], Let == let, !,
+    output_result_qualifies_core(bound_bool, In, Stack, Verdict, Dependencies).
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [Ls, _, In], Ls == 'let*', !,
+    output_result_qualifies_core(bound_bool, In, Stack, Verdict, Dependencies).
+clause_result_bool_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [G|GArgs], atom(G), is_list(GArgs),
+    length(GArgs, N), !,
+    output_cert_core(bound_bool, G, N, Stack, Verdict, Dependencies).
+clause_result_bool_core(_, _, no, []).
+
+bool_logic_builtin(and).
+bool_logic_builtin(or).
+bool_logic_builtin(not).
+bool_logic_builtin(xor).
+bool_logic_builtin(implies).
+
+cert_bool_args([], _, yes, []).
+cert_bool_args([A|As], Stack, Verdict, Dependencies) :-
+    cert_bool_value(A, Stack, Here, HereDeps),
+    cert_bool_args(As, Stack, Rest, RestDeps),
+    ( Here == yes, Rest == yes -> Verdict = yes ; Verdict = no ),
+    append(HereDeps, RestDeps, Dependencies).
+
+cert_bool_value(A, _, yes, []) :- ( A == true ; A == false ), !.
+cert_bool_value(A, Stack, Verdict, Dependencies) :-
+    nonvar(A), A = [F|Args], bool_logic_builtin(F), !,
+    cert_bool_args(Args, Stack, Verdict, Dependencies).
+cert_bool_value(A, _, yes, [effect(F/N), decl(F/N)]) :-
+    nonvar(A), A = [F|Args], atom(F), is_list(Args), length(Args, N),
+    \+ bool_logic_builtin(F),
+    ( builtin_call_determinism_args(F, N, Args, det)
+    ; builtin_call_determinism(F, N, det) ),
+    findall(OT, fn_decl_arity(F, N, _, OT), [OT1]), OT1 == 'Bool', !.
+cert_bool_value(A, Stack, Verdict, Dependencies) :-
+    nonvar(A), A = [G|GArgs], atom(G), is_list(GArgs), !,
+    length(GArgs, N),
+    output_cert_core(bound_bool, G, N, Stack, Verdict, Dependencies).
+cert_bool_value(_, _, no, []).
+
+clause_result_proper_list_core(Body, _, yes, []) :-
+    nonvar(Body), Body = [Hd|Rest], nonvar(Hd), Hd == collapse,
+    Rest = [_], !.
+clause_result_proper_list_core(Body, _, yes, []) :-
+    proper_list_literal_spine(Body), !.
+clause_result_proper_list_core(Body, Stack, Verdict, Dependencies) :-
+    nonvar(Body), Body = [G|GArgs], atom(G),
+    \+ ( G == cons ; G == 'cons-atom' ),
+    length(GArgs, N), !,
+    output_cert_core(proper_list, G, N, Stack, Verdict, Dependencies).
+clause_result_proper_list_core(_, _, no, []).
 
 %A clause body whose RESULT is provably a bound boolean. manifest_bool/1
 %covers the leaves - the true/false literals and a det builtin whose sole
@@ -452,24 +543,47 @@ enforced_bound_tuple(X, W) :- var(X), enforced_bound_param(X),
 %else is `unspecified`. Assuming det for a predicate nobody analysed is the
 %strongest claim available about the least visible code in the system, and it
 %certified -[det]-> functions whose bodies backtrack (see (get-atoms ...)).
-:- dynamic det_analysis_cache/3.
+body_determinism(F, N, Det) :-
+    body_determinism_proof(F, N, Proof),
+    analysis_proof_verdict(Proof, Det),
+    analysis_reemit_proof(Proof).
 
-body_determinism(F, N, Det) :- det_analysis_cache(F, N, Det0), !, Det = Det0.
-body_determinism(F, _, det) :- catch(b_getval('$det_stack', St), _, St = []),
-                               memberchk(F, St), !.
-body_determinism(F, N, Det) :- catch(nb_getval(F, Metas0), _, Metas0 = []),
-                               include(arity_meta(N), Metas0, Metas),
-                               ( Metas == []
-                                 -> ( builtin_call_determinism(F, N, Det0)
-                                      -> Det = Det0 ; Det = unspecified )
-                                  ; catch(b_getval('$det_stack', St), _, St = []),
-                                    b_setval('$det_stack', [F|St]),
-                                    type_meta_params(F, N, Metas, Metas1),
-                                    det_enforced_flag(F, N, Enf),
-                                    with_det_enforced(Enf, clause_set_determinism(Metas1, Det0)),
-                                    b_setval('$det_stack', St),
-                                    Det = Det0,
-                                    assertz(det_analysis_cache(F, N, Det)) ).
+body_determinism_proof(F, N, Proof) :-
+    analysis_cache_lookup(det(F, N), Proof), !.
+body_determinism_proof(F, N, Proof) :-
+    catch(b_getval('$det_stack', St), _, St = []),
+    memberchk(F, St), !,
+    analysis_make_proof(body(F/N), det, [],
+                        [effect(F/N), clause_set(F/N)], Proof).
+body_determinism_proof(F, N, Proof) :-
+    catch(nb_getval(F, Metas0), _, Metas0 = []),
+    include(arity_meta(N), Metas0, Metas),
+    ( Metas == []
+      -> ( builtin_call_determinism(F, N, Det0)
+           -> Det = Det0 ; Det = unspecified ),
+         analysis_make_proof(body(F/N), Det, [],
+                             [effect(F/N), decl(F/N)], Proof)
+    ; catch(b_getval('$det_stack', St), _, St = []),
+      setup_call_cleanup(
+          b_setval('$det_stack', [F|St]),
+          ( type_meta_params(F, N, Metas, Metas1),
+            det_enforced_flag(F, N, Enf),
+            with_det_enforced(Enf,
+                clause_set_determinism_proof(Metas1, ClauseProof)),
+            analysis_proof_verdict(ClauseProof, Det),
+            analysis_proof_requirements(ClauseProof, Bounds),
+            analysis_proof_certificates(ClauseProof, Certs),
+            analysis_proof_dependencies(ClauseProof, ClauseDeps),
+            analysis_term_dependencies(Metas1, TermDeps),
+            append([[effect(F/N), decl(F/N), clause_set(F/N)],
+                    ClauseDeps, TermDeps], Ds0),
+            sort(Ds0, Deps),
+            Proof = analysis_proof(body(F/N), Det,
+                                   requirements(Bounds),
+                                   certificates(Certs),
+                                   dependencies(Deps)) ),
+          b_setval('$det_stack', St)),
+      analysis_cache_store(det(F, N), Proof) ).
 
 %A stored clause meta is captured before clause_param_types binds the
 %declared arg types onto the head param vars, so those vars carry no type
@@ -499,12 +613,22 @@ arity_meta(N, fun_meta(Args, _)) :- length(Args, N).
 %The worst verdict over ALL clause bodies decides (a may_fail clause followed
 %by a nondeterministic one is nondet, not semidet), and overlapping heads
 %multiply results whatever the bodies say:
-clause_set_determinism(Metas, Det) :- clause_bodies_determinism(Metas, R),
-                                      ( R = nondeterministic(_) -> Det = nondet
-                                      ; R = unknown(_) -> Det = unspecified
-                                      ; overlapping_meta_pair(Metas) -> Det = nondet
-                                      ; R = may_fail(_) -> Det = semidet
-                                      ; Det = det ).
+clause_set_determinism(Metas, Det) :-
+    clause_set_determinism_proof(Metas, Proof),
+    analysis_proof_verdict(Proof, Det),
+    analysis_reemit_proof(Proof).
+
+clause_set_determinism_proof(Metas, Proof) :-
+    analysis_collect(clause_set_determinism_core(Metas, Det), Events),
+    analysis_term_dependencies(Metas, Dependencies),
+    analysis_make_proof(clause_set, Det, Events, Dependencies, Proof).
+
+clause_set_determinism_core(Metas, Det) :- clause_bodies_determinism(Metas, R),
+                                           ( R = nondeterministic(_) -> Det = nondet
+                                           ; R = unknown(_) -> Det = unspecified
+                                           ; overlapping_meta_pair(Metas) -> Det = nondet
+                                           ; R = may_fail(_) -> Det = semidet
+                                           ; Det = det ).
 
 %The metas are walked directly (never through findall) so the parameter type
 %attributes type_meta_params/4 attached to the head vars stay visible in the
@@ -514,7 +638,7 @@ clause_bodies_determinism([], ok).
 %analysis (see with_det_head_vars/2): a wildcard-typed parameter has no type
 %attribute, so identity against the head is what tells it from a fresh local.
 clause_bodies_determinism([fun_meta(Args, B)|Ms], R) :-
-                                                     with_det_head_vars(Args, B, deterministic_expr(B, R1)),
+                                                     with_det_head_vars(Args, B, deterministic_expr_core(B, R1)),
                                                      ( det_result_final(R1) -> R = R1
                                                      ; clause_bodies_determinism(Ms, R2),
                                                        combine_det_results(R1, R2, R) ).
@@ -524,11 +648,23 @@ overlapping_meta_pair(Metas) :- append(_, [fun_meta(A1, _)|Rest], Metas),
                                 clause_heads_overlap(A1, A2),
                                 \+ body_commits(B2).
 
-deterministic_expr(Expr, ok) :- ( var(Expr) ; atomic(Expr) ; Expr = partial(_, _) ), !.
+%Public compatibility wrapper.  The functional core returns its full evidence;
+%legacy callers that only need the detailed cardinality verdict keep /2.
+deterministic_expr(Expr, Result) :-
+    deterministic_expr_proof(Expr, Proof),
+    analysis_proof_verdict(Proof, Result),
+    analysis_reemit_proof(Proof).
+
+deterministic_expr_proof(Expr, Proof) :-
+    analysis_collect(deterministic_expr_core(Expr, Result), Events),
+    analysis_term_dependencies(Expr, Dependencies),
+    analysis_make_proof(expr(Expr), Result, Events, Dependencies, Proof).
+
+deterministic_expr_core(Expr, ok) :- ( var(Expr) ; atomic(Expr) ; Expr = partial(_, _) ), !.
 %A variable head must not unify with the construct patterns below. An
 %explicit -[det]-> arrow (or nonfunction data type) on the head is det
 %evidence in every mode. A plain arrow never proves a commitment:
-deterministic_expr([Head|Args], Result) :- var(Head), !,
+deterministic_expr_core([Head|Args], Result) :- var(Head), !,
     ( Args == [] -> Result = ok                    %singleton ($x) is data, not application
     ; known_singleton(Head, K), nonvar(K)
       -> ( arrow_head_level(K, det) -> combine_determinism_list(Args, Result)
@@ -543,24 +679,24 @@ deterministic_expr([Head|Args], Result) :- var(Head), !,
          ; \+ is_arrow_type(K), \+ wildcard_type_t(K) -> combine_determinism_list(Args, Result)
          ; Result = unknown(dynamic_head(Head)) )
        ; Result = unknown(dynamic_head(Head)) ).
-deterministic_expr([collapse, _], ok) :- !.
-deterministic_expr(['trace!', A, B], Result) :- !, combine_determinism_list([A, B], Result).
-deterministic_expr([once, Expr], Result) :- !, once_determinism(Expr, Result).
-deterministic_expr([quote, _], ok) :- !.
+deterministic_expr_core([collapse, _], ok) :- !.
+deterministic_expr_core(['trace!', A, B], Result) :- !, combine_determinism_list([A, B], Result).
+deterministic_expr_core([once, Expr], Result) :- !, once_determinism(Expr, Result).
+deterministic_expr_core([quote, _], ok) :- !.
 %`data` explicitly constructs an expression. Its first argument is a field,
 %not a dynamic call target; only evaluations nested in the fields contribute
 %to determinism.
-deterministic_expr([data|Fields], Result) :- !, combine_determinism_list(Fields, Result).
+deterministic_expr_core([data|Fields], Result) :- !, combine_determinism_list(Fields, Result).
 %`make-list` has the same non-callable-head discipline as data: only its
 %element evaluations contribute to determinism.
-deterministic_expr(['make-list'|Elements], Result) :- !, combine_determinism_list(Elements, Result).
-deterministic_expr([eval, _], unknown(dynamic_eval)) :- !.
-deterministic_expr([reduce, _], unknown(dynamic_reduce)) :- !.
-deterministic_expr([call, Expr], Result) :- !, deterministic_call_expr(Expr, Result).
-deterministic_expr([superpose|_], nondeterministic(superpose)) :- !.
-deterministic_expr([match|_], nondeterministic(match)) :- !.
-deterministic_expr([hyperpose|_], nondeterministic(hyperpose)) :- !.
-deterministic_expr([translatePredicate|_], nondeterministic(translatePredicate)) :- !.
+deterministic_expr_core(['make-list'|Elements], Result) :- !, combine_determinism_list(Elements, Result).
+deterministic_expr_core([eval, _], unknown(dynamic_eval)) :- !.
+deterministic_expr_core([reduce, _], unknown(dynamic_reduce)) :- !.
+deterministic_expr_core([call, Expr], Result) :- !, deterministic_call_expr(Expr, Result).
+deterministic_expr_core([superpose|_], nondeterministic(superpose)) :- !.
+deterministic_expr_core([match|_], nondeterministic(match)) :- !.
+deterministic_expr_core([hyperpose|_], nondeterministic(hyperpose)) :- !.
+deterministic_expr_core([translatePredicate|_], nondeterministic(translatePredicate)) :- !.
 %The structural (dis)equality tests unify their operands as DATA. A var-headed
 %operand like ($name $index $vars) is a PATTERN built and unified, never
 %dispatched: reduce/2 leaves a var-headed term unevaluated (src/translator.pl),
@@ -568,7 +704,7 @@ deterministic_expr([translatePredicate|_], nondeterministic(translatePredicate))
 %A FUN-headed operand IS evaluated first and still contributes its determinism,
 %so the reading only differs from the generic call path at a variable head -
 %exactly the pattern case the honest dynamic_head verdict is too weak for.
-deterministic_expr([Op, A, B], Result) :- unify_test_op(Op), !,
+deterministic_expr_core([Op, A, B], Result) :- unify_test_op(Op), !,
                                           unify_operand_determinism(A, RA),
                                           unify_operand_determinism(B, RB),
                                           combine_det_results(RA, RB, Result).
@@ -576,7 +712,7 @@ deterministic_expr([Op, A, B], Result) :- unify_test_op(Op), !,
 %expression produces NOTHING. That is a failure path of the construct itself,
 %invisible to an analysis of the parts, so it is may_fail unconditionally -
 %-[semidet]-> accepts it, -[det]-> does not:
-deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], R0),
+deterministic_expr_core([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], R0),
                                                 combine_det_results(may_fail(if_without_else), R0, Result).
 %FEATURE 1 - flow-sensitive nonemptiness. When the condition is (== V ()) or
 %(== () V) with V a variable of known list type, the ELSE branch runs exactly
@@ -585,21 +721,21 @@ deterministic_expr([if, Cond, Then], Result) :- !, combine_determinism_list([Con
 %branch is analysed (semidet_site_upgraded_to_det/3 reads it) and restored
 %after; Cond and Then get no narrowing. Nothing here can REJECT: a
 %non-matching condition falls through to the plain worst-of composition below.
-deterministic_expr([if, Cond, Then, Else], Result) :- nonempty_narrowing_var(Cond, V), !,
-                                                      deterministic_expr(Cond, RC),
-                                                      deterministic_expr(Then, RT),
-                                                      with_nonempty_var(V, deterministic_expr(Else, RE)),
+deterministic_expr_core([if, Cond, Then, Else], Result) :- nonempty_narrowing_var(Cond, V), !,
+                                                      deterministic_expr_core(Cond, RC),
+                                                      deterministic_expr_core(Then, RT),
+                                                      with_nonempty_var(V, deterministic_expr_core(Else, RE)),
                                                       combine_det_results(RC, RT, R01),
                                                       combine_det_results(R01, RE, Result).
-deterministic_expr([if, Cond, Then, Else], Result) :- !, combine_determinism_list([Cond, Then, Else], Result).
-deterministic_expr([progn|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
-deterministic_expr([prog1|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
-deterministic_expr([let, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
-deterministic_expr([chain, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
-deterministic_expr(['let*', Binds, Body], Result) :- !, binds_and_body_determinism(Binds, Body, Result).
-deterministic_expr([sealed, _, Expr], Result) :- !, deterministic_expr(Expr, Result).
-deterministic_expr(['forall', _, _], ok) :- !.
-deterministic_expr(['foldall', _, _, _], ok) :- !.
+deterministic_expr_core([if, Cond, Then, Else], Result) :- !, combine_determinism_list([Cond, Then, Else], Result).
+deterministic_expr_core([progn|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
+deterministic_expr_core([prog1|Exprs], Result) :- !, combine_determinism_list(Exprs, Result).
+deterministic_expr_core([let, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
+deterministic_expr_core([chain, Pat, Val, In], Result) :- !, let_determinism(Pat, Val, In, Result).
+deterministic_expr_core(['let*', Binds, Body], Result) :- !, binds_and_body_determinism(Binds, Body, Result).
+deterministic_expr_core([sealed, _, Expr], Result) :- !, deterministic_expr_core(Expr, Result).
+deterministic_expr_core(['forall', _, _], ok) :- !.
+deterministic_expr_core(['foldall', _, _, _], ok) :- !.
 %The three higher-order builtins exist in TWO forms, and both are live.
 %
 %  * The pseudo-lambda form the translator rewrites inline (src/translator.pl):
@@ -625,25 +761,25 @@ deterministic_expr(['foldall', _, _, _], ok) :- !.
 %committed parameter can establish that condition through a proper-list
 %boundary proviso; an open or partial list remains unprovable and cannot be
 %used to certify the traversal.
-deterministic_expr(['foldl-atom', List, Init, _, _, Body], Result) :- !,
+deterministic_expr_core(['foldl-atom', List, Init, _, _, Body], Result) :- !,
     list_builtin_determinism('foldl-atom', List, [List, Init, Body], Result).
-deterministic_expr(['map-atom', List, _, Body], Result) :- !,
+deterministic_expr_core(['map-atom', List, _, Body], Result) :- !,
     list_builtin_determinism('map-atom', List, [List, Body], Result).
-deterministic_expr(['filter-atom', List, _, Cond], Result) :- !,
+deterministic_expr_core(['filter-atom', List, _, Cond], Result) :- !,
     list_builtin_determinism('filter-atom', List, [List, Cond], Result).
-deterministic_expr(['foldl-atom', List, Init, F], Result) :- !,
+deterministic_expr_core(['foldl-atom', List, Init, F], Result) :- !,
     closure_builtin_determinism('foldl-atom', List, F, 2, [List, Init], Result).
-deterministic_expr(['map-atom', List, F], Result) :- !,
+deterministic_expr_core(['map-atom', List, F], Result) :- !,
     closure_builtin_determinism('map-atom', List, F, 1, [List], Result).
-deterministic_expr(['filter-atom', List, F], Result) :- !,
+deterministic_expr_core(['filter-atom', List, F], Result) :- !,
     closure_builtin_determinism('filter-atom', List, F, 1, [List], Result).
-deterministic_expr(['|->', _, _], ok) :- !.
-deterministic_expr([case, KeyExpr, PairsExpr], Result) :- !, case_expr_determinism(KeyExpr, PairsExpr, Result).
-deterministic_expr([Head|Args], Result) :- ( atomic(Head), ( \+ atom(Head) ; \+ fun(Head) )
+deterministic_expr_core(['|->', _, _], ok) :- !.
+deterministic_expr_core([case, KeyExpr, PairsExpr], Result) :- !, case_expr_determinism(KeyExpr, PairsExpr, Result).
+deterministic_expr_core([Head|Args], Result) :- ( atomic(Head), ( \+ atom(Head) ; \+ fun(Head) )
                                            ; is_list(Head) ), !,
                                            combine_determinism_list([Head|Args], Result).
-deterministic_expr([Head|Args], Result) :- atom(Head), !, deterministic_call_expr([Head|Args], Result).
-deterministic_expr([Head|_], unknown(dynamic_head(Head))).
+deterministic_expr_core([Head|Args], Result) :- atom(Head), !, deterministic_call_expr([Head|Args], Result).
+deterministic_expr_core([Head|_], unknown(dynamic_head(Head))).
 
 %(map-atom L F), (foldl-atom L Init F) and (filter-atom L F): the data
 %arguments contribute their own determinism, and the closure has to prove
@@ -653,9 +789,10 @@ list_builtin_determinism(Name, List, Exprs, Result) :-
                                  ; Result = unknown(open_list(Name, List)) ).
 
 closure_builtin_determinism(Name, List, F, M, DataArgs, Result) :-
-    ( \+ manifest_proper_list(List) -> Result = unknown(open_list(Name, List))
-    ; det_arg_evidence(F, M) -> combine_determinism_list(DataArgs, Result)
-    ; Result = unknown(undetermined_closure(Name, F)) ).
+    ( manifest_proper_list(List)
+      -> ( det_arg_evidence(F, M) -> combine_determinism_list(DataArgs, Result)
+         ; Result = unknown(undetermined_closure(Name, F)) )
+    ; Result = unknown(open_list(Name, List)) ).
 
 deterministic_call_expr([Fun|Args], Result) :- atom(Fun), !,
                                                length(Args, N),
@@ -688,7 +825,7 @@ unify_test_op('=@=').
 unify_operand_determinism(E, ok) :- ( var(E) ; atomic(E) ), !.
 unify_operand_determinism([H|Args], R) :- var(H), unify_head_is_data(H), !,
                                           combine_unify_operands(Args, R).
-unify_operand_determinism(E, R) :- deterministic_expr(E, R).
+unify_operand_determinism(E, R) :- deterministic_expr_core(E, R).
 
 %A var head is data only when it provably CANNOT be a function at the reduce
 %that builds the term. Two proofs exist: its known type rules functions out

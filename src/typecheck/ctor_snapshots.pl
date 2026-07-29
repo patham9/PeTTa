@@ -25,36 +25,41 @@
 :- dynamic ctor_snapshot_use/3.        % ctor_snapshot_use(Type, KeySnapshot, Function)
 :- dynamic det_exhaustive_verdict/8.   % det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, FormStr)
 
-%The accumulator is only open while a clause is being translated; outside one
-%(the exhaustiveness prepass, say) there is no clause to attribute a snapshot
-%to and the verdict is recorded by other means:
-ctor_deps(Ds) :- catch(nb_getval('$ctor_deps', Ds), _, Ds = none).
-
-note_ctor_snapshot(T) :- ctor_deps(Ds),
-                         ( Ds == none -> true
-                         ; memberchk(T, Ds) -> true
-                         ; nb_setval('$ctor_deps', [T|Ds]) ).
+%Constructor reads are ordinary proof dependencies.  The enclosing clause or
+%exhaustiveness boundary decides how to publish them; the prover itself only
+%returns the observation.
+note_ctor_snapshot(T) :- analysis_emit(dependency(ctor_set(T))).
 
 %Opens the accumulator for one clause translation and records what it read.
 %Nests safely (the specializer re-enters the translator) and leaves the outer
 %accumulator exactly as it found it, error or not:
-with_ctor_snapshot(F, Goal) :- ctor_deps(Saved),
-                               nb_setval('$ctor_deps', []),
-                               (  catch(Goal, E, ( nb_setval('$ctor_deps', Saved), throw(E) ))
-                               -> ctor_deps(Ds),
-                                  nb_setval('$ctor_deps', Saved),
-                                  ( Ds == none -> true ; record_ctor_snapshots(F, Ds) )
-                               ;  nb_setval('$ctor_deps', Saved), fail ).
+with_ctor_snapshot(F, Goal) :-
+    analysis_collect(Goal, Events),
+    analysis_event_ctor_types(Events, EventTypes),
+    analysis_function_decl_dependencies(F, DeclDependencies),
+    findall(T, member(ctor_set(T), DeclDependencies), DeclTypes),
+    append(EventTypes, DeclTypes, Types0),
+    sort(Types0, Types),
+    record_ctor_snapshots(F, Types),
+    analysis_reemit_non_ctor_events(Events).
 
 %Same accumulator, for a verdict that is NOT a clause: returns the types read
 %instead of attributing them to a function (the exhaustiveness prepass).
-with_ctor_snapshot_types(Goal, Types) :- ctor_deps(Saved),
-                                         nb_setval('$ctor_deps', []),
-                                         (  catch(Goal, E, ( nb_setval('$ctor_deps', Saved), throw(E) ))
-                                         -> ctor_deps(Ds),
-                                            nb_setval('$ctor_deps', Saved),
-                                            ( Ds == none -> Types = [] ; Types = Ds )
-                                         ;  nb_setval('$ctor_deps', Saved), fail ).
+with_ctor_snapshot_types(Goal, Types) :-
+    analysis_collect(Goal, Events),
+    analysis_event_ctor_types(Events, Types),
+    analysis_reemit_non_ctor_events(Events).
+
+analysis_event_ctor_types(Events, Types) :-
+    findall(T, member(dependency(ctor_set(T)), Events), Ts0),
+    sort(Ts0, Types).
+
+analysis_reemit_non_ctor_events([]).
+analysis_reemit_non_ctor_events([dependency(ctor_set(_))|Events]) :- !,
+    analysis_reemit_non_ctor_events(Events).
+analysis_reemit_non_ctor_events([Event|Events]) :-
+    analysis_emit(Event),
+    analysis_reemit_non_ctor_events(Events).
 
 record_ctor_snapshots(F, Ts) :- forall(member(T, Ts),
                                        ( ctor_key_snapshot(T, Keys),
@@ -110,7 +115,11 @@ revalidate_ctor_snapshots(Name) :-
 revalidate_det_exhaustiveness(Name) :-
     forall(( det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str),
              member(T, Types), once(new_ctor_key(Name, T, _)) ),
-           in_metta_file(File, with_form_location(Line, Str, check_det_exhaustive(Consts, F, N, Heads)))).
+           in_metta_file(
+               File,
+               with_form_location(
+                   Line, Str,
+                   det_exhaustiveness_proof(Consts, F, N, Heads, _)))).
 
 in_metta_file(File, Goal) :- current_metta_file(Prev),
                              setup_call_cleanup(nb_setval('$metta_file', File),
@@ -205,4 +214,3 @@ oracle_arg_check(AV, T, Gs) :- ( oracle_mode(true), nonvar(T), \+ wildcard_type_
                                  acyclic_term(T), acyclic_term(AV)
                                  -> Gs = [oracle_check(AV, T)]
                                   ; Gs = [] ).
-

@@ -151,9 +151,13 @@ canonical_arrow('-[nondeterministic]->', '-[nondet]->') :- !.
 canonical_arrow(A, A) :- effect_arrow_atom(A, _), !.
 canonical_arrow(_, (->)).
 
-%%%%%%%%%% Clause-analysis context: the checker's global scratch state %%%%%%%%%%
+%%%%%%%%%% Clause-analysis context: remaining scoped inputs %%%%%%%%%%
 %
-% Several analyses publish per-scope state through non-logical global variables
+% The functional proof cores still receive a few load-bearing scoped inputs
+% through backtrackable global variables.  They are INPUTS only: proof outputs
+% (bound requirements, certificates and constructor dependencies) now return in
+% analysis_proof/5, and genuine memos live only behind analysis_cache_*.
+% These inputs use
 % (b_setval/nb_setval), each with a setup/restore helper that saves the outer
 % value and reinstates it on exit. They are NOT one context: their LIFETIMES
 % differ, which is why they are kept separate (a single term would tie scopes
@@ -165,15 +169,14 @@ canonical_arrow(_, (->)).
 %       det_head_var/1, det_direct_param/1 (-> unify_head_is_data/1,
 %       enforced_bound_param/1, the det strengthenings). The two lists were once
 %       two globals; they are captured from one head at one moment and merged,
-%       and the whole Args list rides along so a consumed direct param can be
-%       located by its 1-based position (the det_bound_proviso record).
+%       and the whole Args list rides along so a returned requirement can be
+%       located by its 1-based position.
 %   $det_enforced     (det_validate.pl)  the commitment gate, enforced(F,N) or
 %       false. LIFETIME per CLAUSE SET - strictly COARSER than $det_head_scope:
 %       it is set once around clause_set_determinism/2, which then opens one
 %       $det_head_scope per clause body inside it. That is why it is a separate
 %       helper (with_det_enforced/2) and NOT folded into $det_head_scope.
-%       Readers det_enforced_now/0, det_enforced_fn/2 (-> enforced_bound_param/1);
-%       enforced(F,N) names the function a consumed boundness is recorded against.
+%       Readers det_enforced_now/0, det_enforced_fn/2 (-> enforced_bound_param/1).
 %   $det_stack        (det_args.pl)      list, the body_determinism/3 recursion
 %       guard. LIFETIME per transitive-analysis call chain.
 %   $det_assume_stack (det_analysis.pl)  list, the SEPARATE recursion guard for
@@ -189,7 +192,13 @@ canonical_arrow(_, (->)).
 %       of the clause under translation. LIFETIME per clause translation. Writer
 %       param_promises_scope/2 (+ _restore/1); reader param_promise_var/1, which
 %       candidate_evidence/2 consults to class an unbound candidate as promised.
-%   $ctor_deps        (ctor_snapshots.pl) list, the constructor-set dependencies
-%       captured during a snapshot. LIFETIME per snapshot scope. Uses nb_setval
-%       (non-backtrackable) with an explicit fail-branch restore; writer/reader
-%       ctor_deps/1 and the snapshot-scope helpers.
+%   $effect_assume_stack (det_analysis.pl) the distinct recursion guard for
+%       effect-polymorphic intrinsic-body proofs.
+%   $nonempty_vars    (det_args.pl) the branch-local flow fact established by
+%       an if condition and consumed only while analyzing its else branch.
+%
+% The three recursion guards and the two clause-context scopes remain here in
+% Phase 3 because deterministic_expr_core/2 is a mutually recursive walker with
+% procedural argument-sensitive hooks. Threading them through every hook would
+% be a high-risk signature rewrite. Unlike the removed accumulators they cannot
+% leak a result: each is read-only inside its setup/restore extent.

@@ -1,7 +1,7 @@
 %%% Determinism arrows (-[det]->, -[semidet]->, -[nondet]->) %%%
 
 %The per-function UNION of head positions whose boundness a determinism proof
-%CONSUMED. Populated by enforced_bound_param/1 during validation and read by
+%CONSUMED. Published by the validation boundary from the returned proof and read by
 %det_boundness_checks/3 (translator.pl) to emit exactly the boundary checks the
 %certificate relied on. Retracted per function in forget_symbol_types/1
 %(decl_store.pl) and at the top of recompile_function_clauses/1 (translator.pl),
@@ -42,7 +42,8 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
                             with_det_enforced(Enf,
                                 with_det_head_vars(Args, BodyExpr, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
-    ; Det = effect(Name) -> effect_body_determinism(F, N, Name, _)
+    ; Det = effect(Name) -> effect_body_determinism_proof(F, N, Name, Proof),
+                            publish_det_proof_requirements(F, N, Proof)
                           ; true ).
 
 %Publish the clause's HEAD variables for the duration of a body determinism
@@ -128,32 +129,32 @@ det_enforced_fn(F, N) :- catch(b_getval('$det_enforced', E), _, fail), E = enfor
 %strengthenings below may treat it as bound. A destructured FIELD is not a
 %direct param and does NOT qualify (the boundary check is spine-level).
 %
-%Succeeding here is the determinism proof CONSUMING this parameter's boundness:
-%the certificate about to be issued relies on it, so record the consumption as a
-%det_bound_proviso(F, N, Pos, Kind) fact (Pos its 1-based head position). That per-
-%function union is exactly the set of parameters det_boundness_checks/3 will
-%guard - the check emitted is then precisely the proviso the proof relied on, and
-%a pure constructor that consumes no boundness gets no check. The record is an
-%assertz, which SURVIVES backtracking: a probe that ran inside a since-abandoned
-%analysis branch leaves its proviso behind, which only ever adds an extra runtime
-%check (over-consumption), never removes a needed one - the sound direction.
-enforced_bound_param(V) :- det_direct_param(V), det_enforced_fn(F, N),
-                           ignore(record_bound_consumed(F, N, V, nonvar)).
+%Succeeding here is the determinism proof CONSUMING this parameter's boundness.
+%The consumption is returned as an analysis event.  Nothing in the analyzer
+%publishes det_bound_proviso/4; ensure_deterministic_expr/3 is the compile /
+%validation boundary that decides to publish the returned requirements.
+enforced_bound_param(V) :- det_direct_param(V), det_enforced_fn(_, _),
+                           ignore(note_bound_consumed(V, nonvar)).
 
 %A list-enumerating builtin needs more than the generic boundness promise:
 %a partial list still enumerates its tail. Record the stronger proper-list
 %boundary proviso when its list input is a direct committed parameter.
-enforced_proper_list_param(V) :- det_direct_param(V), det_enforced_fn(F, N),
-                                 ignore(record_bound_consumed(F, N, V, proper_list)).
+enforced_proper_list_param(V) :- det_direct_param(V), det_enforced_fn(_, _),
+                                 ignore(note_bound_consumed(V, proper_list)).
 
 %Locate V's 1-based position among the published head Args (by identity - V is a
 %direct param, so it is a spine element of Args) and union it into the proviso
 %set for (F, N). ignore/1 above keeps a failure to locate (an unexpected scope
 %shape) from unravelling the strengthening: the boundness fact is still true.
-record_bound_consumed(F, N, V, Kind) :- b_getval('$det_head_scope', scope(_, _, Args)),
-                                        nth1(Pos, Args, A), A == V, !,
-                                        ( det_bound_proviso(F, N, Pos, Kind) -> true
-                                        ; assertz(det_bound_proviso(F, N, Pos, Kind)) ).
+note_bound_consumed(V, Kind) :- b_getval('$det_head_scope', scope(_, _, Args)),
+                                nth1(Pos, Args, A), A == V, !,
+                                analysis_emit(required_bound(Pos, Kind)).
+
+publish_det_proof_requirements(F, N, Proof) :-
+    analysis_proof_requirements(Proof, Bounds),
+    forall(member(bound(Pos, Kind), Bounds),
+           ( det_bound_proviso(F, N, Pos, Kind) -> true
+           ; assertz(det_bound_proviso(F, N, Pos, Kind)) )).
 
 %Whether the function whose body is about to be analysed carries an explicit
 %committed arrow, as the gate value the enforcement publishes (enforced(F, N)
@@ -171,7 +172,11 @@ boundary_commitment(F, N, effect(Name)) :- effect_poly_decl(F, N, Name, _, _).
 %exactly what it is allowed to do, and nothing else changes (superpose, match
 %and overlapping heads stay rejected for both):
 ensure_deterministic_expr(Det, Expr, Fun) :-
-    deterministic_expr(Expr, R),
+    deterministic_expr_proof(Expr, Proof),
+    analysis_proof_verdict(Proof, R),
+    ( det_enforced_fn(Fun, N)
+      -> publish_det_proof_requirements(Fun, N, Proof)
+      ; true ),
     ( R == ok -> true
     ; Det == semidet, R = may_fail(_) -> true
     ; R = nondeterministic(Reason) -> throw(error(determinism_conflict(Fun, Reason), determinism))

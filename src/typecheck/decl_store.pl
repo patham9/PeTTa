@@ -584,7 +584,7 @@ uncache_type_decl(Name, Type) :-
          canonical_effect_model(Det, ATN, Effect),
          length(ATN, N),
          ( remove_fn_decl_record(Name, N, scheme(ATN, OTN), Effect, _)
-           -> retractall(effect_body_cache(Name, N, _, _)),
+           -> analysis_cache_invalidate(effect(Name)),
               recompile_function_clauses(Name)
          ; true )
     ; normalize_type(Type, TN),
@@ -696,10 +696,7 @@ affected_decl_functions(Names, Fs) :-
     append(ByType, BySource, Fs0), sort(Fs0, Fs).
 
 recompile_decl_functions(Fs) :-
-    retractall(det_analysis_cache(_, _, _)),
-    retractall(det_assume_cache(_, _, _)),
-    retractall(effect_body_cache(_, _, _, _)),
-    reset_output_certs(_),
+    analysis_cache_invalidate_clause_change,
     forall(member(F, Fs), recompile_function_clauses(F)).
 
 %%% A declaration that arrives after the function was compiled used to be
@@ -739,7 +736,7 @@ forget_symbol_types(Name) :- remove_all_fn_decl_records(Name),
                              retractall(declared_space_type(Name, _)),
                              retractall(inferred_fn_type(Name, _, _)),
                              retractall(det_bound_proviso(Name, _, _, _)),
-                             retractall(effect_body_cache(Name, _, _, _)),
+                             analysis_cache_invalidate(effect(Name)),
                              reset_output_certs(Name).  %withdraw the output certificates
 
 %%% Store lookup (each retrieval yields a fresh copy of the declaration):

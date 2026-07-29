@@ -243,8 +243,16 @@ bind_pattern_typed(P, T, Prior) :-
 %every OTHER member is ruled out - see union_member_excluded/3.
 narrowing_sound(P, _, M1, _) :- pattern_selects_member_tagged(P, M1), !.
 narrowing_sound(P, Ms, _, Prior) :- is_list(P), length(P, N),
-                                    forall( ( member(M, Ms), \+ pattern_selects_member(P, M) ),
-                                            union_member_excluded(M, N, Prior) ).
+                                    narrowing_other_members(Ms, P, N, Prior).
+
+%Do not express this walk with forall/2: forall is double negation, so proof
+%events emitted by a successful exclusion are backtracked away.  The explicit
+%recursion preserves constructor-set dependencies as returned proof data.
+narrowing_other_members([], _, _, _).
+narrowing_other_members([M|Ms], P, N, Prior) :-
+    ( pattern_selects_member(P, M) -> true
+    ; union_member_excluded(M, N, Prior) ),
+    narrowing_other_members(Ms, P, N, Prior).
 
 %union_member_excluded(+Member, +N, +PriorPatterns): no value of Member can be
 %an N-element expression here. Either
@@ -263,7 +271,7 @@ union_member_excluded(M, _, _) :- var(M), !, fail.
 union_member_excluded(M, _, _) :- is_arrow_type(M), !.       %a closure is not an expression
 union_member_excluded(M, _, _) :- list_type(M, _), !, fail.  %(List T) admits every length
 union_member_excluded(M, N, Prior) :- is_union(M), !, M = ['|'|Ms],
-                                      forall(member(M2, Ms), union_member_excluded(M2, N, Prior)).
+                                      union_members_excluded(Ms, N, Prior).
 union_member_excluded(M, N, Prior) :- is_list(M), !,
         ( tagged_tuple_type(M, Tag, FieldTs)
           -> ( length(M, N) -> length(FieldTs, K), prior_consumed_ctor(Prior, Tag, K) ; true )
@@ -277,6 +285,11 @@ union_member_excluded(M, N, Prior) :- atom(M), !,
           note_ctor_snapshot(M),             %this verdict depends on M's constructor set
           forall(member_ctor(M, K, C), prior_consumed_ctor(Prior, C, K)) ).
 union_member_excluded(_, _, _) :- fail.
+
+union_members_excluded([], _, _).
+union_members_excluded([M|Ms], N, Prior) :-
+    union_member_excluded(M, N, Prior),
+    union_members_excluded(Ms, N, Prior).
 
 %A CONSTRUCTOR of the nominal type M taking K arguments, so its applications
 %have K+1 elements. PeTTa's constructor convention is the one
