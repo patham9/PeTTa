@@ -182,45 +182,76 @@ clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
                               catch(( fn_determinism(F, N, D), committed_det(D) ), _, fail).
 
-recompile_clause(Ref, Term) :- ( clause(_, _, Ref)
-                                 -> compiled_dependency_origin(Ref, OriginFile),
-                                    erase(Ref),
-                                    retractall(translated_from(Ref, _)),
-                                    forget_compiled_dependencies(Ref),
-                                    Term = [=, [G|_], Body],
-                                    drop_stale_fun_meta(G, Body),
-                                    ( ho_specialization(_, G)
-                                      -> ConstrainArgs = false
-                                    ; ConstrainArgs = true ),
-                                    translate_clause(Term, Clause, ConstrainArgs, Dependencies),
-                                    assertz(Clause, NewRef),
-                                    assertz(translated_from(NewRef, Term)),
-                                    length_of_source_args(Term, N),
-                                    record_compiled_dependencies(NewRef, G/N, OriginFile,
-                                                                 Dependencies),
-                                    invalidate_specializations(G)
-                                  ; true ).
-
 length_of_source_args([=, [_|Args], _], N) :- length(Args, N).
-
-drop_stale_fun_meta(G, Body) :- catch(nb_getval(G, Metas), _, fail),
-                                select(fun_meta(_, B), Metas, Rest),
-                                attribute_free_variant(B, Body), !,
-                                nb_setval(G, Rest).
-drop_stale_fun_meta(_, _).
 
 %%% Recompile one graph node.  Clauses are redone TOGETHER and IN SOURCE
 %%% ORDER: overlap validation compares each clause with its predecessors, so
 %%% the meta list must be rebuilt from empty.  Dependency publication is
-%%% replaced clause-ref by clause-ref in recompile_clause/2.
+%%% replaced clause-ref by clause-ref at the final swap boundary.
 %%%
-%%% Errors are not swallowed; graph revalidation therefore throws exactly the
-%%% error a fresh compilation would.
-recompile_function_clauses(F) :- function_source_clauses(F, Us),
-                                 ( Us == [] -> true
-                                 ; retractall(det_bound_proviso(F, _, _, _)),  %re-derive the boundness union from scratch
-                                   nb_setval(F, []),
-                                   forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
+%%% Translation and validation are STAGED while every old executable clause
+%%% remains live. Only a complete successful stage erases and swaps them, so a
+%%% validation exception cannot strand the function half-recompiled. Errors
+%%% still propagate exactly as a fresh compilation would.
+recompile_function_clauses(F) :-
+    function_source_clauses(F, Us),
+    ( Us == [] -> true
+    ; snapshot_recompile_state(F, Snapshot),
+      prepare_recompile_stage(F),
+      ( catch(stage_function_clauses(F, Us, Staged), Error,
+              ( restore_recompile_state(F, Snapshot), throw(Error) ))
+        -> swap_staged_function(F, Us, Staged)
+      ; restore_recompile_state(F, Snapshot),
+        fail ) ).
+
+snapshot_recompile_state(F, recompile_state(Metas, Provisos, Inferred)) :-
+    ( catch(nb_getval(F, Metas0), _, fail) -> Metas = Metas0 ; Metas = '$absent' ),
+    findall(proviso(N, Pos, Kind),
+            det_bound_proviso(F, N, Pos, Kind),
+            Provisos),
+    findall(inferred(ATs, OT), inferred_fn_type(F, ATs, OT), Inferred).
+
+prepare_recompile_stage(F) :-
+    retractall(det_bound_proviso(F, _, _, _)),
+    retractall(inferred_fn_type(F, _, _)),
+    nb_setval(F, []).
+
+restore_recompile_state(F, recompile_state(Metas, Provisos, Inferred)) :-
+    ( Metas == '$absent' -> catch(nb_delete(F), _, true)
+    ; nb_setval(F, Metas) ),
+    retractall(det_bound_proviso(F, _, _, _)),
+    forall(member(proviso(N, Pos, Kind), Provisos),
+           assertz(det_bound_proviso(F, N, Pos, Kind))),
+    retractall(inferred_fn_type(F, _, _)),
+    forall(member(inferred(ATs, OT), Inferred),
+           assertz(inferred_fn_type(F, ATs, OT))).
+
+stage_function_clauses(_, [], []).
+stage_function_clauses(F, [Ref-Term|Us],
+                       [staged(Ref, Term, OriginFile, Clause, Dependencies)|Ss]) :-
+    clause(_, _, Ref),
+    compiled_dependency_origin(Ref, OriginFile),
+    ( ho_specialization(_, F) -> ConstrainArgs = false ; ConstrainArgs = true ),
+    translate_clause(Term, Clause, ConstrainArgs, Dependencies),
+    stage_function_clauses(F, Us, Ss).
+
+swap_staged_function(F, Us, Staged) :-
+    forall(member(Ref-_, Us),
+           ( clause(_, _, Ref) -> erase(Ref) ; true )),
+    forall(member(Ref-_, Us),
+           ( retractall(translated_from(Ref, _)),
+             forget_compiled_dependencies(Ref) )),
+    assert_staged_clauses(Staged),
+    invalidate_specializations(F).
+
+assert_staged_clauses([]).
+assert_staged_clauses([staged(_, Term, OriginFile, Clause, Dependencies)|Ss]) :-
+    assertz(Clause, NewRef),
+    assertz(translated_from(NewRef, Term)),
+    Term = [=, [G|_], _],
+    length_of_source_args(Term, N),
+    record_compiled_dependencies(NewRef, G/N, OriginFile, Dependencies),
+    assert_staged_clauses(Ss).
 
 %Every compiled clause of F, in the order it was asserted (which is source
 %order - process_form/3 records translated_from/2 as it goes):
@@ -403,7 +434,10 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
 %Only literal, declared source-space names opt in. Raw space payloads and
 %patterns are never evaluated here: reject a definite contradiction, trust
 %unknown runtime-filled fields, and let the existing binder narrow unions.
-typed_source_space(Space, RowT) :- atom(Space), declared_space_type(Space, RowT).
+typed_source_space(Space, RowT) :-
+    atom(Space),
+    declared_space_type(Space, RowT),
+    analysis_emit(dependency(declaration(space, Space))).
 
 check_typed_space_value(Space, Value) :-
     ( typed_source_space(Space, RowT), value_definitely_mismatch(Value, RowT)
@@ -775,8 +809,11 @@ translate_expr([H0|T0], Expectation, Goals, Out) :-
                                      append(ArgsOut, [Out], CallArgs),
                                      Goal =.. [F|CallArgs],
                                      length(Args, NC),
-                                     manual_dispatch_arg_checks(F, NC, ArgsOut, GuardGs),
-                                     set_unique_decl_out(F, NC, Out),
+                                     manual_dispatch_arg_checks_status(F, NC, ArgsOut,
+                                                                       GuardGs, ArgStatus),
+                                     ( ArgStatus == verified
+                                       -> set_unique_decl_out(F, NC, Out)
+                                     ; true ),
                                      append(Inner, GuardGs, Inner1),
                                      append(Inner1, [Goal], Goals)
         %Produce a dynamic dispatch, translating Args for nesting:
@@ -788,8 +825,11 @@ translate_expr([H0|T0], Expectation, Goals, Out) :-
                                                      append(GsH, GsArgs, Inner),
                                                      ExprOut = [F|ArgsOut],
                                                      length(Args, NR),
-                                                     manual_dispatch_arg_checks(F, NR, ArgsOut, GuardGs),
-                                                     set_unique_decl_out(F, NR, Out),
+                                                     manual_dispatch_arg_checks_status(F, NR, ArgsOut,
+                                                                                       GuardGs, ArgStatus),
+                                                     ( ArgStatus == verified
+                                                       -> set_unique_decl_out(F, NR, Out)
+                                                     ; true ),
                                                      append(Inner, GuardGs, Inner1),
                                                      append(Inner1, [reduce(ExprOut, Out)], Goals) )
         %Invoke translator to evaluate MeTTa code as data/list:
@@ -970,7 +1010,8 @@ translate_typed_call(Fun, Bound, Args, GsH, Goals, Out) :-
                ; Survivors = [OneLeft] -> Chosen = OneLeft
                ; Chosen = multi(Survivors) ) ),
              ( Chosen = ft(ATs, OT)
-               -> apply_call_args(declared, Fun, AVs, ATs, GuardGs),
+               -> apply_call_args_status(declared, Fun, AVs, ATs, GuardGs,
+                                         ArgStatus),
                   append([GsH, GsT, GuardGs], Inner),
                   %overloaded functions: clauses were not output-checked against a
                   %single declaration, so the call filters on the output type:
@@ -978,7 +1019,9 @@ translate_typed_call(Fun, Bound, Args, GsH, Goals, Out) :-
                   ( MultiDecl == false, arith_inline(Fun, AVs, Out, ArithGs)
                     -> append(Inner, ArithGs, Goals)
                      ; build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) ),
-                  set_call_out_type(Out, ATs, OT)
+                  ( ArgStatus == verified
+                    -> set_call_out_type(Out, ATs, OT)
+                  ; true )
                 ; Chosen = multi(Survs),
                   maplist(overload_branch(Fun, AVs, Out), Survs, Branches),
                   disj_list(Branches, Disj),

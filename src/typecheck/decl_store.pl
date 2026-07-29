@@ -155,7 +155,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                   "Warning: Newtype declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
                                       ; assertz(declared_newtype(Name, RN)),
-                                        decl_notify(constructor_set_changed(Name, Name)) ).
+                                        decl_notify(declaration_changed(newtype, Name,
+                                                                         added)) ).
 %Structural aliases: (: Row (Alias (Number String))) names an erased type
 %expression, not a nominal role. Normalize now so later lookup is one
 %non-recursive expansion. Aliases are not hoisted by precache_fn_type_decl/2;
@@ -183,8 +184,9 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                   "Warning: type alias declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
                                       ; assertz(declared_type_alias(Name, RN)),
-                                        renormalize_late_alias(Name, Fs),
-                                        decl_notify(alias_changed(Name, added, Fs)) ).
+                                        renormalize_late_alias(Name, _),
+                                        decl_notify(declaration_changed(alias, Name,
+                                                                         added)) ).
 %Opaque foreign types: (: Heap (Foreign)) and (: Heap (Foreign 1)) declare a
 %nominal runtime-uncheckable type constructor. Only its name and arity enter
 %the checker; native values themselves remain wholly opaque.
@@ -211,7 +213,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                   "Warning: foreign type declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
                                       ; assertz(declared_foreign_type(Name, Arity)),
-                                        decl_notify(constructor_set_changed(Name, Name)) ).
+                                        decl_notify(declaration_changed(foreign, Name,
+                                                                         added)) ).
 %Typed spaces: (: &jobs (SpaceOf Row)) opts one statically named space into
 %row checking. Normalize now so aliases in schemas are erased before use;
 %like Newtype/Alias/Foreign, this declaration is source-ordered, not hoisted.
@@ -237,7 +240,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                   "Warning: space type declaration for ~w ignored: name is already a Foreign type~n",
                                                   [Name])
                                       ; assertz(declared_space_type(Name, RN)),
-                                        decl_notify(constructor_set_changed(Name, Name)) ).
+                                        decl_notify(declaration_changed(space, Name,
+                                                                         added)) ).
 maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = [C, Name, Type],
                                         C == (:), atom(Name)
                                         -> prepare_decl_origin(Name, Type, Origin),
@@ -251,6 +255,8 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                 normalize_type(Type, TN),
                                                 ( declared_value_type(Name, T2), T2 =@= TN -> true
                                                 ; assertz(declared_value_type(Name, TN)),
+                                                  decl_notify(declaration_changed(value, Name,
+                                                                                   added)),
                                                   notify_symbol_constructor_sets(Name) ) )
                                         ; true ).
 
@@ -593,7 +599,7 @@ uncache_type_decl(Name, [NT, R]) :- NT == 'Newtype', !,
     ( clause(declared_newtype(Name, R2), true, Ref), R2 =@= RN
       -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         decl_notify(constructor_set_changed(Name, Name))
+         decl_notify(declaration_changed(newtype, Name, removed))
     ; true ).
 uncache_type_decl(Name, [A, R]) :- A == 'Alias', !,
     normalize_type(R, RN),
@@ -607,14 +613,14 @@ uncache_type_decl(Name, [F|Spec]) :-
     ( clause(declared_foreign_type(Name, A2), true, Ref), A2 == Arity
       -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         decl_notify(constructor_set_changed(Name, Name))
+         decl_notify(declaration_changed(foreign, Name, removed))
     ; true ).
 uncache_type_decl(Name, [SO, R]) :- SO == 'SpaceOf', !,
     normalize_type(R, RN),
     ( clause(declared_space_type(Name, R2), true, Ref), R2 =@= RN
       -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         decl_notify(constructor_set_changed(Name, Name))
+         decl_notify(declaration_changed(space, Name, removed))
     ; true ).
 uncache_type_decl(Name, Type) :-
     ( nonvar(Type), fn_type_shape(Type, ATs, OT, Det)
@@ -634,6 +640,7 @@ uncache_type_decl(Name, Type) :-
       ( clause(declared_value_type(Name, T2), true, Ref), T2 =@= TN
         -> erase(Ref),
            retractall(nonfn_decl_origin(Name, _)),
+           decl_notify(declaration_changed(value, Name, removed)),
            notify_removed_value_constructor(Name, TN)
       ; true ) ).
 
@@ -663,16 +670,13 @@ alias_removal_rebuild(Name, Ref) :-
     findall(fn_decl(F, N, Scheme, Effect, Origin, Provenance),
             fn_decl_copy(F, N, Scheme, Effect, Origin, Provenance),
             SavedFnDecls),
-    affected_decl_functions(Names, Fs0),
-    findall(F, ( member(T, Terms), declaration_function_name(T, F) ), Fs1),
-    append(Fs0, Fs1, Fs2), sort(Fs2, Fs),
     with_decl_notifications_suppressed(
         ( forall(member(T, Terms), erase_cached_declaration_only(T)),
           erase(Ref),
           retractall(nonfn_decl_origin(Name, _)),
           forall(member(T, Terms),
                  recache_type_decl_preserving_origin(T, SavedFnDecls)) )),
-    decl_notify(alias_changed(Name, removed, Fs)).
+    decl_notify(declaration_changed(alias, Name, removed)).
 
 %Alias removal temporarily erases and rebuilds dependent cache entries, but
 %their source declarations were not removed. Preserve any library provenance

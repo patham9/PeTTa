@@ -217,7 +217,7 @@ body_determinism_assuming_proof(F, N, Proof) :-
     analysis_cache_lookup(assume(F, N), Proof), !.
 body_determinism_assuming_proof(F, N, Proof) :-
     catch(b_getval('$det_assume_stack', St), _, St = []),
-    memberchk(F, St), !,
+    memberchk(F/N, St), !,
     analysis_make_proof(conditional_body(F/N), det, [],
                         [effect(F/N), decl(F/N), clause_set(F/N)], Proof).
 body_determinism_assuming_proof(F, N, Proof) :-
@@ -230,7 +230,7 @@ body_determinism_assuming_proof(F, N, Proof) :-
     maplist(assume_det_meta(ATs1, Positions), Metas, Upgraded),
     catch(b_getval('$det_assume_stack', St), _, St = []),
     setup_call_cleanup(
-        b_setval('$det_assume_stack', [F|St]),
+        b_setval('$det_assume_stack', [F/N|St]),
         ( det_enforced_flag(F, N, Enf),
           with_det_enforced(Enf,
               clause_set_determinism_proof(Upgraded, ClauseProof)),

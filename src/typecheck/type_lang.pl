@@ -375,6 +375,11 @@ manual_dispatch_arg_checks(F, N, AVs, Gs) :- ( atom(F), findall(ATs, fn_decl_ari
                                                -> apply_call_args(declared, F, AVs, ATs1, Gs)
                                                 ; Gs = [] ).
 
+manual_dispatch_arg_checks_status(F, N, AVs, Gs, Status) :-
+    ( atom(F), findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs1])
+      -> apply_call_args_status(declared, F, AVs, ATs1, Gs, Status)
+    ; Gs = [], Status = verified ).
+
 %Call-site output typing. An output type variable that occurs in no argument
 %type is universally quantified - by parametricity only a bottom function
 %like (: empty (-> $a)) can implement it - so the result is compatible with
@@ -391,8 +396,18 @@ same_call_var_conflict([V|Vs], [T|Ts]) :- ( var(V), nonvar(T), \+ wildcard_type_
                                           ; same_call_var_conflict(Vs, Ts) ).
 
 var_conflict_in_rest(V, T, [V2|Vs], [T2|Ts]) :- ( V == V2, nonvar(T2), \+ wildcard_type_t(T2),
-                                                  %symmetric: a conflict needs NO common inhabitant,
-                                                  %not merely directional incompatibility (unions!):
+                                                  %Assignability failure implies disjointness only
+                                                  %for primitive/nominal atoms. Unions and
+                                                  %parametric types may overlap even when neither
+                                                  %is assignable to the other.
+                                                  conflict_disjointness_type(T),
+                                                  conflict_disjointness_type(T2),
                                                   \+ type_compat_soft(T, T2),
                                                   \+ type_compat_soft(T2, T) -> true
                                                 ; var_conflict_in_rest(V, T, Vs, Ts) ).
+
+conflict_disjointness_type(T) :-
+    atom(T),
+    \+ wildcard_type_t(T),
+    \+ declared_type_alias(T, _),
+    ( primitive_type(T) ; user_atom_type(T) ).

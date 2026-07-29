@@ -385,6 +385,20 @@ apply_call_args(Mode, Fun, AVs, ATs, Gs) :- ( Mode == declared, same_call_var_co
                                             ; maplist(check_call_arg(Mode, Fun), AVs, ATs, Gss),
                                               append(Gss, Gs) ).
 
+%The ordinary interface remains goal-only. The status-bearing form is used by
+%trusted library calls: suppressing a guard is allowed there, but it is not
+%static evidence from which the declared result may be certified.
+apply_call_args_status(Mode, Fun, AVs, ATs, Gs, Status) :-
+    apply_call_args(Mode, Fun, AVs, ATs, Gs),
+    ( trusted_library_decl(Fun),
+      paired_unverified_obligation(AVs, ATs)
+      -> Status = unverified
+    ; Status = verified ).
+
+paired_unverified_obligation([AV|AVs], [T|Ts]) :-
+    ( \+ arg_statically_ok(AV, T)
+    ; paired_unverified_obligation(AVs, Ts) ).
+
 %%% Runtime residual guards (only emitted where types stay unresolved).
 %%% Bound values are checked via the user-extensible get-type reflection, so
 %%% runtime refinement types (see examples/types_dependent.metta) keep working:
@@ -404,7 +418,9 @@ runtime_type_ok(_, T) :- var(T), !.
 runtime_type_ok(_, T) :- wildcard_type_t(T), !.
 runtime_type_ok(V, T) :- list_type(T, ET), !,
                          runtime_list_ok(V, ET).
-runtime_type_ok(V, T) :- is_arrow_type(T), !, \+ value_definitely_mismatch(V, T).
+runtime_type_ok(V, T) :- is_arrow_type(T), !,
+                         runtime_callable_at_arrow_arity(V, T),
+                         \+ value_definitely_mismatch(V, T).
 runtime_type_ok(V, T) :- is_union(T), !, T = ['|'|Ms],
                          member(M, Ms), runtime_type_ok(V, M), !.
 %Newtypes are erased: at runtime only the representation exists.
@@ -426,6 +442,23 @@ runtime_type_ok(_, _) :- nb_current('$in_typecheck', true), !.
 runtime_type_ok(V, T) :- setup_call_cleanup(nb_setval('$in_typecheck', true),
                                             ( 'get-type'(V, T) *-> true ; 'get-metatype'(V, T) ),
                                             nb_setval('$in_typecheck', false)).
+
+%Arrow guards require positive callable evidence. An arbitrary atom is valid
+%MeTTa data and reduce/2 would return its application-shaped term unchanged;
+%that fallback must not satisfy a function type.
+runtime_callable_at_arrow_arity(V, T) :-
+    T = [_|Tail],
+    length(Tail, TailLen),
+    Required is TailLen - 1,
+    Required >= 0,
+    ( atom(V), fun(V),
+      CompiledArity is Required + 1,
+      arity(V, CompiledArity)
+    ; nonvar(V), V = partial(F, Bound), atom(F), fun(F),
+      is_list(Bound), length(Bound, NB),
+      arity(F, FullArity),
+      Required =:= FullArity - NB - 1
+    ).
 
 runtime_list_ok(V, ET) :- var(V), !, constrain_var_type(V, ['List', ET]).
 runtime_list_ok([], _).

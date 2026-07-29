@@ -1,3 +1,9 @@
+%Runtime function add-atom is intentionally not fully transactional: the raw
+%source atom and fun_meta built before a validation exception can survive a
+%failed addition. Dependency/declaration-driven recompilation is
+%stage-then-swap; closing this earlier raw-mutation window requires a separate
+%transactional add-atom design.
+%
 %Since both normal add-attom call and function additions needs to add the S-expression:
 add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                assertz(Term),

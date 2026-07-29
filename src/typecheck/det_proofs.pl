@@ -22,7 +22,146 @@
 %non-number) is still det, because an exception is not a solution.
 call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
 call_site_determinism(F, N, Args, Det) :- effect_poly_call_determinism(F, N, Args, Det), !.
-call_site_determinism(F, N, _, Det) :- function_call_determinism(F, N, Det).
+call_site_determinism(F, N, _, Det) :- table_det_verdict(F, N, Det), !.
+call_site_determinism(F, N, _, Det) :-
+    catch(fn_determinism(F, N, Det0), _, fail),
+    Det0 \== unspecified, !,
+    Det = Det0.
+call_site_determinism(F, N, Args, Det) :-
+    ( inferred_call_determinism(F, N, Args, Inferred)
+      -> Det = Inferred
+    ; Det = unspecified ).
+
+%A clause body's cardinality is not the cardinality of calling its function.
+%For an uncommitted function, clause selection is part of the call: a bound
+%argument may select no clause, while an unbound argument may enumerate
+%several non-overlapping heads. Combine the body proof with a call-site
+%selection proof instead of publishing the former as the latter.
+inferred_call_determinism(F, N, Args, Det) :-
+    catch(nb_getval(F, Metas0), _, fail),
+    include(arity_meta(N), Metas0, Metas),
+    Metas \== [],
+    body_determinism(F, N, BodyDet),
+    inferred_selection_determinism(F, N, Args, Metas, SelectionDet),
+    call_effect_join(BodyDet, SelectionDet, Det).
+
+%The argument-independent view used for a named function value has no call
+%site from which to learn boundness. Fresh variables model that relational
+%invocation conservatively: a single head can still yield one binding, while
+%several heads may enumerate.
+inferred_unknown_call_determinism(F, N, Det) :-
+    length(Args, N),
+    inferred_call_determinism(F, N, Args, Det).
+
+call_effect_join(unspecified, _, unspecified) :- !.
+call_effect_join(_, unspecified, unspecified) :- !.
+call_effect_join(nondet, _, nondet) :- !.
+call_effect_join(_, nondet, nondet) :- !.
+call_effect_join(semidet, _, semidet) :- !.
+call_effect_join(_, semidet, semidet) :- !.
+call_effect_join(det, det, det).
+
+%First exploit values whose applicability is already decidable at the source
+%call site. Otherwise a multi-clause relation is at most-one only when one
+%bound argument position carries distinct top-level head keys. It is
+%exactly-one when those keys also cover that argument's known domain.
+inferred_selection_determinism(F, N, Args, Metas, Det) :-
+    maplist(call_head_status(Args), Metas, Statuses),
+    include(==(yes), Statuses, Yeses),
+    include(==(possible), Statuses, Possibles),
+    length(Yeses, YN),
+    length(Possibles, PN),
+    ( PN =:= 0
+      -> ( YN =:= 1 -> Det = det
+         ; YN =:= 0 -> Det = semidet
+         ; Det = nondet )
+    ; YN =:= 0, PN =:= 1
+      -> Det = det
+    ; keyed_selection_position(Args, Metas, Idx, Keys),
+      nth0(Idx, Args, Arg),
+      selection_argument_bound(Arg, BoundKind)
+      -> ( selection_column_covers(F, N, Args, Idx, Keys, BoundKind)
+           -> Det = det
+         ; Det = semidet )
+    ; Det = nondet ).
+
+call_head_status(Args, fun_meta(HeadArgs, _), Status) :-
+    maplist(call_pattern_status, Args, HeadArgs, PosStatuses),
+    combine_pattern_statuses(PosStatuses, Status).
+
+combine_pattern_statuses(Statuses, no) :- memberchk(no, Statuses), !.
+combine_pattern_statuses(Statuses, possible) :- memberchk(possible, Statuses), !.
+combine_pattern_statuses(_, yes).
+
+call_pattern_status(_, Pattern, yes) :- var(Pattern), !.
+call_pattern_status(Actual, _, possible) :- var(Actual), !.
+call_pattern_status(Actual, Pattern, Status) :-
+    selection_actual_key(Actual, AK),
+    selection_pattern_key(Pattern, PK), !,
+    ( AK == PK -> Status = yes ; Status = no ).
+call_pattern_status(Actual, Pattern, Status) :-
+    ( \+ unifiable(Actual, Pattern, _) -> Status = no
+    ; ground(Actual), ground(Pattern) -> Status = yes
+    ; Status = possible ).
+
+%MeTTa's proper-list value and its source `cons` pattern use different source
+%shapes but the same runtime selection key.
+selection_actual_key([], list_empty) :- !.
+selection_actual_key(X, list_cons) :-
+    is_list(X), X = [H|_], data_headed(H), !.
+selection_actual_key(X, key(X, 0)) :-
+    atomic(X), X \== [], \+ (atom(X), fun(X)).
+
+selection_pattern_key([], list_empty) :- !.
+selection_pattern_key(P, list_cons) :-
+    nonvar(P), P = [C, _, _], (C == cons ; C == 'cons-atom'), !.
+selection_pattern_key(P, K) :- pattern_key(P, K).
+
+%A key column gives a unique clause selector only when every clause exposes a
+%key there and no key is repeated. Repeated/nested discriminators stay
+%conservative because a merely nonvar boundary does not ground their fields.
+keyed_selection_position(Args, Metas, Idx, Keys) :-
+    nth0(Idx, Args, _),
+    findall(P, (member(fun_meta(HArgs, _), Metas), nth0(Idx, HArgs, P)), Col),
+    Col \== [],
+    maplist(selection_pattern_key, Col, Keys),
+    sort(Keys, Unique),
+    same_length(Keys, Unique).
+
+selection_argument_bound(A, proper_list) :-
+    var(A), selection_argument_list_type(A),
+    enforced_proper_list_value(A), !.
+selection_argument_bound(A, nonvar) :-
+    var(A), enforced_bound_param(A), !.
+selection_argument_bound(A, proper_list) :-
+    nonvar(A), manifest_proper_list(A), !.
+selection_argument_bound(A, nonvar) :- nonvar(A).
+
+selection_column_covers(_, _, Args, Idx, Keys, proper_list) :-
+    nth0(Idx, Args, A),
+    selection_argument_list_type(A), !,
+    sort([list_empty, list_cons], Domain),
+    sort(Keys, Domain).
+selection_column_covers(F, N, Args, Idx, Keys, _) :-
+    selection_argument_type(F, N, Args, Idx, T),
+    selection_domain_keys(T, Domain0),
+    sort(Domain0, Domain),
+    sort(Keys, Domain).
+
+selection_argument_list_type(A) :-
+    known_singleton(A, T), nonvar(T), list_type(T, _), !.
+selection_argument_list_type(A) :-
+    nonvar(A), manifest_proper_list(A).
+
+selection_argument_type(_, _, Args, Idx, T) :-
+    nth0(Idx, Args, A), known_singleton(A, T0), nonvar(T0), !, T = T0.
+selection_argument_type(F, N, _, Idx, T) :-
+    findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs]),
+    nth0(Idx, ATs, T).
+
+selection_domain_keys('Bool', [key(true, 0), key(false, 0)]) :- !.
+selection_domain_keys(T, Keys) :-
+    domain_keys(T, [], Keys).
 
 %The registry owns WHICH builtins have argument-sensitive cardinality. This
 %file owns only the irreducibly procedural meaning of each named rule.
@@ -223,7 +362,7 @@ data_headed(_).
 %removed from the flat table, and re-admitting it here would put it back.
 manifest_proper_list(X) :- X == [], !.
 manifest_proper_list(X) :- var(X), !,
-                           ( enforced_proper_list_param(X)
+                           ( enforced_proper_list_value(X)
                            ; enforced_bound_tuple(X, _) ).
 manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
@@ -558,7 +697,7 @@ body_determinism_proof(F, N, Proof) :-
     analysis_cache_lookup(det(F, N), Proof), !.
 body_determinism_proof(F, N, Proof) :-
     catch(b_getval('$det_stack', St), _, St = []),
-    memberchk(F, St), !,
+    memberchk(F/N, St), !,
     analysis_make_proof(body(F/N), det, [],
                         [effect(F/N), clause_set(F/N)], Proof).
 body_determinism_proof(F, N, Proof) :-
@@ -571,7 +710,7 @@ body_determinism_proof(F, N, Proof) :-
                              [effect(F/N), decl(F/N)], Proof)
     ; catch(b_getval('$det_stack', St), _, St = []),
       setup_call_cleanup(
-          b_setval('$det_stack', [F|St]),
+          b_setval('$det_stack', [F/N|St]),
           ( type_meta_params(F, N, Metas, Metas1),
             det_enforced_flag(F, N, Enf),
             with_det_enforced(Enf,

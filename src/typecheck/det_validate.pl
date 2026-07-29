@@ -149,6 +149,24 @@ enforced_bound_param(V) :- det_direct_param(V), det_enforced_fn(_, _),
 enforced_proper_list_param(V) :- det_direct_param(V), det_enforced_fn(_, _),
                                  ignore(note_bound_consumed(V, proper_list)).
 
+%A recursive traversal's tail is not itself a direct parameter, but a proper
+%list boundary on the direct parameter proves every tail reached by matching
+%a cons spine proper as well. Publish the requirement against the original
+%parameter position; this is the user-defined counterpart of the list-builtin
+%proper-list proviso.
+enforced_proper_list_value(V) :- enforced_proper_list_param(V), !.
+enforced_proper_list_value(V) :-
+    var(V), det_enforced_fn(_, _),
+    b_getval('$det_head_scope', scope(_, _, Args)),
+    nth1(Pos, Args, Root),
+    recursive_list_tail_var(Root, V), !,
+    analysis_emit(required_bound(Pos, proper_list)).
+
+recursive_list_tail_var([C, _, Tail], V) :-
+    ( C == cons ; C == 'cons-atom' ),
+    ( Tail == V
+    ; nonvar(Tail), recursive_list_tail_var(Tail, V) ).
+
 %Locate V's 1-based position among the published head Args (by identity - V is a
 %direct param, so it is a spine element of Args) and union it into the proviso
 %set for (F, N). ignore/1 above keeps a failure to locate (an unexpected scope

@@ -92,8 +92,8 @@ forget_validation_dependencies(Key) :-
 % Mutation vocabulary:
 %   clause_changed(F/N, prevalidated|runtime|derived)
 %   declaration_changed(F/N, added|removed)
+%   declaration_changed(Kind, Name, added|removed)
 %   constructor_set_changed(Type, IntroducedOrRemovedSymbol)
-%   alias_changed(Alias, added|removed, DiagnosticFunctions)
 %   broad_mutation(Reason)                 % documented correctness fallback
 %
 % The broad form is a documented correctness fallback for a future mutation
@@ -160,9 +160,16 @@ mutation_candidate_dependency(clause_changed(F/_, Mode), late_symbol(F)) :-
 mutation_candidate_dependency(declaration_changed(F/N, _), effect(F/N)).
 mutation_candidate_dependency(declaration_changed(F/N, _), decl(F/N)).
 mutation_candidate_dependency(declaration_changed(F/N, _), clause_set(F/N)).
+mutation_candidate_dependency(declaration_changed(Kind, Name, _),
+                              declaration(Kind, Name)).
+%Before a late alias/newtype existed, its spelling was conservatively tracked
+%as a nominal constructor set. Preserve that late-add direction while all
+%positive reads use the generic declaration key.
+mutation_candidate_dependency(declaration_changed(alias, Name, added),
+                              ctor_set(Name)).
+mutation_candidate_dependency(declaration_changed(newtype, Name, added),
+                              ctor_set(Name)).
 mutation_candidate_dependency(constructor_set_changed(Type, _), ctor_set(Type)).
-mutation_candidate_dependency(alias_changed(Alias, _, _), alias_expansion(Alias)).
-mutation_candidate_dependency(alias_changed(Alias, _, _), ctor_set(Alias)).
 mutation_candidate_dependency(broad_mutation(_), _).
 
 prioritize_mutation_owner(declaration_changed(F/_, _), Functions, [F|Rest]) :-
@@ -236,19 +243,20 @@ mutation_dependency_matches(clause_changed(F/_, Mode), late_symbol(F)) :-
 mutation_dependency_matches(declaration_changed(F/N, _), effect(F/N)).
 mutation_dependency_matches(declaration_changed(F/N, _), decl(F/N)).
 mutation_dependency_matches(declaration_changed(F/N, _), clause_set(F/N)).
+mutation_dependency_matches(declaration_changed(Kind, Name, _),
+                            declaration(Kind, Name)).
+mutation_dependency_matches(declaration_changed(alias, Name, added),
+                            ctor_set(Name)).
+mutation_dependency_matches(declaration_changed(newtype, Name, added),
+                            ctor_set(Name)).
 mutation_dependency_matches(constructor_set_changed(Type, _), ctor_set(Type)).
-mutation_dependency_matches(alias_changed(Alias, _, _), alias_expansion(Alias)).
-% A declaration compiled before Alias existed necessarily saw it as a nominal
-% type; matching that old key closes the late-alias direction as well.
-mutation_dependency_matches(alias_changed(Alias, _, _), ctor_set(Alias)).
 mutation_dependency_matches(broad_mutation(_), _).
 
 mutation_recompile_diagnostic(constructor_set_changed(_, _), F) :- !,
     format(user_error,
            "Warning: a constructor declared after ~w was compiled changes a type it matched on; recompiling ~w~n",
            [F, F]).
-mutation_recompile_diagnostic(alias_changed(Alias, added, DiagnosticFs), F) :-
-    memberchk(F, DiagnosticFs), !,
+mutation_recompile_diagnostic(declaration_changed(alias, Alias, added), F) :- !,
     format(user_error,
            "Warning: type alias ~w arrives after declarations using it; recompiling ~w against the expanded type~n",
            [Alias, F]).

@@ -91,4 +91,7 @@ table_det_override(F, N, Fallback, Det) :- ( table_det_verdict(F, N, DetB) -> De
 function_call_determinism(F, N, Det) :- table_det_verdict(F, N, Det), !.
 function_call_determinism(F, N, Det) :- catch(fn_determinism(F, N, Det0), _, fail),
                                         Det0 \== unspecified, !, Det = Det0.
-function_call_determinism(F, N, Det) :- body_determinism(F, N, Det).
+function_call_determinism(F, N, Det) :-
+    ( inferred_unknown_call_determinism(F, N, Inferred)
+      -> Det = Inferred
+    ; Det = unspecified ).

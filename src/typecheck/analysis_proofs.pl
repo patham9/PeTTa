@@ -198,14 +198,18 @@ analysis_term_dependencies(Term, Dependencies) :-
               analysis_call_dependency(F, N, D) ),
             CallDeps),
     sort(Symbols0, Symbols),
-    findall(late_symbol(S),
+    findall(D,
             ( member(S, Symbols),
-              \+ fun(S),
-              fn_decl(S, _, _, _, _, _) ),
+              analysis_symbol_dependency(S, D) ),
             SymbolDeps),
     analysis_known_type_dependencies(Term, KnownTypeDeps),
     append([CallDeps, SymbolDeps, KnownTypeDeps], Ds0),
     sort(Ds0, Dependencies).
+
+analysis_symbol_dependency(S, late_symbol(S)) :-
+    \+ fun(S), fn_decl(S, _, _, _, _, _).
+analysis_symbol_dependency(S, declaration(value, S)) :-
+    declared_value_type(S, _).
 
 analysis_call_dependency(F, N, D) :-
     fun(F), !,
@@ -241,11 +245,20 @@ analysis_function_decl_dependencies(F, Dependencies) :-
     append(NormalizedDeps, SourceDeps, Ds0),
     sort(Ds0, Dependencies).
 
-analysis_type_dependency(T, alias_expansion(T)) :-
+analysis_type_dependency(T, declaration(alias, T)) :-
     atom(T), declared_type_alias(T, _).
+analysis_type_dependency(T, declaration(newtype, T)) :-
+    atom(T), declared_newtype(T, _).
+analysis_type_dependency(T, declaration(foreign, T)) :-
+    atom(T), declared_foreign_type(T, _).
+analysis_type_dependency(T, declaration(space, T)) :-
+    atom(T), declared_space_type(T, _).
 analysis_type_dependency(T, ctor_set(T)) :-
     atom(T), \+ primitive_type(T), \+ wildcard_type(T),
-    \+ declared_type_alias(T, _).
+    \+ declared_type_alias(T, _),
+    \+ declared_newtype(T, _),
+    \+ declared_foreign_type(T, _),
+    \+ declared_space_type(T, _).
 analysis_type_dependency(T, D) :-
     nonvar(T), is_list(T), member(E, T), analysis_type_dependency(E, D).
 
