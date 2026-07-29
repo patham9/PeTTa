@@ -40,6 +40,44 @@ def test_source_functions_compile_once_across_spaces(petta_instance, tmp_path):
     assert results.count("shared-result") == 1
 
 
+def test_cross_space_cycle_compiles_source_functions_once(
+    petta_instance, tmp_path
+):
+    suffix = uuid.uuid4().hex
+    space_a = f"&space-a-{suffix}"
+    space_b = f"&space-b-{suffix}"
+    root_file = tmp_path / "root.metta"
+    a_file = tmp_path / "a.metta"
+    b_file = tmp_path / "b.metta"
+
+    root_file.write_text(
+        f"!(bind! {space_a} (new-space))\n"
+        f"!(bind! {space_b} (new-space))\n"
+        f"!(import! {space_a} a)\n"
+        f"!(shared-result-{suffix})\n"
+    )
+    a_file.write_text(
+        f"!(import! {space_b} b)\n"
+        f"(= (shared-result-{suffix}) result)\n"
+    )
+    b_file.write_text(f"!(import! {space_b} a)\n")
+
+    results = petta_instance.load_metta_file(str(root_file))
+
+    assert results.count("result") == 1
+
+
+def test_python_import_failure_is_propagated(petta_instance, tmp_path):
+    module_name = f"petta_failure_{uuid.uuid4().hex}"
+    root_file = tmp_path / "root.metta"
+    python_file = tmp_path / f"{module_name}.py"
+    root_file.write_text(f'!(import! &self "{module_name}.py")\n')
+    python_file.write_text('raise RuntimeError("python import failed")\n')
+
+    with pytest.raises(Exception, match="python import failed"):
+        petta_instance.load_metta_file(str(root_file))
+
+
 def test_nested_import_does_not_fall_back_to_cwd(
     petta_instance, tmp_path, monkeypatch
 ):

@@ -4,7 +4,7 @@
                                       -> assertz(silent(true)) ; assertz(silent(false)) ).
 :- dynamic working_dir/1.
 :- dynamic active_metta_load/2.
-:- dynamic metta_source_functions_compiled/1.
+:- dynamic metta_source_functions_started/1.
 
 push_working_dir(Filename) :- file_directory_name(Filename, Dir0),
                               ( absolute_file_name(Dir0, Dir, [file_type(directory), file_errors(fail)])
@@ -30,18 +30,18 @@ load_metta_file_impl(Filename, Results, Space) :-
     ).
 
 load_metta_file_contents(CanonPath, Results, Space) :-
-    ( metta_source_functions_compiled(CanonPath)
-      -> Mode = space_only
-       ; Mode = compile_functions ),
+    claim_source_compile(CanonPath, Mode),
     setup_call_cleanup(
         push_working_dir(CanonPath),
         ( read_file_to_string(CanonPath, S, []),
-          process_metta_string(S, Results, Space, Mode),
-          ( Mode = compile_functions
-            -> assertz(metta_source_functions_compiled(CanonPath))
-             ; true ) ),
+          process_metta_string(S, Results, Space, Mode) ),
         pop_working_dir
     ).
+
+claim_source_compile(CanonPath, space_only) :-
+    metta_source_functions_started(CanonPath), !.
+claim_source_compile(CanonPath, compile_functions) :-
+    assertz(metta_source_functions_started(CanonPath)).
 
 rethrow_metta_file_error(_, Error) :- Error = error(_, context(_, _)), !,
                                       throw(Error).
