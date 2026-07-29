@@ -40,4 +40,8 @@
 (: both (-> Number String Bool))
 (= (both $n $s) True)
 
-!(test (collapse (map-atom (1) $x (both $x $x))) ())
+!(test
+   (let* (($expr (quote (collapse (map-atom (1) $x (both $x $x)))))
+          ($result (catch (eval $expr))))
+      (car-atom $result))
+   Error)

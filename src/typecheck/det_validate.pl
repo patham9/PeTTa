@@ -155,15 +155,17 @@ enforced_proper_list_param(V) :- det_direct_param(V), det_enforced_fn(_, _),
 %parameter position; this is the user-defined counterpart of the list-builtin
 %proper-list proviso.
 enforced_proper_list_value(V) :- enforced_proper_list_param(V), !.
-enforced_proper_list_value(V) :-
+enforced_proper_list_value(V) :- enforced_recursive_proper_list_value(V).
+
+enforced_recursive_proper_list_value(V) :-
     var(V), det_enforced_fn(_, _),
     b_getval('$det_head_scope', scope(_, _, Args)),
     nth1(Pos, Args, Root),
     recursive_list_tail_var(Root, V), !,
     analysis_emit(required_bound(Pos, proper_list)).
 
-recursive_list_tail_var([C, _, Tail], V) :-
-    ( C == cons ; C == 'cons-atom' ),
+recursive_list_tail_var(Pattern, V) :-
+    transformed_cons_pattern(Pattern, _, Tail),
     ( Tail == V
     ; nonvar(Tail), recursive_list_tail_var(Tail, V) ).
 
@@ -212,20 +214,29 @@ ensure_deterministic_expr(Det, Expr, Fun) :-
 %A clause whose body commits with (cut) never falls through to a later
 %clause, so overlap with it cannot create a choicepoint:
 ensure_non_overlapping_clause_heads(_, _, []).
-ensure_non_overlapping_clause_heads(F, Args, [fun_meta(PrevArgs, PrevBody)|Rest]) :-
-    ( clause_heads_overlap(Args, PrevArgs), \+ body_commits(PrevBody)
+ensure_non_overlapping_clause_heads(F, Args, [Meta|Rest]) :-
+    fun_meta_parts(Meta, PrevArgs, PrevBody, _),
+    ( clause_heads_overlap(Args, PrevArgs),
+      \+ body_commits(PrevBody),
+      \+ body_conditionally_commits(PrevBody)
       -> throw(error(overlapping_deterministic_clauses(F, Args, PrevArgs), determinism))
        ; ensure_non_overlapping_clause_heads(F, Args, Rest) ).
 
-%Only a cut guaranteed to execute before any failure or choice point makes
-%the compiler's clause-entry commit equivalent to the source cut: the body
-%must BE (cut), or bind it as the first let/let* value. A cut somewhere
-%deeper (e.g. inside an if branch) may never run, so it exempts nothing.
+%Only a direct cut is guaranteed to execute before any failure or choice
+%point.  In particular let/let* constrain their pattern before running the
+%value goals, so a cut used as a let value is not an entry commitment.
 body_commits(E) :- nonvar(E),
-                   ( E = [C], C == cut -> true
-                   ; E = [L, _, V, _], L == let -> nonvar(V), V = [C], C == cut
-                   ; E = [L, [[_, V]|_], _], L == 'let*' -> nonvar(V), V = [C], C == cut
-                   ; fail ).
+                   E = [C], C == cut.
+
+%A cut used as the first let/let* value is not an unconditional entry commit:
+%the pattern unification runs first.  It is nevertheless a safe conditional
+%clause-selection commit: either that unification fails before the cut, or the
+%cut executes before the clause can produce a value.  Keep this separate from
+%body_commits/1 so code generation never mistakes it for an entry cut.
+body_conditionally_commits(E) :- nonvar(E),
+    ( E = [L, _, V, _], L == let, nonvar(V), V = [C], C == cut
+    ; E = [L, [[_, V]|_], _], L == 'let*',
+      nonvar(V), V = [C], C == cut ).
 
 clause_heads_overlap(ArgsA, ArgsB) :- copy_term((ArgsA, ArgsB), (CA, CB)),
                                       unifiable(CA, CB, _).

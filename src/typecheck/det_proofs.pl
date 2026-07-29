@@ -20,14 +20,20 @@
 %The judgements are about the SPINE, never the elements: a manifest list may
 %hold unbound elements, and a builtin that raises on one (min_list/2 on a
 %non-number) is still det, because an exception is not a solution.
-call_site_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
-call_site_determinism(F, N, Args, Det) :- effect_poly_call_determinism(F, N, Args, Det), !.
-call_site_determinism(F, N, _, Det) :- table_det_verdict(F, N, Det), !.
-call_site_determinism(F, N, _, Det) :-
+call_site_determinism(F, N, Args, Det) :-
+    call_site_base_determinism(F, N, Args, Base),
+    ( trusted_unverified_call(F, Args)
+      -> call_effect_join(Base, semidet, Det)
+    ; Det = Base ).
+
+call_site_base_determinism(F, N, Args, Det) :- builtin_call_determinism_args(F, N, Args, Det), !.
+call_site_base_determinism(F, N, Args, Det) :- effect_poly_call_determinism(F, N, Args, Det), !.
+call_site_base_determinism(F, N, _, Det) :- table_det_verdict(F, N, Det), !.
+call_site_base_determinism(F, N, _, Det) :-
     catch(fn_determinism(F, N, Det0), _, fail),
     Det0 \== unspecified, !,
     Det = Det0.
-call_site_determinism(F, N, Args, Det) :-
+call_site_base_determinism(F, N, Args, Det) :-
     ( inferred_call_determinism(F, N, Args, Inferred)
       -> Det = Inferred
     ; Det = unspecified ).
@@ -45,13 +51,17 @@ inferred_call_determinism(F, N, Args, Det) :-
     inferred_selection_determinism(F, N, Args, Metas, SelectionDet),
     call_effect_join(BodyDet, SelectionDet, Det).
 
-%The argument-independent view used for a named function value has no call
-%site from which to learn boundness. Fresh variables model that relational
-%invocation conservatively: a single head can still yield one binding, while
-%several heads may enumerate.
+%The argument-independent view used for a named function value has no future
+%call site from which to learn boundness.  It therefore needs a proof over the
+%whole input domain; probing the relation once with fresh variables is not
+%such a proof (a single partial clause would look exactly-one).
 inferred_unknown_call_determinism(F, N, Det) :-
-    length(Args, N),
-    inferred_call_determinism(F, N, Args, Det).
+    catch(nb_getval(F, Metas0), _, fail),
+    include(arity_meta(N), Metas0, Metas),
+    Metas \== [],
+    body_determinism(F, N, BodyDet),
+    inferred_total_selection_determinism(F, N, Metas, SelectionDet),
+    call_effect_join(BodyDet, SelectionDet, Det).
 
 call_effect_join(unspecified, _, unspecified) :- !.
 call_effect_join(_, unspecified, unspecified) :- !.
@@ -66,7 +76,14 @@ call_effect_join(det, det, det).
 %bound argument position carries distinct top-level head keys. It is
 %exactly-one when those keys also cover that argument's known domain.
 inferred_selection_determinism(F, N, Args, Metas, Det) :-
-    maplist(call_head_status(Args), Metas, Statuses),
+    ( member(MetaWithGoals, Metas), fun_meta_head_goals(MetaWithGoals)
+      -> Det = unspecified
+    ; maplist(call_head_status(Args), Metas, Statuses),
+      ( memberchk(unknown, Statuses)
+        -> Det = unspecified
+      ; inferred_selection_statuses(F, N, Args, Metas, Statuses, Det) ) ).
+
+inferred_selection_statuses(F, N, Args, Metas, Statuses, Det) :-
     include(==(yes), Statuses, Yeses),
     include(==(possible), Statuses, Possibles),
     length(Yeses, YN),
@@ -85,16 +102,92 @@ inferred_selection_determinism(F, N, Args, Metas, Det) :-
          ; Det = semidet )
     ; Det = nondet ).
 
-call_head_status(Args, fun_meta(HeadArgs, _), Status) :-
+%Argument-independent selection is exactly-one only when the normalized heads
+%are mutually exclusive and visibly cover the entire input domain.  This is
+%deliberately a small, provable-only relation: a universal head, or a complete
+%constructor/literal discriminator with otherwise-unconstrained positions.
+inferred_total_selection_determinism(_, _, Metas, unspecified) :-
+    member(Meta, Metas), fun_meta_head_goals(Meta), !.
+inferred_total_selection_determinism(_, _, Metas, nondet) :-
+    selection_heads_overlap(Metas), !.
+inferred_total_selection_determinism(F, N, Metas, det) :-
+    total_selection_heads(F, N, Metas), !.
+inferred_total_selection_determinism(_, _, _, semidet).
+
+selection_heads_overlap(Metas) :-
+    append(_, [M1|Rest], Metas),
+    fun_meta_parts(M1, A1, _, _),
+    member(M2, Rest),
+    fun_meta_parts(M2, A2, _, _),
+    clause_heads_overlap(A1, A2), !.
+
+total_selection_heads(_, _, [Meta]) :-
+    fun_meta_parts(Meta, Args, _, _),
+    maplist(var, Args), !.
+total_selection_heads(F, N, Metas) :-
+    keyed_head_column(Metas, Idx, Keys),
+    all_other_head_positions_unconstrained(Metas, Idx),
+    selection_function_arg_type(F, N, Idx, T),
+    selection_domain_keys(T, Domain0),
+    sort(Domain0, Domain),
+    sort(Keys, Domain).
+
+keyed_head_column(Metas, Idx, Keys) :-
+    Metas = [First|_],
+    fun_meta_parts(First, Args, _, _),
+    nth0(Idx, Args, _),
+    findall(P, (member(Meta, Metas),
+                fun_meta_parts(Meta, HArgs, _, _),
+                nth0(Idx, HArgs, P)), Col),
+    maplist(selection_pattern_key, Col, Keys),
+    sort(Keys, Unique),
+    same_length(Keys, Unique),
+    maplist(selection_pattern_covers_key, Col).
+
+selection_pattern_covers_key(P) :- atomic(P), !.
+selection_pattern_covers_key(P) :-
+    transformed_cons_pattern(P, H, T), !,
+    var(H), var(T).
+selection_pattern_covers_key(P) :-
+    is_list(P), P = [_|Fields], Fields \== [],
+    maplist(var, Fields).
+
+all_other_head_positions_unconstrained(Metas, Idx) :-
+    forall(( member(Meta, Metas),
+             fun_meta_parts(Meta, Args, _, _),
+             nth0(J, Args, P), J =\= Idx ),
+           var(P)).
+
+selection_function_arg_type(F, N, Idx, T) :-
+    findall(ATs, fn_decl_arity(F, N, ATs, _), [ATs]), !,
+    nth0(Idx, ATs, T).
+selection_function_arg_type(F, N, Idx, T) :-
+    findall(ATs, (inferred_fn_type(F, ATs, _), length(ATs, N)), [ATs]),
+    nth0(Idx, ATs, T).
+
+call_head_status(Args, Meta, Status) :-
+    fun_meta_parts(Meta, HeadArgs, _, _),
     maplist(call_pattern_status, Args, HeadArgs, PosStatuses),
     combine_pattern_statuses(PosStatuses, Status).
 
 combine_pattern_statuses(Statuses, no) :- memberchk(no, Statuses), !.
+combine_pattern_statuses(Statuses, unknown) :- memberchk(unknown, Statuses), !.
 combine_pattern_statuses(Statuses, possible) :- memberchk(possible, Statuses), !.
 combine_pattern_statuses(_, yes).
 
 call_pattern_status(_, Pattern, yes) :- var(Pattern), !.
 call_pattern_status(Actual, _, possible) :- var(Actual), !.
+%An evaluated expression normally contributes no source-shape evidence: its
+%syntax is not its result.  An output certificate is the one exception.  It
+%proves the result is bound and in a finite selector shape, while deliberately
+%leaving WHICH shape (empty/cons, true/false) possible until runtime.
+call_pattern_status(Actual, _, possible) :-
+    nonvar(Actual),
+    \+ selection_transparent_actual(Actual),
+    selection_expression_certificate(Actual, _), !.
+call_pattern_status(Actual, _, unknown) :-
+    nonvar(Actual),
+    \+ selection_transparent_actual(Actual), !.
 call_pattern_status(Actual, Pattern, Status) :-
     selection_actual_key(Actual, AK),
     selection_pattern_key(Pattern, PK), !,
@@ -103,6 +196,17 @@ call_pattern_status(Actual, Pattern, Status) :-
     ( \+ unifiable(Actual, Pattern, _) -> Status = no
     ; ground(Actual), ground(Pattern) -> Status = yes
     ; Status = possible ).
+
+%Only source values whose outer selection shape survives translation may
+%participate in a head-selection proof.  Compiler forms and evaluated
+%subexpressions deliberately contribute no evidence until selection operates
+%on a future semantic IR rather than source syntax.
+selection_transparent_actual(X) :- atomic(X), !.
+selection_transparent_actual([]) :- !.
+selection_transparent_actual(X) :-
+    is_list(X), X = [H|T],
+    \+ ( atom(H), special_builtin_form(H, T, _) ),
+    data_headed(H).
 
 %MeTTa's proper-list value and its source `cons` pattern use different source
 %shapes but the same runtime selection key.
@@ -114,32 +218,108 @@ selection_actual_key(X, key(X, 0)) :-
 
 selection_pattern_key([], list_empty) :- !.
 selection_pattern_key(P, list_cons) :-
-    nonvar(P), P = [C, _, _], (C == cons ; C == 'cons-atom'), !.
+    transformed_cons_pattern(P, _, _), !.
 selection_pattern_key(P, K) :- pattern_key(P, K).
+
+%constrain_args/3 normalizes source (cons H T) heads to Prolog [H|T].
+%Accept the source form too for declaration-prepass metadata.
+transformed_cons_pattern(P, H, T) :-
+    nonvar(P), P = [C, H, T], (C == cons ; C == 'cons-atom'), !.
+transformed_cons_pattern(P, H, T) :-
+    nonvar(P), P = [H|T], var(T).
 
 %A key column gives a unique clause selector only when every clause exposes a
 %key there and no key is repeated. Repeated/nested discriminators stay
 %conservative because a merely nonvar boundary does not ground their fields.
 keyed_selection_position(Args, Metas, Idx, Keys) :-
     nth0(Idx, Args, _),
-    findall(P, (member(fun_meta(HArgs, _), Metas), nth0(Idx, HArgs, P)), Col),
+    findall(P, (member(Meta, Metas),
+                fun_meta_parts(Meta, HArgs, _, _),
+                nth0(Idx, HArgs, P)), Col),
     Col \== [],
     maplist(selection_pattern_key, Col, Keys),
     sort(Keys, Unique),
     same_length(Keys, Unique).
 
 selection_argument_bound(A, proper_list) :-
+    var(A), scoped_proper_list_var(A), !.
+selection_argument_bound(A, proper_list) :-
     var(A), selection_argument_list_type(A),
-    enforced_proper_list_value(A), !.
+    typed_selection_evidence(A, proper_list), !.
+selection_argument_bound(A, proper_list) :-
+    var(A), enforced_recursive_proper_list_value(A), !.
+selection_argument_bound(A, nonvar) :-
+    var(A), known_singleton(A, T), nonvar(T),
+    typed_selection_evidence(A, nonvar), !.
 selection_argument_bound(A, nonvar) :-
     var(A), enforced_bound_param(A), !.
+selection_argument_bound(A, proper_list) :-
+    nonvar(A), selection_expression_certificate(A, proper_list), !.
+selection_argument_bound(A, nonvar) :-
+    nonvar(A), selection_expression_certificate(A, nonvar), !.
 selection_argument_bound(A, proper_list) :-
     nonvar(A), manifest_proper_list(A), !.
 selection_argument_bound(A, nonvar) :- nonvar(A).
 
-selection_column_covers(_, _, Args, Idx, Keys, proper_list) :-
-    nth0(Idx, Args, A),
-    selection_argument_list_type(A), !,
+%The expression-output counterpart of manifest/typed evidence.  Consume the
+%functional certificate proof directly so its output_cert dependencies enter
+%the enclosing analysis proof and Phase 4 can invalidate the consumer if a
+%producer later gains a non-certifying clause.
+selection_expression_certificate(Expr, Kind) :-
+    selection_value_preserving_wrapper(Expr, Inner),
+    selection_argument_bound(Inner, Kind), !.
+selection_expression_certificate(Expr, proper_list) :-
+    selection_proper_list_expression_certificate(Expr, Dependencies),
+    emit_selection_certificate_dependencies(Dependencies).
+selection_expression_certificate(Expr, nonvar) :-
+    output_result_qualifies_core(bound_bool, Expr, [], yes, Dependencies),
+    emit_selection_certificate_dependencies(Dependencies).
+
+%Unlike data/make-list/evaluated compiler forms, these lower to their inner
+%value unchanged; they may safely forward shape evidence without treating
+%their source syntax as runtime structure.
+selection_value_preserving_wrapper(Expr, Inner) :-
+    nonvar(Expr), Expr = [the, _, Inner].
+selection_value_preserving_wrapper(Expr, Inner) :-
+    nonvar(Expr), Expr = [brand, _, Inner].
+
+%Literal/data spines belong to manifest evidence, not to this evaluated-output
+%path.  Name the two intrinsic producers explicitly; every other accepted
+%expression must have consumed a named producer certificate (and therefore
+%return a nonempty dependency set).  This keeps compiler forms such as
+%(data $tag 0) from masquerading as their source list syntax.
+selection_proper_list_expression_certificate(Expr, []) :-
+    nonvar(Expr), Expr = [C, _], C == collapse, !.
+selection_proper_list_expression_certificate(Expr, []) :-
+    nonvar(Expr), Expr = [F, _], F == list_to_set, !.
+selection_proper_list_expression_certificate(Expr, Dependencies) :-
+    output_result_qualifies_core(proper_list, Expr, [], yes, Dependencies),
+    Dependencies \== [].
+
+emit_selection_certificate_dependencies([]).
+emit_selection_certificate_dependencies([Dependency|Dependencies]) :-
+    analysis_emit(dependency(Dependency)),
+    emit_selection_certificate_dependencies(Dependencies).
+
+%A known selector type is usable selection evidence in the same two cases as
+%the argument-sensitive builtin rules:
+%  * a direct parameter of the enclosing committed clause, where consuming
+%    the evidence publishes the appropriate runtime boundary proviso; or
+%  * a local value, whose declared producer/call-site check already enforces
+%    the known type before this call is reached.
+%A variable nested in the source head is neither.  Merely constraining such a
+%field to List/Bool does not bind it, so it must still be justified by the
+%recursive-tail/scoped-certificate paths above.
+typed_selection_evidence(A, proper_list) :-
+    ( det_direct_param(A) -> enforced_proper_list_param(A)
+    ; det_head_var(A) -> fail
+    ; true ).
+typed_selection_evidence(A, nonvar) :-
+    ( det_direct_param(A) -> enforced_bound_param(A)
+    ; det_head_var(A) -> fail
+    ; true ).
+
+selection_column_covers(_, _, _, _, Keys, proper_list) :-
     sort([list_empty, list_cons], Domain),
     sort(Keys, Domain).
 selection_column_covers(F, N, Args, Idx, Keys, _) :-
@@ -217,7 +397,8 @@ semidet_site_upgraded_to_det(Fun, N, Args) :-
 %whole domain: a bare variable (matches anything), or a cons cell whose head and
 %tail are both unconstrained variables (matches every list of length >= 1). A
 %pattern that pins the head or fixes the tail length covers only part of it.
-nonempty_list_domain_covered(Metas, Idx) :- member(fun_meta(HArgs, _), Metas),
+nonempty_list_domain_covered(Metas, Idx) :- member(Meta, Metas),
+                                            fun_meta_parts(Meta, HArgs, _, _),
                                             nth0(Idx, HArgs, P), covers_all_nonempty_lists(P), !.
 
 covers_all_nonempty_lists(P) :- var(P), !.
@@ -240,6 +421,9 @@ nonempty_narrowing_var([Eq, A, B], V) :- Eq == '==',
                                          ( var(A), B == [] -> V = A
                                          ; var(B), A == [] -> V = B ),
                                          known_singleton(V, T), nonvar(T), list_type(T, _).
+
+expression_spine_narrowing_var([Pred, V], V) :-
+    Pred == 'is-expr', var(V).
 
 %--- Strengthened by a manifest list SPINE.
 %length/2, reverse/2, append/3 and friends invert over an open list; over a
@@ -362,7 +546,8 @@ data_headed(_).
 %removed from the flat table, and re-admitting it here would put it back.
 manifest_proper_list(X) :- X == [], !.
 manifest_proper_list(X) :- var(X), !,
-                           ( enforced_proper_list_value(X)
+                           ( scoped_proper_list_var(X)
+                           ; enforced_proper_list_value(X)
                            ; enforced_bound_tuple(X, _) ).
 manifest_proper_list(X) :- is_list(X), X = [H|_], data_headed(H), !.
 manifest_proper_list(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'cons-atom' ),
@@ -498,7 +683,9 @@ output_cert_core(Kind, F, N, Stack, Verdict, Dependencies) :-
 
 cert_clause_bodies(F, N, Bodies) :-
     findall(B, ( catch(nb_getval(F, Ms), _, fail),
-                 member(fun_meta(As, B), Ms), length(As, N) ), Rs),
+                 member(Meta, Ms),
+                 fun_meta_parts(Meta, As, B, _),
+                 length(As, N) ), Rs),
     current_metta_file(File),
     findall(B, pending_clause_body(File, F, N, B), Ps),
     append(Rs, Ps, Bodies).
@@ -591,6 +778,8 @@ clause_result_proper_list_core(Body, _, yes, []) :-
     nonvar(Body), Body = [Hd|Rest], nonvar(Hd), Hd == collapse,
     Rest = [_], !.
 clause_result_proper_list_core(Body, _, yes, []) :-
+    nonvar(Body), Body = [F, _], F == list_to_set, !.
+clause_result_proper_list_core(Body, _, yes, []) :-
     proper_list_literal_spine(Body), !.
 clause_result_proper_list_core(Body, Stack, Verdict, Dependencies) :-
     nonvar(Body), Body = [G|GArgs], atom(G),
@@ -625,6 +814,10 @@ clause_result_bool(Body) :- nonvar(Body), Body = [Ls, _, In], Ls == 'let*', !,
 %own variables and corrupt the compile.
 clause_result_proper_list(Body) :- nonvar(Body), Body = [Hd|Rest], nonvar(Hd), Hd == collapse,
                                    Rest = [_], !.
+%SWI list_to_set/2 always constructs a closed output list whenever it returns;
+%the input may affect success/error behavior, never the result spine.
+clause_result_proper_list(Body) :- nonvar(Body), Body = [F, _],
+                                   F == list_to_set, !.
 clause_result_proper_list(Body) :- proper_list_literal_spine(Body), !.
 %recursive, same-file only: a call to an already-certified function. A data
 %atom head is handled by proper_list_literal_spine above (data_headed), so this
@@ -711,6 +904,7 @@ body_determinism_proof(F, N, Proof) :-
     ; catch(b_getval('$det_stack', St), _, St = []),
       setup_call_cleanup(
           b_setval('$det_stack', [F/N|St]),
+          with_compiling_caller(F, N,
           ( type_meta_params(F, N, Metas, Metas1),
             det_enforced_flag(F, N, Enf),
             with_det_enforced(Enf,
@@ -726,7 +920,7 @@ body_determinism_proof(F, N, Proof) :-
             Proof = analysis_proof(body(F/N), Det,
                                    requirements(Bounds),
                                    certificates(Certs),
-                                   dependencies(Deps)) ),
+                                   dependencies(Deps)) )),
           b_setval('$det_stack', St)),
       analysis_cache_store(det(F, N), Proof) ).
 
@@ -748,12 +942,12 @@ type_meta_params(F, N, Metas, Metas1) :- ( findall(ATs, fn_decl_arity(F, N, ATs,
                                             ; Metas1 = Metas ).
 
 type_one_meta(ATs1, Meta, Meta2) :- copy_term(Meta, Meta2),
-                                    Meta2 = fun_meta(Args, _),
+                                    fun_meta_parts(Meta2, Args, _, _),
                                     maplist(bind_meta_param, Args, ATs1).
 
 bind_meta_param(Arg, T) :- ignore(catch(bind_pattern_typed(Arg, T), _, true)).
 
-arity_meta(N, fun_meta(Args, _)) :- length(Args, N).
+arity_meta(N, Meta) :- fun_meta_parts(Meta, Args, _, _), length(Args, N).
 
 %The worst verdict over ALL clause bodies decides (a may_fail clause followed
 %by a nondeterministic one is nondet, not semidet), and overlapping heads
@@ -782,16 +976,20 @@ clause_bodies_determinism([], ok).
 %Each meta's Args are published as the head-variable set for its body's
 %analysis (see with_det_head_vars/2): a wildcard-typed parameter has no type
 %attribute, so identity against the head is what tells it from a fresh local.
-clause_bodies_determinism([fun_meta(Args, B)|Ms], R) :-
+clause_bodies_determinism([Meta|Ms], R) :-
+                                                     fun_meta_parts(Meta, Args, B, _),
                                                      with_det_head_vars(Args, B, deterministic_expr_core(B, R1)),
                                                      ( det_result_final(R1) -> R = R1
                                                      ; clause_bodies_determinism(Ms, R2),
                                                        combine_det_results(R1, R2, R) ).
 
-overlapping_meta_pair(Metas) :- append(_, [fun_meta(A1, _)|Rest], Metas),
-                                member(fun_meta(A2, B2), Rest),
+overlapping_meta_pair(Metas) :- append(_, [Meta1|Rest], Metas),
+                                fun_meta_parts(Meta1, A1, _, _),
+                                member(Meta2, Rest),
+                                fun_meta_parts(Meta2, A2, B2, _),
                                 clause_heads_overlap(A1, A2),
-                                \+ body_commits(B2).
+                                \+ body_commits(B2),
+                                \+ body_conditionally_commits(B2).
 
 %Public compatibility wrapper.  The functional core returns its full evidence;
 %legacy callers that only need the detailed cardinality verdict keep /2.
@@ -859,6 +1057,18 @@ deterministic_expr_core([Op, A, B], Result) :- unify_test_op(Op), !,
 %-[semidet]-> accepts it, -[det]-> does not:
 deterministic_expr_core([if, Cond, Then], Result) :- !, combine_determinism_list([Cond, Then], R0),
                                                 combine_det_results(may_fail(if_without_else), R0, Result).
+%A successful is-expr test proves that its variable is a bound, nonempty,
+%proper expression spine in the then branch. This is selection evidence, not
+%a declaration: it is scoped to that branch.
+deterministic_expr_core([if, Cond, Then, Else], Result) :-
+    expression_spine_narrowing_var(Cond, V), !,
+    deterministic_expr_core(Cond, RC),
+    with_scoped_proper_list_var(
+        proper(V),
+        with_nonempty_var(V, deterministic_expr_core(Then, RT))),
+    deterministic_expr_core(Else, RE),
+    combine_det_results(RC, RT, R01),
+    combine_det_results(R01, RE, Result).
 %FEATURE 1 - flow-sensitive nonemptiness. When the condition is (== V ()) or
 %(== () V) with V a variable of known list type, the ELSE branch runs exactly
 %when V is NONEMPTY, so a -[semidet]-> accessor whose only incompleteness is

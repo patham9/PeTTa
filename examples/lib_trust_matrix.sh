@@ -40,6 +40,19 @@ else
     FAILED=1
 fi
 
+declared="$TMP_DIR/declared.out"
+if run_compile "$SCRIPT_DIR/lib_trust_declared_caller.metta" "$declared"; then
+    if grep -q "typecheck_or_error" "$declared"; then
+        echo "[PASS] declared caller retains the library boundary guard"
+    else
+        echo "[FAIL] declared caller incorrectly suppressed its library guard"
+        FAILED=1
+    fi
+else
+    echo "[FAIL] declared-caller library fixture did not compile"
+    FAILED=1
+fi
+
 user="$TMP_DIR/user.out"
 if run_compile "$SCRIPT_DIR/lib_trust_user_redeclaration.metta" "$user"; then
     if grep -q "typecheck_or_error" "$user"; then
@@ -50,6 +63,19 @@ if run_compile "$SCRIPT_DIR/lib_trust_user_redeclaration.metta" "$user"; then
     fi
 else
     echo "[FAIL] user redeclaration fixture did not compile"
+    FAILED=1
+fi
+
+origin="$TMP_DIR/origin.out"
+if run_compile "$SCRIPT_DIR/lib_trust_origin_recompile.metta" "$origin"; then
+    if grep -q "should Error. ✅" "$origin"; then
+        echo "[PASS] origin flip recompiles prior guard-free callers"
+    else
+        echo "[FAIL] origin flip left a compiled guard-free caller stale"
+        FAILED=1
+    fi
+else
+    echo "[FAIL] origin-recompile fixture did not compile"
     FAILED=1
 fi
 

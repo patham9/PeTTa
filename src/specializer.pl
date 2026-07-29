@@ -29,7 +29,8 @@ specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses s
                                        copy_term(MetaList0, MetaList),
                                        %2. Copy all clause variables eligible for specialization across all meta-clauses:
                                        bagof(HoVar, ArgsNorm^BodyExpr^HoBinds^HoBindsPerArg^
-                                                    ( member(fun_meta(ArgsNorm, BodyExpr), MetaList),
+                                                    ( member(Meta, MetaList),
+                                                      fun_meta_parts(Meta, ArgsNorm, BodyExpr, _),
                                                       maplist(specializable_vars(BodyExpr), AVs, ArgsNorm, HoBinds),
                                                       member(HoBindsPerArg, HoBinds),
                                                       member(HoVar, HoBindsPerArg),
@@ -50,8 +51,9 @@ specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses s
                                                findall(TypeChain, catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
                                                forall(member(TypeChain, TypeChains), add_sexp('&self', [':', SpecName, TypeChain])),
                                                %4.3 Translate specialized MeTTa clauseses to Prolog, keeping track of the function we are compiling through recursion:
-                                               maplist({SpecName}/[fun_meta(ArgsNorm,BodyExpr),clause_info(Input,Clause,Dependencies)]>>
-                                                       ( Input = [=,[SpecName|ArgsNorm],BodyExpr],
+                                               maplist({SpecName}/[Meta,clause_info(Input,Clause,Dependencies)]>>
+                                                       ( fun_meta_parts(Meta, ArgsNorm, BodyExpr, _),
+                                                         Input = [=,[SpecName|ArgsNorm],BodyExpr],
                                                          %a typecheck error in the specialized instance just means: don't specialize
                                                          catch(translate_clause(Input,Clause,false,Dependencies), error(_, typecheck), fail) ), MetaList, ClauseInfos),
                                                %4.4 Only proceeed specializing if this or any recursive call profited from specialization with the specialized function at head position:

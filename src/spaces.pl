@@ -30,13 +30,18 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                  maybe_print_compiled_clause("added function", Term, Clause).
 
 %Add an atom to the space:
-'add-atom'(Space, Term, true) :- add_sexp(Space, Term).
+'add-atom'(Space, Term, true) :-
+    typed_space_runtime_value_ok(Space, Term),
+    add_sexp(Space, Term).
 
 %%Remove a function atom:
 'remove-atom'(Space, Term, Removed) :- Term = [=,[F|Args],Body], !,
                                        remove_sexp(Space, Term),
                                        catch(nb_getval(F, Prev), _, Prev = []),
-                                       (   select(fun_meta(Args, Body), Prev, Rest)
+                                       (   select(Meta, Prev, Rest),
+                                           fun_meta_parts(Meta, Args0, Body0, _),
+                                           Args0 =@= Args,
+                                           Body0 =@= Body
                                            -> ( Rest == [] -> nb_delete(F)
                                                             ; nb_setval(F, Rest) ) ; true ),
                                        findall(Ref, translated_from(Ref, Term), Refs),
@@ -54,7 +59,19 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                        ( Refs = [] -> Removed = false ; Removed = true ).
 
 %Remove all same atoms:
-'remove-atom'(Space, Term, true) :- remove_sexp(Space, Term).
+'remove-atom'(Space, Term, true) :-
+    typed_space_runtime_value_ok(Space, Term),
+    remove_sexp(Space, Term).
+
+%Typed spaces accept open payloads and removal patterns.  At the operation
+%boundary reject only a value that has become a definite contradiction; this
+%is the runtime counterpart of translator.pl's check_typed_space_value/2, not
+%a residual type guard, and it never constrains unresolved fields.
+typed_space_runtime_value_ok(Space, Value) :-
+    ( atom(Space), declared_space_type(Space, RowT),
+      value_definitely_mismatch(Value, RowT)
+      -> throw(error(literal_type_mismatch(Value, RowT), typecheck))
+    ; true ).
 
 %Match for conjunctive pattern
 match(_, LComma, OutPattern, Result) :- LComma == [','], !,

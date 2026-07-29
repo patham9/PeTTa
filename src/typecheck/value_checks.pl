@@ -12,6 +12,7 @@ value_candidate_types(V, ['String']) :- string(V), !.
 value_candidate_types(true, ['Bool']) :- !.
 value_candidate_types(false, ['Bool']) :- !.
 value_candidate_types(V, Cs) :- atom(V), !,
+                                analysis_emit(dependency(declaration(value, V))),
                                 findall(T, declared_value_type(V, T), Vs),
                                 findall([H|Xs], ( declared_fn_type(V, ATs, OT, Det),
                                                   length(ATs, NA), value_arrow_head(V, NA, Det, H),
@@ -124,22 +125,26 @@ check_value(V, T, St) :- is_list(T), !,
                          ; St = unknown ).
 %A raw or representation-typed value acquires a newtype contextually; a
 %value already carrying a different brand does not (that is the feature):
-check_value(V, T, St) :- atom(T), declared_newtype(T, R), !,
+check_value(V, T, St) :- atom(T), !,
+                         analysis_emit(dependency(declaration(newtype, T))),
+                         check_named_value(V, T, St).
+check_value(_, _, unknown).
+
+check_named_value(V, T, St) :- declared_newtype(T, R), !,
                          value_candidate_types(V, Cs),
                          ( Cs == [] -> ( constructed_definite_mismatch(V) -> St = mismatch
                                                                            ; check_value(V, R, St) )
                          ; member(C, Cs), type_unify(C, T) -> St = ok
-                         ; member(C, Cs), \+ ( atom(C), declared_newtype(C, _) ),
+                         ; member(C, Cs), candidate_not_branded(C),
                            type_unify(C, R) -> St = ok
                          ; St = mismatch ).
-check_value(V, T, St) :- atom(T), !,
+check_named_value(V, T, St) :-
                          value_candidate_types(V, Cs),
                          ( Cs == [] -> ( constructed_definite_mismatch(V) -> St = mismatch
                                                                            ; St = unknown )
                          ; member(C, Cs), type_unify(C, T) -> St = ok
                          ; member(C, Cs), refinement_pair(C, T) -> St = unknown
                          ; St = mismatch ).
-check_value(_, _, unknown).
 
 %A constructor application every declaration of which is definitely
 %contradicted by some field can never have any type. In particular a field
@@ -178,7 +183,7 @@ committed_determinism(det).
 committed_determinism(semidet).
 
 inferred_arrow_head(F, N, H) :-
-    ( catch(( body_determinism(F, N, D), committed_determinism(D) ), _, fail)
+    ( catch(( function_call_determinism(F, N, D), committed_determinism(D) ), _, fail)
       -> det_arrow_head(D, H)
     ; strict_det(true) -> det_arrow_head(nondet, H)
     ; H = (->) ).
@@ -225,9 +230,18 @@ tuple_type(C) :- is_list(C), C \= [->|_], C \= ['List', _].
 %Foreign types are nominal obligations over values supplied by native code.
 %Their optional parameters are checked structurally, but their runtime terms
 %are opaque and must never be inspected as tagged or positional tuples.
-foreign_type(T) :- atom(T), declared_foreign_type(T, 0).
+foreign_type(T) :- atom(T),
+                   analysis_emit(dependency(declaration(foreign, T))),
+                   declared_foreign_type(T, 0).
 foreign_type(T) :- nonvar(T), T = [Name|Params], atom(Name),
+                   analysis_emit(dependency(declaration(foreign, Name))),
                    declared_foreign_type(Name, N), length(Params, N).
+
+candidate_not_branded(C) :-
+    ( atom(C)
+      -> analysis_emit(dependency(declaration(newtype, C))),
+         \+ declared_newtype(C, _)
+    ; true ).
 
 %%% Tagged vs positional structural tuple types.
 %
@@ -354,9 +368,12 @@ check_call_arg(Mode, Fun, AV, T, Gs) :- ( var(AV)
 type_guard(Fun, AV, T, Gs) :- ( nonvar(T), \+ wildcard_type_t(T)
                                 -> ( undecidable_arrow_commitment(T)
                                      -> throw(error(determinism_conflict(Fun, unproven_closure(AV, T)), determinism))
+                                   ; strict_mode(true),
+                                     open_nominal_intersection_obligation(AV, T)
+                                     -> guard_goal(AV, T, G), Gs = [G]
                                    ; strict_mode(true)
                                      -> throw(error(strict_runtime_typecheck(Fun, typecheck_or_error(AV, T)), typecheck))
-                                   ; trusted_library_decl(Fun)
+                                   ; trusted_guard_waiver(Fun)
                                      -> Gs = []
                                       ; warn_residual_check(Fun, T),
                                         guard_goal(AV, T, G), Gs = [G] )
@@ -379,21 +396,77 @@ guard_goal(AV, 'String', ( string(AV) -> true ; typecheck_or_error(AV, 'String')
 guard_goal(AV, 'Bool', ( ( AV == true ; AV == false ) -> true ; typecheck_or_error(AV, 'Bool') )) :- !.
 guard_goal(AV, T, typecheck_or_error(AV, T)).
 
-%Compiling a call to `fail` is a rejection too - a silent one - so it also
-%needs a type the author actually promised (see check_call_arg/5):
-apply_call_args(Mode, Fun, AVs, ATs, Gs) :- ( Mode == declared, same_call_var_conflict(AVs, ATs) -> Gs = [fail]
-                                            ; maplist(check_call_arg(Mode, Fun), AVs, ATs, Gss),
-                                              append(Gss, Gs) ).
+apply_call_args(Mode, Fun, AVs, ATs, Gs) :-
+    open_nominal_intersection_obligations(AVs, ATs, Obligations),
+    with_open_nominal_intersections(
+        Obligations,
+        ( maplist(check_call_arg(Mode, Fun), AVs, ATs, Gss),
+          append(Gss, Gs) )).
+
+%Open nominal atom types may overlap: one value can carry several declarations.
+%When the same runtime variable fills such positions, strict compilation must
+%not turn the unresolved intersection into a dead call.  Preserve the ordinary
+%runtime boundary check for that one intrinsically dynamic case; primitive,
+%newtype, parametric and unrelated obligations retain the normal strict rule.
+open_nominal_intersection_obligations(AVs, ATs, Obligations) :-
+    open_nominal_intersection_obligations_(AVs, ATs, AVs, ATs, 0, Os0),
+    variant_union(Os0, [], Obligations).
+
+open_nominal_intersection_obligations_([], [], _, _, _, []).
+open_nominal_intersection_obligations_([V|Vs], [T|Ts], AVs, ATs, I, Os) :-
+    ( var(V), open_nominal_atom_type(T),
+      nth0(J, AVs, V2), J =\= I, V2 == V,
+      nth0(J, ATs, T2), open_nominal_atom_type(T2), T \== T2
+      -> Os = [obligation(V, T)|Rest]
+    ; Os = Rest ),
+    I2 is I + 1,
+    open_nominal_intersection_obligations_(Vs, Ts, AVs, ATs, I2, Rest).
+
+open_nominal_atom_type(T) :-
+    atom(T), \+ primitive_type(T), \+ wildcard_type_t(T),
+    \+ declared_newtype(T, _),
+    \+ declared_type_alias(T, _),
+    \+ declared_foreign_type(T, _),
+    ( declared_value_type(_, T) ; member_ctor(T, _, _) ), !.
+
+with_open_nominal_intersections(Obligations, Goal) :-
+    ( catch(b_getval('$open_nominal_intersections', Saved), _, fail)
+      -> true
+    ; Saved = [] ),
+    setup_call_cleanup(
+        b_setval('$open_nominal_intersections', Obligations),
+        Goal,
+        b_setval('$open_nominal_intersections', Saved)).
+
+open_nominal_intersection_obligation(V, T) :-
+    catch(b_getval('$open_nominal_intersections', Obligations), _, fail),
+    member(obligation(V0, T0), Obligations),
+    V0 == V, T0 == T, !.
 
 %The ordinary interface remains goal-only. The status-bearing form is used by
 %trusted library calls: suppressing a guard is allowed there, but it is not
 %static evidence from which the declared result may be certified.
 apply_call_args_status(Mode, Fun, AVs, ATs, Gs, Status) :-
     apply_call_args(Mode, Fun, AVs, ATs, Gs),
-    ( trusted_library_decl(Fun),
+    ( trusted_guard_waiver(Fun),
       paired_unverified_obligation(AVs, ATs)
       -> Status = unverified
     ; Status = verified ).
+
+%Library declarations are verified promises only across an untyped caller
+%boundary.  A declaration on the enclosing function is an explicit opt-in to
+%ordinary boundary enforcement, irrespective of the callee's origin.
+trusted_guard_waiver(Fun) :-
+    trusted_library_decl(Fun),
+    current_compiling_caller(Caller, Arity),
+    \+ fn_decl(Caller, Arity, _, _, _, _),
+    analysis_emit(dependency(declaration(origin, Fun))).
+
+trusted_unverified_call(Fun, Args) :-
+    trusted_guard_waiver(Fun),
+    length(Args, N),
+    findall(ATs, fn_decl_arity(Fun, N, ATs, _), [ATs]),
+    paired_unverified_obligation(Args, ATs).
 
 paired_unverified_obligation([AV|AVs], [T|Ts]) :-
     ( \+ arg_statically_ok(AV, T)

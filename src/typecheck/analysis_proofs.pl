@@ -208,8 +208,10 @@ analysis_term_dependencies(Term, Dependencies) :-
 
 analysis_symbol_dependency(S, late_symbol(S)) :-
     \+ fun(S), fn_decl(S, _, _, _, _, _).
-analysis_symbol_dependency(S, declaration(value, S)) :-
-    declared_value_type(S, _).
+%A bare value-symbol lookup consumes the absence of a value declaration too:
+%a later declaration can change its candidate type and must invalidate the
+%compiled decision.
+analysis_symbol_dependency(S, declaration(value, S)).
 
 analysis_call_dependency(F, N, D) :-
     fun(F), !,
@@ -245,14 +247,14 @@ analysis_function_decl_dependencies(F, Dependencies) :-
     append(NormalizedDeps, SourceDeps, Ds0),
     sort(Ds0, Dependencies).
 
-analysis_type_dependency(T, declaration(alias, T)) :-
-    atom(T), declared_type_alias(T, _).
-analysis_type_dependency(T, declaration(newtype, T)) :-
-    atom(T), declared_newtype(T, _).
-analysis_type_dependency(T, declaration(foreign, T)) :-
-    atom(T), declared_foreign_type(T, _).
-analysis_type_dependency(T, declaration(space, T)) :-
-    atom(T), declared_space_type(T, _).
+%Type normalization/checking consumes negative declarations as well as
+%positive ones.  Recording all declaration kinds for an atom is a deliberate
+%small over-approximation that prevents a late kind declaration from changing
+%the interpretation of an already-compiled type spelling invisibly.
+analysis_type_dependency(T, declaration(alias, T)) :- atom(T).
+analysis_type_dependency(T, declaration(newtype, T)) :- atom(T).
+analysis_type_dependency(T, declaration(foreign, T)) :- atom(T).
+analysis_type_dependency(T, declaration(space, T)) :- atom(T).
 analysis_type_dependency(T, ctor_set(T)) :-
     atom(T), \+ primitive_type(T), \+ wildcard_type(T),
     \+ declared_type_alias(T, _),

@@ -1,5 +1,15 @@
 :- dynamic translated_from/2.
 
+%Canonical clause-analysis metadata.  The third field records whether source
+%head elaboration emitted executable goals; such a head is not represented by
+%the normalized argument patterns alone and therefore cannot support
+%selection or coverage proofs.
+fun_meta_parts(fun_meta(Args, Body), Args, Body, clean).
+fun_meta_parts(fun_meta(Args, Body, HeadForm), Args, Body, HeadForm).
+
+fun_meta_head_goals(Meta) :-
+    fun_meta_parts(Meta, _, _, head_goals).
+
 %Pattern matching, structural and functional/relational constraints on arguments:
 constrain_args(X, X, []) :- (var(X); atomic(X)), !.
 constrain_args([F, A, B], Out, Goals) :- nonvar(F),
@@ -30,7 +40,9 @@ translate_clause(Input, Clause, ConstrainArgs, Dependencies) :-
         length(Args, N),
         copy_term_nat(BodyExpr, SourceBody),
         analysis_collect(
-            translate_clause_core(Input, Clause, ConstrainArgs),
+            with_compiling_caller(
+                F, N,
+                translate_clause_core(Input, Clause, ConstrainArgs)),
             Events),
         analysis_term_dependencies(SourceBody, TermDependencies),
         analysis_function_decl_dependencies(F, DeclDependencies),
@@ -41,6 +53,20 @@ translate_clause(Input, Clause, ConstrainArgs, Dependencies) :-
                             ExtraDependencies, Proof),
         analysis_proof_dependencies(Proof, Dependencies),
         analysis_reemit_proof(Proof).
+
+with_compiling_caller(F, N, Goal) :-
+    ( catch(b_getval('$compiling_caller', Previous), _, fail)
+      -> HadPrevious = true
+    ; Previous = none, HadPrevious = false ),
+    setup_call_cleanup(
+        b_setval('$compiling_caller', F/N),
+        Goal,
+        ( HadPrevious == true
+          -> b_setval('$compiling_caller', Previous)
+        ; b_setval('$compiling_caller', none) )).
+
+current_compiling_caller(F, N) :-
+    catch(b_getval('$compiling_caller', F/N), _, fail).
 translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                Input = [=, [F|Args0], BodyExpr],
                                                length(Args0, SourceArity),
@@ -56,8 +82,10 @@ translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                ( ConstrainArgs -> maplist(constrain_args, Args0, Args1, GoalsA),
                                                                   flatten(GoalsA,GoalsPrefix)
                                                                 ; Args1 = Args0, GoalsPrefix = [] ),
+                                               ( GoalsPrefix == [] -> HeadForm = clean
+                                               ; HeadForm = head_goals ),
                                                catch(nb_getval(F, Prev), _, Prev = []),
-                                               nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
+                                               nb_setval(F, [fun_meta(Args1, BodyExpr, HeadForm) | Prev]),
                                                clause_param_types(F, Args1, DeclOut),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
@@ -180,7 +208,15 @@ det_param_check(F, N, Pos, Det, A, Check) :-
 
 clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
+                              \+ function_has_conditional_commit(F, N),
                               catch(( fn_determinism(F, N, D), committed_det(D) ), _, fail).
+
+function_has_conditional_commit(F, N) :-
+    catch(nb_getval(F, Metas), _, fail),
+    member(Meta, Metas),
+    fun_meta_parts(Meta, Args, Body, _),
+    length(Args, N),
+    body_conditionally_commits(Body), !.
 
 length_of_source_args([=, [_|Args], _], N) :- length(Args, N).
 
@@ -434,18 +470,21 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
 %Only literal, declared source-space names opt in. Raw space payloads and
 %patterns are never evaluated here: reject a definite contradiction, trust
 %unknown runtime-filled fields, and let the existing binder narrow unions.
-typed_source_space(Space, RowT) :-
+note_source_space_consultation(Space) :-
     atom(Space),
-    declared_space_type(Space, RowT),
     analysis_emit(dependency(declaration(space, Space))).
 
 check_typed_space_value(Space, Value) :-
-    ( typed_source_space(Space, RowT), value_definitely_mismatch(Value, RowT)
-      -> throw(error(literal_type_mismatch(Value, RowT), typecheck))
+    ( note_source_space_consultation(Space) -> true ; true ),
+    ( atom(Space), declared_space_type(Space, RowT)
+      -> ( value_definitely_mismatch(Value, RowT)
+           -> throw(error(literal_type_mismatch(Value, RowT), typecheck))
+         ; true )
     ; true ).
 
 bind_typed_space_pattern(Space, Pattern) :-
-    ( typed_source_space(Space, RowT)
+    ( note_source_space_consultation(Space) -> true ; true ),
+    ( atom(Space), declared_space_type(Space, RowT)
       -> ( typed_space_pattern_mismatch(Pattern, RowT)
            -> throw(error(literal_type_mismatch(Pattern, RowT), typecheck))
          ; bind_pattern_typed(Pattern, RowT, []) )
@@ -1218,7 +1257,7 @@ overload_branch(Fun, AVs, Out, ft(ATs, OT), Branch) :- maplist(overload_branch_g
 overload_out_guard(MultiDecl, Fun, Out, OT, Extra) :- ( MultiDecl == true, ground(OT), \+ wildcard_type_t(OT)
                                                         -> ( strict_mode(true)
                                                              -> throw(error(strict_runtime_typecheck(Fun, typecheck_match(Out, OT)), typecheck))
-                                                            ; trusted_library_decl(Fun)
+                                                            ; trusted_guard_waiver(Fun)
                                                               -> Extra = []
                                                               ; Extra = [typecheck_match(Out, OT)] )
                                                          ; Extra = [] ).
@@ -1226,7 +1265,7 @@ overload_out_guard(MultiDecl, Fun, Out, OT, Extra) :- ( MultiDecl == true, groun
 overload_branch_guard(Fun, AV, T, G) :- ( arg_statically_ok(AV, T) -> G = []
                                         ; strict_mode(true)
                                           -> throw(error(strict_runtime_typecheck(Fun, typecheck_match(AV, T)), typecheck))
-                                        ; trusted_library_decl(Fun)
+                                        ; trusted_guard_waiver(Fun)
                                           -> G = []
                                            ; G = [typecheck_match(AV, T)] ).
 

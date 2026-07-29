@@ -101,7 +101,15 @@ effect_poly_call_determinism(F, N, Args, Det) :-
     effect_poly_decl(F, N, Name, _, Positions),
     effect_body_determinism(F, N, Name, BodyDet),
     effect_positions_instantiation(Positions, Args, Inst),
-    effect_join(BodyDet, Inst, Det).
+    effect_poly_selection_determinism(F, N, Args, Selection),
+    effect_join(BodyDet, Inst, IntrinsicAndClosure),
+    effect_join(IntrinsicAndClosure, Selection, Det).
+
+effect_poly_selection_determinism(F, N, Args, Det) :-
+    catch(nb_getval(F, Metas0), _, fail),
+    include(arity_meta(N), Metas0, Metas),
+    Metas \== [],
+    inferred_selection_determinism(F, N, Args, Metas, Det).
 
 effect_positions_instantiation([], _, det).
 effect_positions_instantiation([pos(Idx, M, _)|Ps], Args, Det) :-
@@ -198,7 +206,9 @@ det_atom_evidence(F2, M) :- catch(function_call_determinism(F2, M, Det), _, fail
 
 %The named function's own full arity (declared, else from stored clauses):
 fn_own_arity(F2, A) :- fn_decl_arity(F2, A, _, _), !.
-fn_own_arity(F2, A) :- catch(nb_getval(F2, Metas), _, fail), member(fun_meta(As, _), Metas), length(As, A), !.
+fn_own_arity(F2, A) :- catch(nb_getval(F2, Metas), _, fail),
+                       member(Meta, Metas), fun_meta_parts(Meta, As, _, _),
+                       length(As, A), !.
 
 %body_determinism GIVEN the arrow-typed parameters are det. Analyzes COPIES
 %of the stored clause metas with each arrow-position head param var attached
@@ -253,7 +263,7 @@ body_determinism_assuming_proof(F, N, Proof) :-
 %position, attach the det form of the declared arrow to the COPIED head var -
 %never the stored one:
 assume_det_meta(ATs1, Positions, Meta, Meta2) :- copy_term(Meta, Meta2),
-                                                 Meta2 = fun_meta(Args, _),
+                                                 fun_meta_parts(Meta2, Args, _, _),
                                                  maplist(bind_meta_param, Args, ATs1),
                                                  assume_det_positions(Positions, ATs1, Args).
 
@@ -409,6 +419,13 @@ let_determinism(Pat, Val, In, Result) :-
       ( det_result_final(RVal) -> Result = RVal
       ; copy_term(Pat-In, PatC-InC),
         ignore(bind_destructured_field_types(PatC, Val)),
+        %A plain let variable receives the producer's declared result type in
+        %the analysis copy.  This is weaker than the proper-list certificate
+        %below: it does not claim that the value is already manifest, but it
+        %lets call-selection consume List/Bool/nominal evidence.  Selection
+        %then requires a boundary proviso for direct parameters; this local
+        %case is backed by the ordinary runtime result check emitted for Val.
+        ignore(bind_plain_result_type(PatC, Val)),
         %A PLAIN-var pattern bound to a value that is GUARANTEED a proper
         %list - a collapse form (findall/3 output) or a call to a
         %proper_list_output-certified function - carries that knowledge into
@@ -417,18 +434,39 @@ let_determinism(Pat, Val, In, Result) :-
         %parameter. The guarantee is load-bearing: the narrowing's coverage
         %leg assumes the runtime value IS a list (a cons head cannot match a
         %Number, and a miss is a failure under det), and collapse is what
-        %makes that unconditional. A declared (List _) output does NOT
-        %qualify - typed is not bound, so no certificate, no knowledge:
+        %makes that unconditional. A declared (List _) output gets the weaker
+        %selection type above, but does NOT qualify for this manifest-output
+        %certificate:
         ( var(PatC), val_guaranteed_proper_list(Val)
-          -> add_known_type(PatC, ['List', '%Undefined%']) ; true ),
+          -> add_known_type(PatC, ['List', '%Undefined%']),
+             put_attr(PatC, proper_list_cert, true),
+             ProperListVar = proper(PatC)
+        ; ProperListVar = none ),
         %fields whose type stayed unknown (arrow, wildcard, no declared tuple
         %type at all) can arrive bound to anything, functions included - mark
         %the copies so they read as parameters, not as fresh locals:
         term_variables(PatC, FVs),
         maplist(mark_field_unless_typed, FVs),
-        deterministic_expr_core(InC, RIn),
+        with_scoped_proper_list_var(
+            ProperListVar,
+            deterministic_expr_core(InC, RIn)),
         combine_det_results(RVal, RIn, RVI),
         combine_det_results(R0, RVI, Result) ) ).
+
+with_scoped_proper_list_var(none, Goal) :- !, call(Goal).
+with_scoped_proper_list_var(proper(V), Goal) :-
+    ( catch(b_getval('$proper_list_vars', Saved), _, fail) -> true
+    ; Saved = [] ),
+    setup_call_cleanup(
+        b_setval('$proper_list_vars', [V|Saved]),
+        Goal,
+        b_setval('$proper_list_vars', Saved)).
+
+scoped_proper_list_var(V) :-
+    get_attr(V, proper_list_cert, true), !.
+scoped_proper_list_var(V) :-
+    catch(b_getval('$proper_list_vars', Vars), _, fail),
+    member(Here, Vars), Here == V, !.
 
 %Bind each destructuring field variable to its concrete non-arrow field type,
 %read off Val's declared tuple output type. Non-arrow, non-wildcard only: an
@@ -458,6 +496,14 @@ bind_pat_field_types([], []).
 bind_pat_field_types([P|Ps], [T|Ts]) :- ( var(P), nonvar(T), \+ is_arrow_type(T), \+ wildcard_type_t(T)
                                           -> add_known_type(P, T) ; true ),
                                         bind_pat_field_types(Ps, Ts).
+
+bind_plain_result_type(Pat, Val) :-
+    var(Pat),
+    call_output_type(Val, T),
+    nonvar(T),
+    \+ is_arrow_type(T),
+    \+ wildcard_type_t(T),
+    add_known_type(Pat, T).
 
 mark_field_unless_typed(V) :- ( get_attr(V, tknown, _) -> true ; note_unknown_candidate(V) ).
 
@@ -550,7 +596,9 @@ parsed_value_decl(ParsedForms, C, T) :- member(parsed(expression, _, _, Form), P
                                         atom(C), atom(T), \+ fun(C).
 
 stored_clause_head(F, N, Args) :- catch(nb_getval(F, Metas), _, fail),
-                                  member(fun_meta(Args, _), Metas), length(Args, N).
+                                  member(Meta, Metas),
+                                  fun_meta_parts(Meta, Args, _, _),
+                                  length(Args, N).
 
 check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
     ( ( explicit_det_decl(F, N)
@@ -589,12 +637,14 @@ det_exhaustiveness_proof(Consts, F, N, Heads, Proof) :-
 %compiled. The scoped recursion assumption lets a map/fold call itself.
 effect_det_exhaustiveness_required(ParsedForms, F, N) :-
     effect_poly_decl(F, N, Name, ATs, Positions),
-    findall(fun_meta(Args, Body),
+    findall(fun_meta(Args, Body, clean),
             ( member(parsed(function, _, _, Form), ParsedForms),
               Form = [Eq, Head, Body], Eq == (=),
               Head = [F0|Args], F0 == F, length(Args, N)
             ; catch(nb_getval(F, Stored), _, fail),
-              member(fun_meta(Args, Body), Stored), length(Args, N) ),
+              member(Meta, Stored),
+              fun_meta_parts(Meta, Args, Body, _),
+              length(Args, N) ),
             Metas),
     Metas \== [],
     maplist(assume_det_meta(ATs, Positions), Metas, Upgraded),

@@ -130,8 +130,9 @@ infix_arrow_misuse(T) :- is_list(T), T = [H|_], nonvar(H), infix_arrow_misuse(H)
 %Normalize nested arrow types to canonical prefix form. Nondeterministic
 %arrows keep their marker so closure parameters carry the commitment:
 normalize_type(T, T) :- var(T), !.
-normalize_type(T, R) :- atom(T), declared_type_alias(T, R), !,
-                        analysis_emit(dependency(declaration(alias, T))).
+normalize_type(T, R) :- atom(T), !,
+                        analysis_emit(dependency(declaration(alias, T))),
+                        ( declared_type_alias(T, Alias) -> R = Alias ; R = T ).
 normalize_type(T, T) :- atomic(T), !.
 normalize_type(T, TN) :- is_list(T), fn_type_shape(T, ATs, OT, _), !,
                          T = [Arrow|_],

@@ -244,14 +244,17 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                                          added)) ).
 maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = [C, Name, Type],
                                         C == (:), atom(Name)
-                                        -> prepare_decl_origin(Name, Type, Origin),
-                                           ( nonvar(Type), infix_arrow_misuse(Type)
+                                        -> ( nonvar(Type), infix_arrow_misuse(Type)
                                              -> throw(error(infix_arrow_syntax(Name, Type), typecheck))
                                            ; nonvar(Type), fn_type_shape(Type, ATs, OT, Det)
-                                              -> current_fn_decl_provenance(Type, Provenance),
-                                                cache_fn_type_decl(Name, Type, ATs, OT, Det,
-                                                                   Origin, Provenance)
-                                              ; ground(Origin),
+                                              -> with_fn_decl_transaction(
+                                                     Name,
+                                                     ( prepare_decl_origin(Name, Type, Origin),
+                                                       current_fn_decl_provenance(Type, Provenance),
+                                                       cache_fn_type_decl(Name, Type, ATs, OT, Det,
+                                                                          Origin, Provenance) ))
+                                              ; prepare_decl_origin(Name, Type, Origin),
+                                                ground(Origin),
                                                 normalize_type(Type, TN),
                                                 ( declared_value_type(Name, T2), T2 =@= TN -> true
                                                 ; assertz(declared_value_type(Name, TN)),
@@ -259,6 +262,48 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                                                    added)),
                                                   notify_symbol_constructor_sets(Name) ) )
                                         ; true ).
+
+%A declaration-driven graph revalidation is transactional with respect to the
+%canonical declaration state.  The raw source atom inserted by runtime
+%add-atom remains outside this bounded transaction (MeTTa has no catchable
+%mutation exception boundary yet), but executable clauses, declarations,
+%origins and inferred types are restored together.
+with_fn_decl_transaction(Name, Goal) :-
+    snapshot_fn_decl_transaction(Name, Snapshot),
+    catch(Goal, Error,
+          ( restore_fn_decl_transaction(Name, Snapshot),
+            throw(Error) )).
+
+snapshot_fn_decl_transaction(Name,
+        fn_decl_transaction(Records, Origins, Inferred)) :-
+    findall(fn_decl(Name, N, Scheme, Effect, Origin, Provenance),
+            fn_decl_copy(Name, N, Scheme, Effect, Origin, Provenance),
+            Records),
+    findall(Origin, nonfn_decl_origin(Name, Origin), Origins),
+    findall(inferred(ATs, OT), inferred_fn_type(Name, ATs, OT), Inferred).
+
+restore_fn_decl_transaction(Name,
+        fn_decl_transaction(Records, Origins, Inferred)) :-
+    findall(N, fn_decl(Name, N, _, _, _, _), CurrentArities0),
+    findall(N, member(fn_decl(Name, N, _, _, _, _), Records), PriorArities0),
+    append(CurrentArities0, PriorArities0, Arities0),
+    sort(Arities0, Arities),
+    with_decl_notifications_suppressed(
+        ( remove_all_fn_decl_records(Name),
+          forall(member(Record, Records), add_fn_decl_record(Record, _)),
+          retractall(nonfn_decl_origin(Name, _)),
+          forall(member(Origin, Origins),
+                 assertz(nonfn_decl_origin(Name, Origin))),
+          retractall(inferred_fn_type(Name, _, _)),
+          forall(member(inferred(ATs, OT), Inferred),
+                 assertz(inferred_fn_type(Name, ATs, OT))) )),
+    %Consumers may already have reacted to an origin flip before the staged
+    %declaration failed. Re-run those exact graph edges under the restored
+    %state; retain the original validation error if rollback revalidation
+    %itself reports anything.
+    catch(decl_notify(declaration_changed(origin, Name, changed)), _, true),
+    forall(member(N, Arities),
+           catch(decl_notify(declaration_changed(Name/N, changed)), _, true)).
 
 cache_fn_type_decl(Name, Type, ATs, OT, Det, Origin, Provenance) :-
     validate_effect_variable_decl(Name, Type),
@@ -344,7 +389,8 @@ mark_symbol_origin_user(Name) :-
            ( Old = fn_decl(Name, N, Scheme, Effect, _, Provenance),
              New = fn_decl(Name, N, Scheme, Effect, user, Provenance),
              replace_fn_decl_record(Old, New) )),
-    retractall(nonfn_decl_origin(Name, _)).
+    retractall(nonfn_decl_origin(Name, _)),
+    decl_notify(declaration_changed(origin, Name, changed)).
 
 cached_symbol_declaration(Name) :- fn_decl(Name, _, _, _, _, _), !.
 cached_symbol_declaration(Name) :- declared_value_type(Name, _), !.
@@ -487,11 +533,15 @@ normalize_type_syntax(T, T).
 %%% whose arrow entries changed need recompilation; determinism metadata is
 %%% keyed by function name and arity, neither of which changes here.
 renormalize_late_alias(Name, Fs) :-
+    self_type_declarations(All),
+    dependent_type_names(All, [Name], Names),
+    include(declaration_mentions_any(Names), All, Rebuilt),
     renormalize_alias_fn_decls(Name, Fs),
     renormalize_alias_value_decls(Name),
     renormalize_alias_space_decls(Name),
     renormalize_alias_alias_decls(Name),
-    renormalize_alias_newtype_decls(Name).
+    renormalize_alias_newtype_decls(Name),
+    notify_rebuilt_declarations(Rebuilt).
 
 type_term_mentions_alias(T, Name) :- sub_term(S, T), S == Name, !.
 
@@ -676,7 +726,29 @@ alias_removal_rebuild(Name, Ref) :-
           retractall(nonfn_decl_origin(Name, _)),
           forall(member(T, Terms),
                  recache_type_decl_preserving_origin(T, SavedFnDecls)) )),
+    notify_rebuilt_declarations(Terms),
     decl_notify(declaration_changed(alias, Name, removed)).
+
+notify_rebuilt_declarations(Terms) :-
+    forall(( member(Term, Terms),
+             rebuilt_declaration_event(Term, Event) ),
+           decl_notify(Event)).
+
+rebuilt_declaration_event([_, F, Type], declaration_changed(F/N, changed)) :-
+    nonvar(Type), fn_type_shape(Type, ATs, _, _), !,
+    length(ATs, N).
+rebuilt_declaration_event([_, Name, [Kind, _]],
+                          declaration_changed(StoreKind, Name, changed)) :-
+    declaration_kind_name(Kind, StoreKind), !.
+rebuilt_declaration_event([_, Name, [Foreign|_]],
+                          declaration_changed(foreign, Name, changed)) :-
+    Foreign == 'Foreign', !.
+rebuilt_declaration_event([_, Name, _],
+                          declaration_changed(value, Name, changed)).
+
+declaration_kind_name('Alias', alias).
+declaration_kind_name('Newtype', newtype).
+declaration_kind_name('SpaceOf', space).
 
 %Alias removal temporarily erases and rebuilds dependent cache entries, but
 %their source declarations were not removed. Preserve any library provenance

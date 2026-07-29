@@ -64,9 +64,13 @@
           ($type (car-atom (cdr-atom $result))))
          (repr $type))
    "(literal_type_mismatch 15 String)")
+; Repeated variables are checked normally; the checker no longer compiles a
+; guessed-disjoint pair into a silent dead call.
 !(test
-   (collapse (map-atom (1) $x (both $x $x)))
-   ())
+   (let* (($expr (quote (collapse (map-atom (1) $x (both $x $x)))))
+          ($result (catch (eval $expr))))
+      (car-atom $result))
+   Error)
 
 ; Explicit error-path checks (real runtime exceptions)
 !(test (if-error (catch (/ 1 0)) True False) True)

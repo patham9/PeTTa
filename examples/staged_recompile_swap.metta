@@ -10,10 +10,6 @@
          (quote
             (add-atom &self
                (: staged-choice (-[det]-> Atom Number))))))
-   ; Remove the failed late declaration before observing the function. This
-   ; also makes the example oracle-safe; if the old eager recompile had erased
-   ; clause a before failing on b, this removal could only rebuild b.
-   (let $removed
-      (remove-atom &self
-         (: staged-choice (-[det]-> Atom Number)))
-      (test (collapse (staged-choice $which)) (1 "old"))))
+   ; The failed declaration and its origin are rolled back automatically, and
+   ; both old executable clauses remain live.
+   (test (collapse (staged-choice $which)) (1 "old")))

@@ -38,7 +38,9 @@ type_unify(A, B) :- is_arrow_type(A), is_arrow_type(B), !,
 type_unify(A, B) :- is_list(A), !, is_list(B), same_length(A, B), maplist(type_unify, A, B).
 type_unify(A, B) :- A == B.
 
-brand_name(T) :- atom(T), declared_newtype(T, _).
+brand_name(T) :- atom(T),
+                 analysis_emit(dependency(declaration(newtype, T))),
+                 declared_newtype(T, _).
 
 %%% (Newtype R) is NOMINAL, and the rule is one-directional and non-vacuous:
 %%%
@@ -70,7 +72,10 @@ brand_unify(A, B) :- brand_name(B), !,
                      \+ ( member(MA, As), \+ type_compat_soft(MA, B) ).
 brand_unify(_, B) :- wildcard_type_t(B), !.
 brand_unify(A, B) :- is_union(B), !, B = ['|'|Ms], member(M, Ms), type_unify(A, M), !.
-brand_unify(A, B) :- declared_newtype(A, RA), \+ wildcard_type_t(RA), type_unify(RA, B).
+brand_unify(A, B) :-
+    atom(A),
+    analysis_emit(dependency(declaration(newtype, A))),
+    declared_newtype(A, RA), \+ wildcard_type_t(RA), type_unify(RA, B).
 
 %A closure fits a required arrow when it can produce no MORE results than the
 %requirement allows (det < semidet < nondet). A plain requirement is
@@ -112,6 +117,12 @@ mreq:attr_unify_hook(Rs, Other) :-
                                                    put_attr(Other, mreq, U)
                                                  ; put_attr(Other, mreq, Rs) )
                   ; forall(member(R, Rs), typecheck_or_error(Other, R)) ).
+
+%Analysis-only shape evidence.  Unlike a declared (List T), this records that
+%the current value-producing expression constructs a closed list spine.  The
+%attribute propagates through the copies made by nested let/let* analysis.
+proper_list_cert:attr_unify_hook(true, Other) :-
+    ( var(Other) -> put_attr(Other, proper_list_cert, true) ; true ).
 
 variant_member(X, [Y|_]) :- X =@= Y, !.
 variant_member(X, [_|T]) :- variant_member(X, T).
@@ -388,26 +399,3 @@ set_call_out_type(Out, ATs, OT) :- ( nonvar(OT) -> set_out_type(Out, OT)
                                    ; var(Out), term_variables(ATs, Vs), \+ memberchk_eq(OT, Vs)
                                      -> add_known_type(Out, OT)
                                       ; true ).
-
-%A call is statically dead when the same variable occupies two argument
-%positions whose required types can never both hold (e.g. (num-str $x $x)):
-same_call_var_conflict([V|Vs], [T|Ts]) :- ( var(V), nonvar(T), \+ wildcard_type_t(T),
-                                            var_conflict_in_rest(V, T, Vs, Ts) -> true
-                                          ; same_call_var_conflict(Vs, Ts) ).
-
-var_conflict_in_rest(V, T, [V2|Vs], [T2|Ts]) :- ( V == V2, nonvar(T2), \+ wildcard_type_t(T2),
-                                                  %Assignability failure implies disjointness only
-                                                  %for primitive/nominal atoms. Unions and
-                                                  %parametric types may overlap even when neither
-                                                  %is assignable to the other.
-                                                  conflict_disjointness_type(T),
-                                                  conflict_disjointness_type(T2),
-                                                  \+ type_compat_soft(T, T2),
-                                                  \+ type_compat_soft(T2, T) -> true
-                                                ; var_conflict_in_rest(V, T, Vs, Ts) ).
-
-conflict_disjointness_type(T) :-
-    atom(T),
-    \+ wildcard_type_t(T),
-    \+ declared_type_alias(T, _),
-    ( primitive_type(T) ; user_atom_type(T) ).
