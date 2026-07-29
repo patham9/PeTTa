@@ -43,13 +43,17 @@ parse(Str, R) :- sread(Str, R).
 '!='(A,B,R) :- (A==B -> R=false ; R=true).
 '='(A,B,R) :-  (A=B -> R=true ; R=false).
 '=?'(A,B,R) :- (\+ \+ A=B -> R=true ; R=false).
+%Raw =@= success already implies attribute-free variance - identical
+%attributes still correspond after stripping - so it accepts at C speed
+%without copying. A raw failure is final unless checker attributes are
+%present on either side; only that rare case pays for the stripping copies.
 attribute_free_variant(A, B) :-
-    copy_term_nat(A, AC),
-    copy_term_nat(B, BC),
-    AC =@= BC.
+    ( A =@= B -> true
+    ; ( term_attvars(A, [_|_]) -> true ; term_attvars(B, [_|_]) )
+      -> copy_term_nat(A, AC), copy_term_nat(B, BC), AC =@= BC
+    ; fail ).
 
-'=alpha'(A,B,R) :- copy_term_nat(A, AC), copy_term_nat(B, BC),
-                    (AC =@= BC -> R=true ; R=false).
+'=alpha'(A,B,R) :- (attribute_free_variant(A, B) -> R=true ; R=false).
 '=@='(A,B,R) :- (attribute_free_variant(A, B) -> R=true ; R=false).
 '<='(A,B,R) :- (A =< B -> R=true ; R=false).
 '>='(A,B,R) :- (A >= B -> R=true ; R=false).
