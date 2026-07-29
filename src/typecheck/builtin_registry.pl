@@ -1,9 +1,35 @@
+:- module(builtin_registry,
+          [ builtin_spec/6,
+            builtin_flat_cardinality/3,
+            builtin_argument_rule/3,
+            builtin_conditional_rule/3,
+            builtin_contextual_typing/3,
+            builtin_signature/5,
+            builtin_codegen_hook/3,
+            builtin_codegen_symbol/2,
+            special_builtin_form/3,
+            builtin_registration_exemption/2,
+            builtin_implementation_exemption/2,
+            validate_builtin_registry/0,
+            validate_builtin_registry_schema/0,
+            validate_builtin_registry_unique/0,
+            validate_builtin_registry_hooks/0,
+            validate_builtin_registry_signatures/0,
+            validate_builtin_registration_coverage/0,
+            validate_builtin_implementation_coverage/0
+          ]).
+
 %%% Declarative registry for language-visible builtins and compiler forms.
 %
 % One record owns the cross-cutting metadata that used to be repeated in the
 % signature file, determinism table, contextual output rules and translator.
 % Procedural implementations remain in their subject files; the registry names
 % their hooks and the load-time validator below proves every named hook exists.
+%
+% Owns builtin_spec/6, its consumer views, explicit exemptions, and registry
+% consistency validation. Consumes named hook predicates, declaration views,
+% and runtime builtin registration through explicitly qualified user-module
+% callbacks. This leaf is a real SWI-Prolog module; it owns no checker stores.
 %
 % builtin_spec(
 %     Name/MeTTaArity,
@@ -334,30 +360,30 @@ validate_builtin_registry_unique :-
 
 validate_builtin_registry_hooks :-
     forall(builtin_argument_rule(_, _, Rule),
-           ( builtin_argument_rule_defined(Rule)
+           ( user:builtin_argument_rule_defined(Rule)
              -> true
              ; throw(error(undefined_builtin_argument_rule(Rule), builtin_registry)) )),
     forall(builtin_conditional_rule(_, _, Rule),
-           ( builtin_conditional_rule_defined(Rule)
+           ( user:builtin_conditional_rule_defined(Rule)
              -> true
              ; throw(error(undefined_builtin_conditional_rule(Rule), builtin_registry)) )),
     forall(builtin_contextual_typing(_, _, Hook),
-           ( builtin_contextual_typing_rule_defined(Hook)
+           ( user:builtin_contextual_typing_rule_defined(Hook)
              -> true
              ; throw(error(undefined_builtin_contextual_typing_rule(Hook), builtin_registry)) )),
     forall(builtin_codegen_hook(_, _, Hook),
-           ( builtin_codegen_rule_defined(Hook)
+           ( user:builtin_codegen_rule_defined(Hook)
              -> true
              ; throw(error(undefined_builtin_codegen_rule(Hook), builtin_registry)) )).
 
 validate_builtin_registry_signatures :-
     forall(builtin_signature(F, _, Det, Args, Out),
-           ( declared_fn_type(F, A2, O2, D2),
+           ( user:declared_fn_type(F, A2, O2, D2),
              (Args-Out-Det) =@= (A2-O2-D2)
              -> true
              ; throw(error(registry_signature_missing_from_builtin_types(F, Args, Out, Det),
                            builtin_registry)) )),
-    forall(declared_fn_type(F, Args, Out, Det),
+    forall(user:declared_fn_type(F, Args, Out, Det),
            ( builtin_signature(F, _, D2, A2, O2),
              (Args-Out-Det) =@= (A2-O2-D2)
              -> true
@@ -365,7 +391,7 @@ validate_builtin_registry_signatures :-
                            builtin_registry)) )).
 
 validate_builtin_registration_coverage :-
-    forall(fun(F),
+    forall(user:fun(F),
            ( builtin_spec(F/_, _, _, _, _, _)
              -> true
            ; builtin_registration_exemption(F, _)
@@ -373,7 +399,7 @@ validate_builtin_registration_coverage :-
            ; throw(error(unregistered_builtin_spec(F), builtin_registry)) )).
 
 validate_builtin_implementation_coverage :-
-    source_file(register_fun(_), File),
+    source_file(user:register_fun(_), File),
     forall(metta_source_predicate(File, F, A),
            ( builtin_implementation_exemption(F/A, _)
              -> true
@@ -383,7 +409,7 @@ validate_builtin_implementation_coverage :-
            ; throw(error(unregistered_metta_builtin_implementation(F/A), builtin_registry)) )).
 
 metta_source_predicate(File, F, A) :-
-    source_file(H0, File),
+    source_file(user:H0, File),
     functor(H0, F, A),
     functor(H, F, A),
-    catch(( clause(H, _, Ref), clause_property(Ref, file(File)) ), _, fail).
+    catch(( clause(user:H, _, Ref), clause_property(Ref, file(File)) ), _, fail).

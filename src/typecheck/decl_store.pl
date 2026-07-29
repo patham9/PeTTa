@@ -1,7 +1,22 @@
+%%% Canonical declaration storage and declaration lifecycle.
+%
+% Owns: every function/value/type declaration store, declaration provenance and
+% library origin, add/remove/cache/renormalize operations, and fresh-copy lookup
+% views.
+% Consumes: arrow/type normalization, mutation notification, source-loading
+% provenance helpers, and translator recompilation entry points.
+% Boundary: all declaration mutation enters through maybe_cache_type_decl/2,
+% maybe_uncache_type_decl/2, or forget_symbol_types/1.
+
 :- thread_local loading_origin/1.
 :- thread_local declaration_provenance/1.
 :- dynamic fn_decl/6.
 :- dynamic nonfn_decl_origin/2.
+:- dynamic declared_value_type/2.   % declared_value_type(Name, Type)
+:- dynamic declared_newtype/2.      % declared_newtype(Name, Representation)
+:- dynamic declared_type_alias/2.   % declared_type_alias(Name, Representation)
+:- dynamic declared_foreign_type/2. % declared_foreign_type(Name, Arity)
+:- dynamic declared_space_type/2.   % declared_space_type(Name, RowType)
 
 %%% Canonical function-declaration record.
 %
@@ -274,6 +289,13 @@ notify_symbol_constructor_sets(_).
 
 symbol_enters_constructor_set(Name, T) :-
     once(new_ctor_key(Name, T, _)).
+
+%Bridge declaration mutation to the dependency graph's ctor_set(Type) events.
+new_ctor_key(Name, T, K) :- member_ctor(T, K, Name).
+new_ctor_key(Name, T, 0) :-
+    declared_value_type(Name, T2),
+    T = T2,
+    \+ fun(Name).
 
 %Origin is deliberately symbol-level: one user declaration opts the whole
 %callable back into conservative guards, including all of its overloads. A

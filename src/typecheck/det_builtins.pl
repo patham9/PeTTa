@@ -1,6 +1,10 @@
 %%% Determinism of the builtins (registered funs backed by a Prolog predicate
 %%% rather than MeTTa equations).
 %
+% Owns the effective function-call effect lookup and the compatibility shim
+% over fixed registry cardinalities. Consumes builtin_registry views,
+% canonical declarations, and inferred body proofs. It owns no mutable state.
+%
 % The builtin registry is the ONLY fixed determinism knowledge the checker has
 % about them: a builtin without cardinality metadata is `unspecified`, which is
 % what "never analysed"

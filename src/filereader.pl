@@ -25,6 +25,14 @@ load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []
 
 current_metta_file(File) :- catch(nb_getval('$metta_file', File), _, File = '<string>').
 
+%Run Goal as though it were being compiled from File. Dependency revalidation
+%uses this interface without owning the filereader's thread-local state.
+in_metta_file(File, Goal) :-
+    current_metta_file(Prev),
+    setup_call_cleanup(nb_setval('$metta_file', File),
+                       Goal,
+                       nb_setval('$metta_file', Prev)).
+
 %Parse MeTTa source into its balanced top-level forms:
 metta_string_forms(S, Forms) :- string_codes(S, Cs),
                                 strip(Cs, 0, Codes),

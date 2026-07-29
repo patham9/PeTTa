@@ -1,3 +1,11 @@
+%%% Runtime soundness oracles.
+%
+% Owns: --oracle-det cardinality wrapping and --oracle rechecks of statically
+% discharged argument/output certifications.
+% Consumes: declaration/effect queries, check_value/3, and checker mode flags.
+% Boundary: oracle predicates only add runtime verification goals; they never
+% influence a compile-time acceptance decision.
+%
 %%% --oracle-det: the CARDINALITY oracle.
 %
 %A determinism declaration is a claim about how many solutions a call has:
@@ -68,34 +76,19 @@ oracle_check(V, T) :- ( var(V) -> true
                           -> throw(error(literal_type_mismatch(V, T), typecheck))
                            ; true ) ).
 
-%Only a candidate carrying CONCRETE type evidence (candidate_evidence(C,type(_)))
-%makes a bottom body a dishonest parametric declaration: the marker, a wrapped
-%literal and a still-open type variable are all "no concrete result stated here".
-parametric_output_check(F, ExpOut) :- ( var(ExpOut)
-                                        -> ( known_candidates(ExpOut, Cs), member(C, Cs),
-                                             candidate_evidence(C, type(_))
-                                             -> throw(error(non_parametric_output(F), typecheck)) ; true )
-                                         ; throw(error(non_parametric_output(F), typecheck)) ).
+%Under --oracle a statically discharged output certification is re-verified
+%at runtime with the checker's OWN value relation (check_value). The reflective
+%guard is deliberately not used here: it is weaker than the checker.
+oracle_output_check(DeclOut, Out, Gs0, Gs) :-
+    ( oracle_mode(true), DeclOut = out(OT, _), nonvar(OT), \+ wildcard_type_t(OT), Gs0 == []
+      -> Gs = [oracle_check(Out, OT)]
+       ; Gs = Gs0 ).
 
-%A declared arg type variable claims parametric universality over the position
-%it occupies: callers passing any value are unchecked there. Snapshot EVERY
-%type variable still unbound AFTER head-pattern binding (clause_param_types may
-%already have instantiated some via head literals), including the ones buried
-%inside a compound type.
-%
-%The nested ones used to be excluded, on the theory that "element typing may
-%legitimately bind it". It does not: fn_decl_arity/4 hands every call site a
-%FRESH COPY of the declaration, so a binding made while compiling the body
-%touches only this clause's instance and nothing re-establishes it for callers.
-%The binding therefore does not check anything - it silently ELIDES the check:
-%
-%    (: sumh (-> (List $a) Number))
-%    (= (sumh (cons $h $t)) (+ $h 1))       % $a := Number, only here
-%    !(sumh (cons "x" ()))                  % fresh $a := String, accepted
-%
-%compiled with zero runtime checks under --strict and printed 121 (SWI reads a
-%one-character string as its character code). A body that pins a nested type
-%variable is exactly as dishonest as one that pins a top-level one, and is
-%rejected the same way: the declaration has to name the type the body needs.
-parametric_param_snapshot(out(_, ATs), Vars) :- !, term_variables(ATs, Vars).
-parametric_param_snapshot(_, []).
+%The corresponding audit for a statically discharged call argument.
+%Rational terms cannot safely be stored in an asserted compiled clause, so an
+%acyclicity failure means this optional oracle cannot instrument that value.
+oracle_arg_check(AV, T, Gs) :-
+    ( oracle_mode(true), nonvar(T), \+ wildcard_type_t(T),
+      acyclic_term(T), acyclic_term(AV)
+      -> Gs = [oracle_check(AV, T)]
+       ; Gs = [] ).

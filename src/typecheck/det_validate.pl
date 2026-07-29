@@ -1,4 +1,10 @@
 %%% Determinism arrows (-[det]->, -[semidet]->, -[nondet]->) %%%
+%
+% Owns committed-effect validation, overload effect aggregation, overlap
+% checks, and publication of proof-required boundary provisos. Consumes
+% canonical declarations, clause/body proofs, checker flags, and translator
+% metadata. Boundary: det_bound_proviso/4 is published only by this unit and
+% cleared through declaration/recompile lifecycle interfaces.
 
 %The per-function UNION of head positions whose boundness a determinism proof
 %CONSUMED. Published by the validation boundary from the returned proof and read by

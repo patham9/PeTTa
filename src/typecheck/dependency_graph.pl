@@ -4,6 +4,11 @@
 % mutation boundary.  A compiled clause is keyed by its real Prolog clause
 % reference, so removal and specialization invalidation cannot leave a live
 % edge.  Whole-function queries are derived by unioning those clause records.
+%
+% Owns compiled/validation dependency stores and notify_mutation/1. Consumes
+% proof-cache invalidation, canonical declaration queries, translator
+% recompile/specialization interfaces, and subject-specific revalidators.
+% Boundary: no other unit asserts the stores below.
 
 :- dynamic compiled_deps/4.     % compiled_deps(ClauseRef, F/N, SourceFile, Dependencies)
 :- dynamic compiled_dep_edge/3. % compiled_dep_edge(Dependency, ClauseRef, F/N)

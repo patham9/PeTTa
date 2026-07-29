@@ -1,5 +1,14 @@
-%%% The single compatibility relation. Binds type variables (polymorphism);
-%%% wrap in type_compat_soft/2 for a side-effect-free check.
+%%% Type language, normalization, compatibility, and checker attributes.
+%
+% Owns type_unify/2, alias/newtype normalization, union/brand/type-shape
+% helpers, and the tknown/mreq attributed-variable hooks. Consumes canonical
+% declaration views and runtime value-check interfaces used when an attributed
+% value becomes nonvar. Boundary: attribute hooks must remain in their named
+% modules, but their implementation is wholly defined here; type_unify/2 is
+% the subsystem's single compatibility relation.
+%
+% type_unify/2 binds type variables (polymorphism); wrap it in
+% type_compat_soft/2 for a side-effect-free check.
 wildcard_type('%Undefined%').
 wildcard_type('Atom').
 wildcard_type('Expression').

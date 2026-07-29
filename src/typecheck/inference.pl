@@ -1,3 +1,12 @@
+%%% Undeclared-function inference and parametric declaration validation.
+%
+% Owns: clause-local inference assumptions, inferred function types, promised
+% declaration variables, and parametric input/output honesty checks.
+% Consumes: canonical declaration/type queries and translation-time type
+% candidate attributes.
+% Boundary: inferred_fn_type/3 is the sole persistent store; all other
+% assumptions are scoped and restored around one clause translation.
+%
 %%% The promised type variables of the clause currently being compiled.
 %
 % The snapshot above is a promise the declaration made to every caller, and
@@ -33,6 +42,23 @@ parametric_param_check(F, Vars) :- forall(member(T, Vars),
                                           ( var(T) -> true
                                           ; wildcard_type_t(T) -> true
                                           ; throw(error(non_parametric_param(F, T), typecheck)) )).
+
+%Only a candidate carrying CONCRETE type evidence makes a bottom body a
+%dishonest parametric declaration: the marker, a wrapped literal and a still
+%open type variable are all "no concrete result stated here".
+parametric_output_check(F, ExpOut) :-
+    ( var(ExpOut)
+      -> ( known_candidates(ExpOut, Cs), member(C, Cs),
+           candidate_evidence(C, type(_))
+           -> throw(error(non_parametric_output(F), typecheck))
+            ; true )
+       ; throw(error(non_parametric_output(F), typecheck)) ).
+
+%A declared argument type variable promises universality. Snapshot every type
+%variable still open after head-pattern binding, including nested variables;
+%the post-body check above must reject any one the implementation pins.
+parametric_param_snapshot(out(_, ATs), Vars) :- !, term_variables(ATs, Vars).
+parametric_param_snapshot(_, []).
 
 %Strict mode: every compiled function needs a declared or inferred type
 %(lambdas exempt). Checked after clause translation so inference can run first:

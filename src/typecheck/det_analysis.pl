@@ -1,4 +1,13 @@
 %%% Argument-aware transitive determinism through higher-order functions.
+%
+% Owns effect-polymorphic/conditional effect analysis, effect-flow helpers,
+% case coverage and whole-clause-set exhaustiveness validation.
+% Consumes declaration/type queries, the clause/body proof walker, proof-cache
+% interfaces, validation scopes, translated clause metadata, and dependency
+% publication. The persisted exhaustiveness verdict is owned here because it
+% has no individual compiled clause ref.
+% Boundary: this file contains every clause of its owned predicates.
+:- dynamic det_exhaustive_verdict/8.
 %A function whose declaration leaves a higher-order parameter uncommitted can
 %still be deterministic CONDITIONALLY on its closure
 %arguments: fold-flat is det exactly when the folded closure is det. The
@@ -491,6 +500,37 @@ combine_pattern_list([E|Es], Result) :- deterministic_pattern(E, R1),
 %%% (= (not false) true) has been read. Clauses already compiled by earlier
 %%% files count too (stored_clause_head/3), but a function whose clauses are
 %%% split across files is still judged on what the current file can see.
+revalidate_dependency_consumer(exhaustiveness(F, N), Event) :-
+    det_exhaustive_verdict(F, N, StoredHeads, Consts, _, File, Line, Str),
+    current_exhaustiveness_heads(F, N, CurrentHeads),
+    ( CurrentHeads == [],
+      Event = clause_changed(_, runtime)
+      -> retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
+         forget_validation_dependencies(exhaustiveness(F, N))
+    ; ( CurrentHeads == [] -> Heads = StoredHeads ; Heads = CurrentHeads ),
+      in_metta_file(
+          File,
+          with_form_location(
+              Line, Str,
+              det_exhaustiveness_proof(Consts, F, N, Heads, Proof))),
+      analysis_proof_dependencies(Proof, Dependencies),
+      retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
+      assertz(det_exhaustive_verdict(F, N, Heads, Consts, Dependencies,
+                                     File, Line, Str)),
+      record_validation_dependencies(exhaustiveness(F, N), Dependencies)
+    ).
+
+current_exhaustiveness_heads(F, N, Heads) :-
+    findall(Args,
+            ( translated_from(Ref, [Eq, Head, _]),
+              Eq == (=),
+              clause(_, _, Ref),
+              nonvar(Head),
+              Head = [F0|Args],
+              F0 == F,
+              length(Args, N) ),
+            Heads).
+
 det_exhaustiveness_prepass(ParsedForms) :-
     findall(F/N, ( parsed_clause_head(ParsedForms, _, _, F, Args), length(Args, N) ), Keys0),
     sort(Keys0, Keys),

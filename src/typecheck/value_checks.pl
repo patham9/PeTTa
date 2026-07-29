@@ -1,3 +1,11 @@
+%%% Static and deferred value checking.
+%
+% Owns value candidate typing, literals/closures/lists/tuples checks, residual
+% call-site guard construction, and deferred runtime requirement enforcement.
+% Consumes the type language and attributes, canonical declarations, inference,
+% determinism/effect queries, checker modes, and oracle hooks. It owns no
+% persistent declaration or analysis store.
+%
 %%% Static typing of values (translated call results, literals, closures):
 value_candidate_types(V, ['Number']) :- number(V), !.
 value_candidate_types(V, ['String']) :- string(V), !.

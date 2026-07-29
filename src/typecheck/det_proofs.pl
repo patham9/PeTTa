@@ -1,4 +1,12 @@
-%%% Argument-aware determinism for builtins.
+%%% Determinism proof rules and expression walker.
+%
+% Owns argument-sensitive builtin verdicts, manifest-shape and output
+% certificates, closure cardinality, and the functional clause/body/expression
+% determinism proof walk.
+% Consumes the builtin registry, declaration/type queries, analysis proof and
+% validation interfaces, plus effect/coverage helpers from det_analysis.pl.
+% Boundary: procedural registry hooks stay here, but the fact that a builtin
+% uses one lives in builtin_registry.pl. Every owned predicate is wholly here.
 %
 %builtin_call_determinism/3 is keyed on (name, arity) only, so one worst-case
 %verdict has to cover every call site. Most of the weak verdicts above are

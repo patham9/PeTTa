@@ -12,6 +12,11 @@
 % analysis_collect/2 turns those observations into ordinary returned data.
 % Nested proof-producing analyses re-emit their observations to their caller,
 % so a top-level proof contains the transitive evidence it consumed.
+%
+% Owns analysis_proof/5 construction/projection, observation collection, and
+% the sole analysis_memo/2 cache API. Consumes dependency-event matching and
+% declaration/type dependency extraction. Boundary: the dynamic memo is
+% private by convention; all reads, writes, and invalidation use this API.
 
 :- dynamic analysis_memo/2.
 

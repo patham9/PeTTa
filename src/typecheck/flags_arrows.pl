@@ -1,16 +1,18 @@
-%%%%%%%%%% Compile-time typechecking support (see AGENTS.md) %%%%%%%%%%
+%%% Checker modes, oracle switches, and canonical arrow syntax.
 %
-% One canonical type store, one compatibility relation (type_unify/2), and one
-% type channel: attributed variables on the Prolog vars representing MeTTa vars.
+% Owns: strict/oracle flag stores and initialization; arrow parsing,
+% normalization, and commitment-level helpers.
+% Consumes: normalize_type/2 recursively through the arrow helpers only.
+% Boundary: loaded as a non-module unit by typecheck.pl; it owns no declaration
+% stores and contributes no clauses to predicates owned by another unit.
+%
+% The subsystem has one canonical type store, one compatibility relation
+% (type_unify/2), and one type channel: attributed variables on the Prolog vars
+% representing MeTTa vars.
 %   tknown - translation-time inferred/declared type candidates of a variable
 %   mreq   - runtime type constraints placed on still-unbound values by guards
 % Static errors are thrown during translation (never emitted and re-scanned).
 
-:- dynamic declared_value_type/2.  % declared_value_type(Name, Type)
-:- dynamic declared_newtype/2.     % declared_newtype(Name, Representation) - erased nominal types
-:- dynamic declared_type_alias/2.  % declared_type_alias(Name, Representation) - erased structural names
-:- dynamic declared_foreign_type/2. % declared_foreign_type(Name, Arity) - opaque native types
-:- dynamic declared_space_type/2.  % declared_space_type(Name, RowType) - static space schemas
 :- dynamic strict_mode/1.
 
 :- dynamic strict_det/1.
@@ -177,7 +179,7 @@ canonical_arrow(_, (->)).
 %       $det_head_scope per clause body inside it. That is why it is a separate
 %       helper (with_det_enforced/2) and NOT folded into $det_head_scope.
 %       Readers det_enforced_now/0, det_enforced_fn/2 (-> enforced_bound_param/1).
-%   $det_stack        (det_args.pl)      list, the body_determinism/3 recursion
+%   $det_stack        (det_proofs.pl)    list, the body_determinism/3 recursion
 %       guard. LIFETIME per transitive-analysis call chain.
 %   $det_assume_stack (det_analysis.pl)  list, the SEPARATE recursion guard for
 %       body_determinism_assuming/3 - deliberately not $det_stack (see the note
@@ -194,7 +196,7 @@ canonical_arrow(_, (->)).
 %       candidate_evidence/2 consults to class an unbound candidate as promised.
 %   $effect_assume_stack (det_analysis.pl) the distinct recursion guard for
 %       effect-polymorphic intrinsic-body proofs.
-%   $nonempty_vars    (det_args.pl) the branch-local flow fact established by
+%   $nonempty_vars    (det_proofs.pl) the branch-local flow fact established by
 %       an if condition and consumed only while analyzing its else branch.
 %
 % The three recursion guards and the two clause-context scopes remain here in

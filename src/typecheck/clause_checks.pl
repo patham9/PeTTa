@@ -1,4 +1,11 @@
 %%% Clause-level helpers %%%
+%
+% Owns clause-head declaration selection, parameter/pattern binding,
+% contextual call results, and declared-output certification.
+% Consumes declaration/type-language queries, value checking and guards,
+% inference, oracle hooks, and proof-event publication.
+% Boundary: every predicate defined here is wholly owned by this file; callers
+% use these predicates as an ordinary interface, never by clause interleaving.
 
 %Bind declared parameter types onto clause-head variables. For an overloaded
 %function, the clause's head patterns filter the declarations: a clause whose
@@ -305,3 +312,55 @@ union_members_excluded([M|Ms], N, Prior) :-
 member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
                         \+ fun(C),
                         nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).
+
+%An earlier branch consumed EVERY (Ctor V1 ... Vk) value: its pattern is
+%headed by Ctor at that arity and its arguments are distinct variables, so the
+%match cannot fail. A pattern like (CPU foo $a $r) constrains a field and
+%consumes nothing.
+prior_consumed_ctor(Prior, Ctor, K) :-
+    member(P0, Prior),
+    nonvar(P0),
+    is_list(P0),
+    P0 = [H|As],
+    H == Ctor,
+    length(As, K),
+    maplist(var, As),
+    sort(As, Distinct),
+    length(Distinct, K),
+    !.
+
+%Check the clause body's inferred output type against the declared output type:
+clause_output_goals(_, none, _, _, []) :- !.
+clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
+        ( var(OT) -> ( term_variables(ATs, Vs), \+ memberchk_eq(OT, Vs)
+                       -> parametric_output_check(F, ExpOut) ; true ),
+                     Gs = []
+        ; wildcard_type_t(OT) -> Gs = []
+        ; nonvar(BodyExpr), BodyExpr = [Q, QV], Q == quote, \+ atomic(QV) -> Gs = []
+        ; var(ExpOut) ->
+            ( known_candidates(ExpOut, Cs) ->
+                ( member(C, Cs), output_candidate_conflict(C, OT, Bad)
+                  -> throw(error(type_conflict(existing(Bad), required(OT)), typecheck))
+                ; member(C, Cs), \+ output_candidate_fits(C, OT)
+                  -> type_guard(F, ExpOut, OT, Gs)
+                   ; Gs = [] )
+            ; type_guard(F, ExpOut, OT, Gs) )
+        ; check_value(ExpOut, OT, St),
+          ( St == mismatch -> throw(error(literal_type_mismatch(ExpOut, OT), typecheck))
+          ; St == unknown -> type_guard(F, ExpOut, OT, Gs)
+          ; Gs = [] ) ).
+
+output_candidate_fits(C, OT) :-
+    candidate_evidence(C, literal(V)), !,
+    check_value(V, OT, ok).
+output_candidate_fits(C, OT) :-
+    \+ indefinite_candidate(C),
+    ( type_compat_soft(C, OT) ; refinement_pair(C, OT) ).
+
+output_candidate_conflict(C, OT, V) :-
+    candidate_evidence(C, literal(V)), !,
+    check_value(V, OT, mismatch).
+output_candidate_conflict(C, OT, C) :-
+    \+ indefinite_candidate(C),
+    \+ type_compat_soft(C, OT),
+    \+ refinement_pair(C, OT).
