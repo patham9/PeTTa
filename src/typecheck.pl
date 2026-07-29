@@ -12,7 +12,7 @@
 :- include('typecheck/analysis_proofs.pl').%functional proof records + the single memo boundary
 :- include('typecheck/value_checks.pl').   %value typing, check_value/3, tuples, call-site args
 :- include('typecheck/clause_checks.pl').  %clause output certification, strict gates, narrowing
-:- include('typecheck/ctor_snapshots.pl'). %constructor-set snapshots and revalidation
+:- include('typecheck/ctor_snapshots.pl'). %whole-clause-set validation payloads
 :- include('typecheck/oracles.pl').        %--oracle-det cardinality oracle
 :- include('typecheck/inference.pl').      %param promises, local inference for undeclared fns
 :- include('typecheck/det_validate.pl').   %committed-arrow validation, boundness enforcement
@@ -20,3 +20,4 @@
 :- include('typecheck/det_builtins.pl').   %the builtin determinism table, read off the sources
 :- include('typecheck/det_args.pl').       %argument-aware verdicts, manifest shapes, HO closures
 :- include('typecheck/det_analysis.pl').   %body analysis: lattice, case coverage, exhaustiveness
+:- include('typecheck/dependency_graph.pl'). %compiled proofs + the one mutation boundary

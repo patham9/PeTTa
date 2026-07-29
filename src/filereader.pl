@@ -102,12 +102,16 @@ process_form(_, parsed(runnable, FormStr, Line, Term), Result) :- with_form_loca
                                                                   call_goals(Goals).
 process_form(Space, parsed(function, FormStr, Line, Term), []) :- add_sexp(Space, Term),
                                                                   with_form_location(Line, FormStr,
-                                                                                     translate_clause(Term, Clause)),
+                                                                                     translate_clause(Term, Clause, true,
+                                                                                                      Dependencies)),
                                                                   assertz(Clause, Ref),
                                                                   assertz(translated_from(Ref, Term)),
-                                                                  note_late_symbol_uses(Term, Ref),
-                                                                  ( Term = [=, [Fn|_], _], atom(Fn)
-                                                                    -> recompile_late_uses(Fn) ; true ),
+                                                                  Term = [=, [Fn|Args], _],
+                                                                  length(Args, N),
+                                                                  record_compiled_dependencies(Ref, Fn/N, Dependencies),
+                                                                  notify_mutation(
+                                                                      clause_changed(Fn/N,
+                                                                                     prevalidated)),
                                                                   ( silent(true) -> true ; format("\e[33m--> metta function -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
                                                                                            clause(Head, Body, Ref),
                                                                                            ( Body == true -> Show = Head; Show = (Head :- Body) ),

@@ -43,7 +43,8 @@ validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
                                 with_det_head_vars(Args, BodyExpr, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)
     ; Det = effect(Name) -> effect_body_determinism_proof(F, N, Name, Proof),
-                            publish_det_proof_requirements(F, N, Proof)
+                            publish_det_proof_requirements(F, N, Proof),
+                            analysis_reemit_proof(Proof)
                           ; true ).
 
 %Publish the clause's HEAD variables for the duration of a body determinism
@@ -173,6 +174,7 @@ boundary_commitment(F, N, effect(Name)) :- effect_poly_decl(F, N, Name, _, _).
 %and overlapping heads stay rejected for both):
 ensure_deterministic_expr(Det, Expr, Fun) :-
     deterministic_expr_proof(Expr, Proof),
+    analysis_reemit_proof(Proof),
     analysis_proof_verdict(Proof, R),
     ( det_enforced_fn(Fun, N)
       -> publish_det_proof_requirements(Fun, N, Proof)

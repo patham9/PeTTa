@@ -1,125 +1,41 @@
-%%% Constructor-set snapshots %%%
-%%%
-%%% Two static verdicts are read off the constructor set of a nominal type:
-%%% union_member_excluded/3 (this member cannot build an N-element value) and
-%%% domain_keys/3 (these are all the value shapes of this type, used by the
-%%% exhaustiveness checks). PeTTa's types are OPEN - a constructor may be
-%%% declared in any later file - so both verdicts are snapshots, and a
-%%% constructor arriving afterwards silently invalidates them.
-%%%
-%%% Every snapshot is therefore recorded with the key set it saw, and every
-%%% new type declaration re-reads them. A set that changed means some clause
-%%% was compiled on a premise that no longer holds:
-%%%
-%%%   - a clause verdict (union narrowing, case coverage) is REDONE - the
-%%%     clause goes back through translate_clause/2 with the new constructor
-%%%     set, exactly as if the constructor had been declared first. It shares
-%%%     recompile_function_clauses/1 with the late-declaration fix, which is
-%%%     the same problem in a different disguise.
-%%%   - an exhaustiveness verdict has no clause to redo (it is a property of
-%%%     the whole clause set, judged in a per-file prepass), so it is simply
-%%%     re-run and throws if the function is no longer exhaustive.
-%%%
-%%% Both are gated behind "nothing was recorded", so a program that never
-%%% narrows a union and declares no -[det]-> pays nothing.
-:- dynamic ctor_snapshot_use/3.        % ctor_snapshot_use(Type, KeySnapshot, Function)
-:- dynamic det_exhaustive_verdict/8.   % det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, FormStr)
+%%% Whole-clause-set dependency consumers %%%
+%
+% Clause compilation dependencies are keyed by clause ref in
+% dependency_graph.pl.  Exhaustiveness is the one verdict with no individual
+% clause to attach to, so its source payload remains here while its dependency
+% list is published through record_validation_dependencies/2.
+:- dynamic det_exhaustive_verdict/8.
 
-%Constructor reads are ordinary proof dependencies.  The enclosing clause or
-%exhaustiveness boundary decides how to publish them; the prover itself only
-%returns the observation.
-note_ctor_snapshot(T) :- analysis_emit(dependency(ctor_set(T))).
-
-%Opens the accumulator for one clause translation and records what it read.
-%Nests safely (the specializer re-enters the translator) and leaves the outer
-%accumulator exactly as it found it, error or not:
-with_ctor_snapshot(F, Goal) :-
-    analysis_collect(Goal, Events),
-    analysis_event_ctor_types(Events, EventTypes),
-    analysis_function_decl_dependencies(F, DeclDependencies),
-    findall(T, member(ctor_set(T), DeclDependencies), DeclTypes),
-    append(EventTypes, DeclTypes, Types0),
-    sort(Types0, Types),
-    record_ctor_snapshots(F, Types),
-    analysis_reemit_non_ctor_events(Events).
-
-%Same accumulator, for a verdict that is NOT a clause: returns the types read
-%instead of attributing them to a function (the exhaustiveness prepass).
-with_ctor_snapshot_types(Goal, Types) :-
-    analysis_collect(Goal, Events),
-    analysis_event_ctor_types(Events, Types),
-    analysis_reemit_non_ctor_events(Events).
-
-analysis_event_ctor_types(Events, Types) :-
-    findall(T, member(dependency(ctor_set(T)), Events), Ts0),
-    sort(Ts0, Types).
-
-analysis_reemit_non_ctor_events([]).
-analysis_reemit_non_ctor_events([dependency(ctor_set(_))|Events]) :- !,
-    analysis_reemit_non_ctor_events(Events).
-analysis_reemit_non_ctor_events([Event|Events]) :-
-    analysis_emit(Event),
-    analysis_reemit_non_ctor_events(Events).
-
-record_ctor_snapshots(F, Ts) :- forall(member(T, Ts),
-                                       ( ctor_key_snapshot(T, Keys),
-                                         retractall(ctor_snapshot_use(T, _, F)),
-                                         assertz(ctor_snapshot_use(T, Keys, F)) )).
-
-%Everything domain_keys/3 and union_member_excluded/3 can see of T: its
-%equation-less declared constructors and its declared nullary constants.
-ctor_key_snapshot(T, Keys) :- findall(C/K, ( member_ctor(T, K, C)
-                                           ; declared_value_type(C, T2), T2 == T, atom(C), \+ fun(C), K = 0 ),
-                                      Ks),
-                              sort(Ks, Keys).
-
-%Hook on every NEW type declaration (maybe_cache_type_decl/2). Two gates keep
-%it off the hot path, cheapest first: a program that has recorded no snapshot
-%has nothing to revalidate (which is every program until it narrows a union or
-%declares a -[det]->, and in particular the whole builtin-type seeding pass),
-%and a declared symbol WITH equations is never a constructor anyway -
-%member_ctor/3's own rule, since such a symbol is rewritten at the call site
-%and never survives as a value.
-note_constructor_set_change(_) :- \+ ctor_snapshot_use(_, _, _),
-                                  \+ det_exhaustive_verdict(_, _, _, _, _, _, _, _), !.
-note_constructor_set_change(Name) :- fun(Name), !.
-note_constructor_set_change(Name) :- revalidate_ctor_snapshots(Name).
-
-%A declaration only ever ADDS to a constructor set, and it adds exactly the
-%keys built from the symbol being declared - so only THAT symbol has to be
-%tested against each recorded snapshot. Recomputing whole key sets here
-%instead would be quadratic in the number of declarations, for no extra
-%precision.
 new_ctor_key(Name, T, K) :- member_ctor(T, K, Name).
-new_ctor_key(Name, T, 0) :- declared_value_type(Name, T2), T2 == T, \+ fun(Name).
+new_ctor_key(Name, T, 0) :- declared_value_type(Name, T2), T = T2, \+ fun(Name).
 
-revalidate_ctor_snapshots(Name) :-
-    findall(F, ( ctor_snapshot_use(T, Keys, F),
-                 new_ctor_key(Name, T, K), \+ memberchk(Name/K, Keys) ),
-            Fs0),
-    sort(Fs0, Fs),
-    forall(member(F, Fs),
-           ( format(user_error,
-                    "Warning: a constructor declared after ~w was compiled changes a type it matched on; recompiling ~w~n",
-                    [F, F]),
-             recompile_function_clauses(F) )),
-    revalidate_det_exhaustiveness(Name).
+revalidate_dependency_consumer(exhaustiveness(F, N), Event) :-
+    det_exhaustive_verdict(F, N, StoredHeads, Consts, _, File, Line, Str),
+    current_exhaustiveness_heads(F, N, CurrentHeads),
+    ( CurrentHeads == [],
+      Event = clause_changed(_, runtime)
+      -> retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
+         forget_validation_dependencies(exhaustiveness(F, N))
+    ; ( CurrentHeads == [] -> Heads = StoredHeads ; Heads = CurrentHeads ),
+      in_metta_file(
+          File,
+          with_form_location(
+              Line, Str,
+              det_exhaustiveness_proof(Consts, F, N, Heads, Proof))),
+      analysis_proof_dependencies(Proof, Dependencies),
+      retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
+      assertz(det_exhaustive_verdict(F, N, Heads, Consts, Dependencies,
+                                     File, Line, Str)),
+      record_validation_dependencies(exhaustiveness(F, N), Dependencies)
+    ).
 
-%Re-run every exhaustiveness verdict whose domain the new symbol enters. A
-%verdict that now fails throws det_nonexhaustive/3 from here - reported
-%against the clause that made the claim, not against the declaration that
-%broke it, because the clause is what has to change (cover the new
-%constructor, or say -[semidet]->).
-%The location is the one the verdict was made at, in the file that made it -
-%not the file being read now, which merely added the constructor:
-revalidate_det_exhaustiveness(Name) :-
-    forall(( det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str),
-             member(T, Types), once(new_ctor_key(Name, T, _)) ),
-           in_metta_file(
-               File,
-               with_form_location(
-                   Line, Str,
-                   det_exhaustiveness_proof(Consts, F, N, Heads, _)))).
+current_exhaustiveness_heads(F, N, Heads) :-
+    findall(Args,
+            ( translated_from(Ref, [Eq, Head, _]),
+              Eq == (=), clause(_, _, Ref),
+              nonvar(Head), Head = [F0|Args], F0 == F,
+              length(Args, N) ),
+            Heads).
 
 in_metta_file(File, Goal) :- current_metta_file(Prev),
                              setup_call_cleanup(nb_setval('$metta_file', File),

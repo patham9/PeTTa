@@ -24,9 +24,9 @@ analysis_cache_store(Key, Proof) :-
     copy_term(Proof, Stored),
     assertz(analysis_memo(Key, Stored)).
 
-% Phase 3 deliberately preserves the old broad invalidation policy.  Phase 4
-% can refine this one boundary using the dependencies already carried by every
-% proof, without finding cache writes scattered through the analyzers again.
+% Legacy selectors remain for callers which are not mutation boundaries.  A
+% program mutation goes through analysis_cache_invalidate_event/1 below: it
+% removes only proofs whose recorded (or memo-key-implied) dependencies match.
 analysis_cache_invalidate(all) :-
     retractall(analysis_memo(_, _)).
 analysis_cache_invalidate(det) :-
@@ -42,11 +42,34 @@ analysis_cache_invalidate(output) :-
 analysis_cache_invalidate(output(Kind, F, N)) :-
     retractall(analysis_memo(output(Kind, F, N), _)).
 
-analysis_cache_invalidate_clause_change :-
-    analysis_cache_invalidate(det),
-    analysis_cache_invalidate(assume),
-    analysis_cache_invalidate(effect),
-    analysis_cache_invalidate(output).
+analysis_cache_invalidate_event(Event) :-
+    findall(Ref,
+            ( clause(analysis_memo(Key, Proof), true, Ref),
+              analysis_memo_dependencies(Key, Proof, Dependencies),
+              member(Dependency, Dependencies),
+              mutation_dependency_matches(Event, Dependency) ),
+            Refs0),
+    sort(Refs0, Refs),
+    forall(member(Ref, Refs), erase(Ref)).
+
+analysis_cache_invalidate_outputs(F) :-
+    retractall(analysis_memo(output(_, F, _), _)).
+
+analysis_memo_dependencies(Key, Proof, Dependencies) :-
+    analysis_proof_dependencies(Proof, Recorded),
+    analysis_memo_key_dependencies(Key, Implied),
+    append(Recorded, Implied, Ds0),
+    sort(Ds0, Dependencies).
+
+analysis_memo_key_dependencies(det(F, N), Ds) :- !,
+    Ds = [effect(F/N), decl(F/N), clause_set(F/N)].
+analysis_memo_key_dependencies(assume(F, N), Ds) :- !,
+    Ds = [effect(F/N), decl(F/N), clause_set(F/N)].
+analysis_memo_key_dependencies(effect(F, N, _), Ds) :- !,
+    Ds = [effect(F/N), decl(F/N), clause_set(F/N)].
+analysis_memo_key_dependencies(output(Kind, F, N), Ds) :- !,
+    Ds = [output_cert(Kind, F/N), clause_set(F/N)].
+analysis_memo_key_dependencies(_, []).
 
 analysis_emit(Event) :-
     catch(shift(analysis_event(Event)),
@@ -93,29 +116,39 @@ analysis_reemit_proof(Proof) :-
            analysis_emit(dependency(Dep))).
 
 % Conservative dependency inventory for an expression or clause-set term.
-% This is intentionally an over-approximation for Phase 4: every named call
-% records its declaration/effect and both output-certificate families, while
-% all currently declared nominal/alias types are included because parameter
-% attributes and normalized schemes can make them relevant without leaving a
-% syntactic type atom in the expression.
+% Every real named call records its declaration/effect and both certificate
+% families. A declared-but-as-yet undefined call or bare symbol instead gets a
+% late_* dependency, so its first definition invalidates that decision without
+% waking ordinary same-file callers already covered by the declaration/body
+% prepasses.
+% Type dependencies are attached only when the term actually carries them;
+% the old "all types in the program" approximation would make the Phase-4
+% dependency graph effectively global on every constructor declaration.
 analysis_term_dependencies(Term, Dependencies) :-
     analysis_term_calls(Term, Calls0),
     sort(Calls0, Calls),
     findall(D,
             ( member(F/N, Calls),
-              member(D, [effect(F/N), decl(F/N),
-                         output_cert(proper_list, F/N),
-                         output_cert(bound_bool, F/N)]) ),
+              analysis_call_dependency(F, N, D) ),
             CallDeps),
-    findall(ctor_set(T), declared_newtype(T, _), CtorDeps),
-    findall(ctor_set(T),
-            ( declared_value_type(_, T), atom(T),
-              \+ primitive_type(T), \+ wildcard_type(T) ),
-            ValueTypeDeps),
-    findall(alias_expansion(A), declared_type_alias(A, _), AliasDeps),
+    analysis_term_symbols(Term, Symbols0),
+    sort(Symbols0, Symbols),
+    findall(late_symbol(S),
+            ( member(S, Symbols),
+              \+ fun(S),
+              fn_decl_arity(S, _, _, _) ),
+            SymbolDeps),
     analysis_known_type_dependencies(Term, KnownTypeDeps),
-    append([CallDeps, CtorDeps, ValueTypeDeps, AliasDeps, KnownTypeDeps], Ds0),
+    append([CallDeps, SymbolDeps, KnownTypeDeps], Ds0),
     sort(Ds0, Dependencies).
+
+analysis_call_dependency(F, N, D) :-
+    fun(F), !,
+    member(D, [effect(F/N), decl(F/N),
+               output_cert(proper_list, F/N),
+               output_cert(bound_bool, F/N)]).
+analysis_call_dependency(F, N, late_call(F/N)) :-
+    fn_decl_arity(F, N, _, _).
 
 analysis_known_type_dependencies(Term, Dependencies) :-
     term_variables(Term, Vars),
@@ -128,14 +161,19 @@ analysis_known_type_dependencies(Term, Dependencies) :-
     sort(Ds0, Dependencies).
 
 analysis_function_decl_dependencies(F, Dependencies) :-
-    findall(Scheme,
-            fn_decl_copy(F, _, Scheme, _, _, _),
-            Schemes),
+    findall(Scheme-Provenance,
+            fn_decl_copy(F, _, Scheme, _, _, Provenance),
+            Declarations),
     findall(D,
-            ( member(scheme(ATs, OT), Schemes),
+            ( member(scheme(ATs, OT)-_, Declarations),
               member(Term, [ATs, OT]),
               analysis_type_dependency(Term, D) ),
-            Ds0),
+            NormalizedDeps),
+    findall(D,
+            ( member(_-provenance(_, syntax(Syntax)), Declarations),
+              analysis_type_dependency(Syntax, D) ),
+            SourceDeps),
+    append(NormalizedDeps, SourceDeps, Ds0),
     sort(Ds0, Dependencies).
 
 analysis_type_dependency(T, alias_expansion(T)) :-
@@ -157,7 +195,25 @@ analysis_term_calls(Term, Calls) :-
       -> analysis_term_calls(H, HC),
          analysis_term_calls(T, TC),
          append(HC, TC, Calls)
+    ; compound(Term)
+      -> Term =.. [_|Args],
+         maplist(analysis_term_calls, Args, Nested),
+         append(Nested, Calls)
     ; Calls = [] ).
+
+analysis_term_symbols(Term, Symbols) :-
+    ( var(Term) -> Symbols = []
+    ; atom(Term) -> Symbols = [Term]
+    ; atomic(Term) -> Symbols = []
+    ; Term = [H|T]
+      -> analysis_term_symbols(H, HS),
+         analysis_term_symbols(T, TS),
+         append(HS, TS, Symbols)
+    ; compound(Term)
+      -> Term =.. [_|Args],
+         maplist(analysis_term_symbols, Args, Nested),
+         append(Nested, Symbols)
+    ; Symbols = [] ).
 
 analysis_snapshot_proof(Subject, Snapshot, Dependencies,
                         analysis_proof(Subject, snapshot(Snapshot),

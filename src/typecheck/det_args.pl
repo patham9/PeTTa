@@ -52,9 +52,9 @@ builtin_conditional_rule_defined(higher_order_list).
 %narrowed to a nonempty value of a list type by an == ()-shaped condition, and a
 %unique declaration at the arity.
 %
-%Runtime add-atom/remove-atom changes recompile recorded callers transitively
-%(metta_on_function_changed/1), so a previously compiled consumer cannot keep
-%this upgrade after the callee's clauses invalidate it.
+%Runtime clause changes match the consumed effect/clause-set dependency in the
+%graph, so a previously compiled consumer cannot keep this upgrade after the
+%callee's clauses invalidate it.
 semidet_site_upgraded_to_det(Fun, N, Args) :-
     N =:= 1,
     nth0(Idx, Args, A), var(A), nonempty_var(A),
@@ -287,11 +287,10 @@ manifest_ground_dupfree_list(L) :- manifest_proper_list(L), ground(L),
 %moment any clause fails to qualify (which also withdraws the fact). A function with
 %no clause yet, or one poisoned clause, is not certified.
 %
-%INVALIDATION: a late clause of a certified F can break the certificate.
-%translate_clause/2 clears the transitive memo, and runtime add/remove changes
-%recompile recorded callers through metta_on_function_changed/1. The facts are
-%also cleared where the boundness provisos are re-derived:
-%recompile_function_clauses/1 and forget_symbol_types/1.
+%INVALIDATION: a late clause of a certified F can break the certificate. Both
+%the certificate memo and every compiled proof that consumed it record
+%output_cert(Kind,F/N); notify_mutation/1 invalidates and recompiles that
+%transitive consumer set.
 %The store is parameterized by KIND - the same "every clause's result
 %provably has this shape" question serves both proper_list (a bound proper
 %list: collapse, literal spine, certified call) and bound_bool (a bound
@@ -367,10 +366,10 @@ output_bodies_verdict(Kind, [B|Bs], Stack, Verdict, Dependencies) :-
 proper_list_output(F, N) :- output_cert(proper_list, F, N).
 bool_output(F, N) :- output_cert(bound_bool, F, N).
 
-%The memo is stale the moment ANY clause set changes - a certificate depends
-%on callees transitively - so invalidation is global, exactly like
-%det_analysis_cache (translate_clause retracts both on every new clause):
-reset_output_certs(_) :- analysis_cache_invalidate(output).
+%Internal symbol teardown uses this narrow cache operation. Ordinary clause
+%mutations invalidate certificate producers and all recorded consumers through
+%notify_mutation/1; no global output-certificate flush is needed.
+reset_output_certs(F) :- analysis_cache_invalidate_outputs(F).
 
 output_result_qualifies(Kind, Body) :-
     output_result_qualifies_core(Kind, Body, [], yes, _).
@@ -508,13 +507,12 @@ proper_list_literal_spine(X) :- nonvar(X), X = [C, _, Tl], ( C == cons ; C == 'c
 %makes the type nominal - PROVIDED no inhabitant is a bare atom: a nullary
 %constructor or declared constant ((: left Left)) is an atom value, not a
 %list spine, and remove_sexp's =.. FAILS on it - zero solutions under a det
-%claim. The judgement reads the type's constructor set, so it is a snapshot
-%like every other such verdict (note_ctor_snapshot/1): a constant declared in
-%a later file recompiles this clause and withdraws the strengthening.
+%claim. The judgement publishes ctor_set(K), so a constant declared in a later
+%file recompiles this graph consumer and withdraws the strengthening.
 enforced_bound_nominal(T) :- var(T), enforced_bound_param(T),
                              known_singleton(T, K), atom(K),
                              user_atom_type(K), type_name_declared(K),
-                             note_ctor_snapshot(K),
+                             analysis_emit(dependency(ctor_set(K))),
                              \+ nominal_nullary_inhabitant(K).
 
 %An inhabitant of K that is a bare atom at runtime: a declared constant of

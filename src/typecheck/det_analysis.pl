@@ -525,22 +525,21 @@ check_det_exhaustive_group(ParsedForms, Consts, F, N) :-
              Line, Str,
              det_exhaustiveness_proof(Consts, F, N, Heads, ExhaustiveProof)),
          analysis_proof_dependencies(ExhaustiveProof, ExhaustiveDeps),
-         findall(T, member(ctor_set(T), ExhaustiveDeps), Types0),
-         sort(Types0, Types),
          current_metta_file(File),
          retractall(det_exhaustive_verdict(F, N, _, _, _, _, _, _)),
-         assertz(det_exhaustive_verdict(F, N, Heads, Consts, Types, File, Line, Str))
+         assertz(det_exhaustive_verdict(F, N, Heads, Consts, ExhaustiveDeps,
+                                        File, Line, Str)),
+         record_validation_dependencies(exhaustiveness(F, N), ExhaustiveDeps)
        ; true ).
 
 det_exhaustiveness_proof(Consts, F, N, Heads, Proof) :-
-    with_ctor_snapshot_types(
-        check_det_exhaustive(Consts, F, N, Heads), Types),
-    findall(ctor_set(T), member(T, Types), CtorDeps),
+    analysis_collect(
+        check_det_exhaustive(Consts, F, N, Heads), Events),
     analysis_term_dependencies(Heads, TermDeps),
     analysis_function_decl_dependencies(F, DeclDeps),
-    append([[decl(F/N), clause_set(F/N)], CtorDeps, TermDeps, DeclDeps], Ds0),
+    append([[decl(F/N), clause_set(F/N)], TermDeps, DeclDeps], Ds0),
     sort(Ds0, Dependencies),
-    analysis_make_proof(exhaustiveness(F/N), exhaustive, [],
+    analysis_make_proof(exhaustiveness(F/N), exhaustive, Events,
                         Dependencies, Proof).
 
 %An effect-polymorphic declaration promises exactly one result at its det
@@ -610,14 +609,13 @@ uncovered_infinite_domain('String', Keys) :- forall(member(key(V, A), Keys), ( A
 %equation-less declared constants.
 %The set is read as it stands right now, so like union_member_excluded/3 this
 %is a SNAPSHOT: a constructor for T declared in a later file changes it. Both
-%users of the snapshot are recorded and re-read when that happens - a case
-%coverage verdict through note_ctor_snapshot/1 (it runs inside a clause
-%translation, so the clause can be recompiled), the clause-head exhaustiveness
-%verdict through det_exhaustive_verdict/7 (it does not, so it is re-run).
+%users publish an ordinary ctor_set/1 proof dependency. Clause consumers are
+%recompiled by the dependency graph; whole-clause-set exhaustiveness consumers
+%are re-run through their graph validation record.
 domain_keys('Bool', _, [key(true, 0), key(false, 0)]) :- !.
 domain_keys(T, Consts, Keys) :- atom(T), declared_newtype(T, R), !, domain_keys(R, Consts, Keys).
 domain_keys(T, Consts, Keys) :- atom(T), \+ wildcard_type(T), \+ primitive_type(T),
-                                note_ctor_snapshot(T),
+                                analysis_emit(dependency(ctor_set(T))),
                                 findall(key(C, K), nominal_ctor(T, Consts, C, K), Keys0),
                                 sort(Keys0, Keys), Keys \== [].
 

@@ -136,7 +136,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                         -> format(user_error,
                                                   "Warning: Newtype declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
-                                      ; assertz(declared_newtype(Name, RN)) ).
+                                      ; assertz(declared_newtype(Name, RN)),
+                                        decl_notify(constructor_set_changed(Name, Name)) ).
 %Structural aliases: (: Row (Alias (Number String))) names an erased type
 %expression, not a nominal role. Normalize now so later lookup is one
 %non-recursive expansion. Aliases are not hoisted by precache_fn_type_decl/2;
@@ -164,7 +165,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                                   "Warning: type alias declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
                                       ; assertz(declared_type_alias(Name, RN)),
-                                        renormalize_late_alias(Name) ).
+                                        renormalize_late_alias(Name, Fs),
+                                        decl_notify(alias_changed(Name, added, Fs)) ).
 %Opaque foreign types: (: Heap (Foreign)) and (: Heap (Foreign 1)) declare a
 %nominal runtime-uncheckable type constructor. Only its name and arity enter
 %the checker; native values themselves remain wholly opaque.
@@ -190,7 +192,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                         -> format(user_error,
                                                   "Warning: foreign type declaration for ~w ignored: name is already a SpaceOf type~n",
                                                   [Name])
-                                      ; assertz(declared_foreign_type(Name, Arity)) ).
+                                      ; assertz(declared_foreign_type(Name, Arity)),
+                                        decl_notify(constructor_set_changed(Name, Name)) ).
 %Typed spaces: (: &jobs (SpaceOf Row)) opts one statically named space into
 %row checking. Normalize now so aliases in schemas are erased before use;
 %like Newtype/Alias/Foreign, this declaration is source-ordered, not hoisted.
@@ -215,7 +218,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                         -> format(user_error,
                                                   "Warning: space type declaration for ~w ignored: name is already a Foreign type~n",
                                                   [Name])
-                                      ; assertz(declared_space_type(Name, RN)) ).
+                                      ; assertz(declared_space_type(Name, RN)),
+                                        decl_notify(constructor_set_changed(Name, Name)) ).
 maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = [C, Name, Type],
                                         C == (:), atom(Name)
                                         -> prepare_decl_origin(Name, Type, Origin),
@@ -229,7 +233,7 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                 normalize_type(Type, TN),
                                                 ( declared_value_type(Name, T2), T2 =@= TN -> true
                                                 ; assertz(declared_value_type(Name, TN)),
-                                                  note_constructor_set_change(Name) ) )
+                                                  notify_symbol_constructor_sets(Name) ) )
                                         ; true ).
 
 cache_fn_type_decl(Name, Type, ATs, OT, Det, Origin, Provenance) :-
@@ -245,9 +249,31 @@ cache_fn_type_decl(Name, Type, ATs, OT, Det, Origin, Provenance) :-
         fn_decl(Name, N, scheme(ATN, OTN), Effect, Origin, Provenance),
         Added),
     ( Added == true
-      -> enforce_late_declaration(Name),
-         note_constructor_set_change(Name)
+      -> decl_notify(declaration_changed(Name/N, added)),
+         notify_symbol_constructor_sets(Name)
     ; true ).
+
+decl_notify(_) :-
+    catch(b_getval('$suppress_decl_notifications', true), _, fail), !.
+decl_notify(Event) :-
+    notify_mutation(Event).
+
+with_decl_notifications_suppressed(Goal) :-
+    catch(b_getval('$suppress_decl_notifications', Saved), _, Saved = false),
+    setup_call_cleanup(b_setval('$suppress_decl_notifications', true),
+                       Goal,
+                       b_setval('$suppress_decl_notifications', Saved)).
+
+notify_symbol_constructor_sets(Name) :-
+    current_predicate(fun/1), !,
+    recorded_constructor_dependency_types(Candidates),
+    include(symbol_enters_constructor_set(Name), Candidates, Ts),
+    forall(member(T, Ts),
+           decl_notify(constructor_set_changed(T, Name))).
+notify_symbol_constructor_sets(_).
+
+symbol_enters_constructor_set(Name, T) :-
+    once(new_ctor_key(Name, T, _)).
 
 %Origin is deliberately symbol-level: one user declaration opts the whole
 %callable back into conservative guards, including all of its overloads. A
@@ -429,13 +455,12 @@ normalize_type_syntax(T, T).
 %%% in source order, now that normalize_type/2 can erase it. Only functions
 %%% whose arrow entries changed need recompilation; determinism metadata is
 %%% keyed by function name and arity, neither of which changes here.
-renormalize_late_alias(Name) :-
+renormalize_late_alias(Name, Fs) :-
     renormalize_alias_fn_decls(Name, Fs),
     renormalize_alias_value_decls(Name),
     renormalize_alias_space_decls(Name),
     renormalize_alias_alias_decls(Name),
-    renormalize_alias_newtype_decls(Name),
-    forall(member(F, Fs), enforce_late_alias_declaration(Name, F)).
+    renormalize_alias_newtype_decls(Name).
 
 type_term_mentions_alias(T, Name) :- sub_term(S, T), S == Name, !.
 
@@ -502,14 +527,6 @@ renormalize_alias_newtype_decls(Name) :-
                   ; assertz(declared_newtype(N, TN)) ) ))
     ; true ).
 
-enforce_late_alias_declaration(Alias, F) :-
-    ( catch(nb_getval(F, [_|_]), _, fail)
-      -> format(user_error,
-                "Warning: type alias ~w arrives after declarations using it; recompiling ~w against the expanded type~n",
-                [Alias, F]),
-         recompile_function_clauses(F)
-    ; true ).
-
 %Declaration prepass: only function (arrow) declarations are hoisted, so
 %definitions may call helpers declared later in the same file. Value
 %declarations stay order-sensitive - they are knowledge atoms whose position
@@ -549,10 +566,9 @@ maybe_uncache_type_decl(Space, Term) :-
 uncache_type_decl(Name, [NT, R]) :- NT == 'Newtype', !,
     normalize_type(R, RN),
     ( clause(declared_newtype(Name, R2), true, Ref), R2 =@= RN
-      -> affected_decl_functions([Name], Fs),
-         erase(Ref),
+      -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         recompile_decl_functions(Fs)
+         decl_notify(constructor_set_changed(Name, Name))
     ; true ).
 uncache_type_decl(Name, [A, R]) :- A == 'Alias', !,
     normalize_type(R, RN),
@@ -564,18 +580,16 @@ uncache_type_decl(Name, [F|Spec]) :-
     ( Spec == [] -> Arity = 0
     ; Spec = [Arity], integer(Arity), Arity > 0 ), !,
     ( clause(declared_foreign_type(Name, A2), true, Ref), A2 == Arity
-      -> affected_decl_functions([Name], Fs),
-         erase(Ref),
+      -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         recompile_decl_functions(Fs)
+         decl_notify(constructor_set_changed(Name, Name))
     ; true ).
 uncache_type_decl(Name, [SO, R]) :- SO == 'SpaceOf', !,
     normalize_type(R, RN),
     ( clause(declared_space_type(Name, R2), true, Ref), R2 =@= RN
-      -> affected_decl_functions([Name], Fs),
-         erase(Ref),
+      -> erase(Ref),
          retractall(nonfn_decl_origin(Name, _)),
-         recompile_decl_functions(Fs)
+         decl_notify(constructor_set_changed(Name, Name))
     ; true ).
 uncache_type_decl(Name, Type) :-
     ( nonvar(Type), fn_type_shape(Type, ATs, OT, Det)
@@ -583,15 +597,25 @@ uncache_type_decl(Name, Type) :-
          normalize_type(OT, OTN),
          canonical_effect_model(Det, ATN, Effect),
          length(ATN, N),
+         recorded_constructor_dependency_types(ConstructorCandidates),
+         include(symbol_enters_constructor_set(Name), ConstructorCandidates,
+                 RemovedCtorTypes),
          ( remove_fn_decl_record(Name, N, scheme(ATN, OTN), Effect, _)
-           -> analysis_cache_invalidate(effect(Name)),
-              recompile_function_clauses(Name)
+           -> decl_notify(declaration_changed(Name/N, removed)),
+              forall(member(T, RemovedCtorTypes),
+                     decl_notify(constructor_set_changed(T, Name)))
          ; true )
     ; normalize_type(Type, TN),
       ( clause(declared_value_type(Name, T2), true, Ref), T2 =@= TN
         -> erase(Ref),
-           retractall(nonfn_decl_origin(Name, _))
+           retractall(nonfn_decl_origin(Name, _)),
+           notify_removed_value_constructor(Name, TN)
       ; true ) ).
+
+notify_removed_value_constructor(Name, T) :-
+    ( atom(T), \+ primitive_type(T), \+ wildcard_type(T)
+      -> decl_notify(constructor_set_changed(T, Name))
+    ; true ).
 
 %All raw (: Name Type) atoms still present in &self, in assertion order.
 self_type_declarations(Terms) :-
@@ -617,12 +641,13 @@ alias_removal_rebuild(Name, Ref) :-
     affected_decl_functions(Names, Fs0),
     findall(F, ( member(T, Terms), declaration_function_name(T, F) ), Fs1),
     append(Fs0, Fs1, Fs2), sort(Fs2, Fs),
-    forall(member(T, Terms), erase_cached_declaration_only(T)),
-    erase(Ref),
-    retractall(nonfn_decl_origin(Name, _)),
-    forall(member(T, Terms),
-           recache_type_decl_preserving_origin(T, SavedFnDecls)),
-    recompile_decl_functions(Fs).
+    with_decl_notifications_suppressed(
+        ( forall(member(T, Terms), erase_cached_declaration_only(T)),
+          erase(Ref),
+          retractall(nonfn_decl_origin(Name, _)),
+          forall(member(T, Terms),
+                 recache_type_decl_preserving_origin(T, SavedFnDecls)) )),
+    decl_notify(alias_changed(Name, removed, Fs)).
 
 %Alias removal temporarily erases and rebuilds dependent cache entries, but
 %their source declarations were not removed. Preserve any library provenance
@@ -694,38 +719,6 @@ affected_decl_functions(Names, Fs) :-
               member(Name, Names), type_term_mentions_alias(Term, Name) ),
             BySource),
     append(ByType, BySource, Fs0), sort(Fs0, Fs).
-
-recompile_decl_functions(Fs) :-
-    analysis_cache_invalidate_clause_change,
-    forall(member(F, Fs), recompile_function_clauses(F)).
-
-%%% A declaration that arrives after the function was compiled used to be
-%%% BELIEVED and never ENFORCED: the clauses were validated (and emitted) with
-%%% no declaration in sight, so a late -[det]-> got no overlap check, no body
-%%% determinism check and no commit cut, while every later caller was told the
-%%% function is det. A warning is not enough for that - the compiler was
-%%% asserting something it had not checked.
-%%%
-%%% This cannot happen INSIDE a file: process_metta_string/3 pre-caches every
-%%% arrow declaration of a file before compiling any of its definitions. It is
-%%% specifically a cross-file (or add-atom-at-runtime) situation, so recompiling
-%%% is cheap - it revisits one function, not the program.
-%%%
-%%% Recompiling, rather than rejecting, is what a declaration prepass would
-%%% have done had the two files been one, so it is the semantics that already
-%%% exists rather than a new rule. The clauses go back through
-%%% translate_clause/2 with the declaration in place: they get their argument
-%%% and output certifications, their determinism verdict, and their commit cut,
-%%% and if they cannot satisfy the declaration the normal error is thrown.
-%%% The warning stays, because a recompile can change a program that already
-%%% ran part of itself.
-enforce_late_declaration(Name) :-
-    ( catch(nb_getval(Name, [_|_]), _, fail)
-      -> format(user_error,
-                "Warning: type declaration for ~w arrives after its definition; its clauses are being recompiled against it~n",
-                [Name]),
-         recompile_function_clauses(Name)
-       ; true ).
 
 forget_symbol_types(Name) :- remove_all_fn_decl_records(Name),
                              retractall(nonfn_decl_origin(Name, _)),

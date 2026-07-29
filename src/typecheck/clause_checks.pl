@@ -262,11 +262,8 @@ narrowing_other_members([M|Ms], P, N, Prior) :-
 %      (translate_case compiles to nested if-then-else), so such a value can
 %      never reach this branch.
 %(a) reads the constructor set as it stands right now, so the verdict is a
-%SNAPSHOT. It used to be a standing limitation - a constructor for Member
-%declared in a later file invalidated an exclusion already made and nothing
-%revisited the clause. The snapshot is now recorded (note_ctor_snapshot/1) and
-%a later declaration that changes the set recompiles the clauses that read it;
-%see "Constructor-set snapshots" below.
+%SNAPSHOT. The proof publishes ctor_set(Member), so a later declaration that
+%changes the set invalidates and recompiles exactly the graph consumers.
 union_member_excluded(M, _, _) :- var(M), !, fail.
 union_member_excluded(M, _, _) :- is_arrow_type(M), !.       %a closure is not an expression
 union_member_excluded(M, _, _) :- list_type(M, _), !, fail.  %(List T) admits every length
@@ -282,7 +279,7 @@ union_member_excluded(M, N, Prior) :- atom(M), !,
         ; primitive_type(M) -> true          %an expression is not a Number/String/Bool
         ; N =:= 0 -> true                    %() is no constructor application
         ; K is N - 1,
-          note_ctor_snapshot(M),             %this verdict depends on M's constructor set
+          analysis_emit(dependency(ctor_set(M))),
           forall(member_ctor(M, K, C), prior_consumed_ctor(Prior, C, K)) ).
 union_member_excluded(_, _, _) :- fail.
 
@@ -292,9 +289,8 @@ union_members_excluded([M|Ms], N, Prior) :-
     union_members_excluded(Ms, N, Prior).
 
 %A CONSTRUCTOR of the nominal type M taking K arguments, so its applications
-%have K+1 elements. PeTTa's constructor convention is the one
-%declared_undefined_atom/2 (translator.pl) already implements: a declared
-%symbol with NO equations stays literal data, one with equations is always
+%have K+1 elements. A declared symbol with NO equations stays literal data,
+%while one with equations is always
 %rewritten at the call site and never survives as a value. So a declaration
 %alone is not enough - \+ fun(C) is what makes C data. Counting reducible
 %helpers here would only ever BLOCK an exclusion, never grant a wrong one, but
@@ -304,9 +300,8 @@ union_members_excluded([M|Ms], N, Prior) :-
 %The definedness flag is set early enough: parse_form/2 (filereader.pl)
 %register_fun's every (= (F ...) ...) of a file in the parse prepass, before
 %any clause of that file is compiled, so definition-below-use is fine. A
-%definition arriving from a LATER file only ever unblocks an exclusion that
-%was conservatively refused, and recompile_late_uses/1 revisits the clauses
-%that saw the symbol as data.
+%definition arriving from a LATER file invalidates the compiled clause's
+%symbol/effect dependency and the graph revisits it.
 member_ctor(M, K, C) :- declared_fn_type(C, ATs, OT, _), length(ATs, K),
                         \+ fun(C),
                         nonvar(OT), \+ wildcard_type_t(OT), type_compat_soft(OT, M).

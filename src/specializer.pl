@@ -50,16 +50,19 @@ specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses s
                                                findall(TypeChain, catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
                                                forall(member(TypeChain, TypeChains), add_sexp('&self', [':', SpecName, TypeChain])),
                                                %4.3 Translate specialized MeTTa clauseses to Prolog, keeping track of the function we are compiling through recursion:
-                                               maplist({SpecName}/[fun_meta(ArgsNorm,BodyExpr),clause_info(Input,Clause)]>>
+                                               maplist({SpecName}/[fun_meta(ArgsNorm,BodyExpr),clause_info(Input,Clause,Dependencies)]>>
                                                        ( Input = [=,[SpecName|ArgsNorm],BodyExpr],
                                                          %a typecheck error in the specialized instance just means: don't specialize
-                                                         catch(translate_clause(Input,Clause,false), error(_, typecheck), fail) ), MetaList, ClauseInfos),
+                                                         catch(translate_clause(Input,Clause,false,Dependencies), error(_, typecheck), fail) ), MetaList, ClauseInfos),
                                                %4.4 Only proceeed specializing if this or any recursive call profited from specialization with the specialized function at head position:
                                                nb_getval(specneeded, true),
                                                %4.5 Assert and print each of the created specializations:
-                                               forall(member(clause_info(Input, Clause), ClauseInfos),
+                                               forall(member(clause_info(Input, Clause, Dependencies), ClauseInfos),
                                                ( asserta(Clause, Ref),
                                                  assertz(translated_from(Ref, Input)),
+                                                 Input = [=, [_|SpecArgs], _],
+                                                 length(SpecArgs, SpecN),
+                                                 record_compiled_dependencies(Ref, SpecName/SpecN, Dependencies),
                                                  add_sexp('&self', Input),
                                                  format(atom(Label), "metta specialization (~w)", [SpecName]),
                                                  maybe_print_compiled_clause(Label, Input, Clause) ))
@@ -114,8 +117,10 @@ forget_symbol(Name) :- retractall('&self'(=, [Name|_], _)),
                        retractall('&self'(:, Name, _)),
                        forget_symbol_types(Name),
                        findall(Ref, ( current_predicate(Name/A), functor(H, Name, A), clause(H, _, Ref) ), Refs),
-                       forall(member(R, Refs), erase(R)),
-                       metta_on_function_removed(Name),
+                       forall(member(R, Refs),
+                              ( forget_compiled_dependencies(R),
+                                retractall(translated_from(R, _)),
+                                erase(R) )),
                        retractall(arity(Name,_)),
                        retractall(fun(Name)),
                        catch(nb_delete(Name), _, true),

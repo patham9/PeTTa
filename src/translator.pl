@@ -15,28 +15,49 @@ constrain_args([F|Args], Var, Goals) :- atom(F),
 constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsList),
                                   flatten(NestedGoalsList, Goals), !.
 
-%Flatten (= Head Body) MeTTa function into Prolog Clause. The wrapper records
-%which types' CONSTRUCTOR SETS this clause's compilation read, so a
-%constructor declared later can find the clauses it invalidates
-%(with_ctor_snapshot/2, typecheck.pl). Specialized copies go through the
-%3-argument form and record nothing: they are instances of a clause that
-%already carries the dependency.
-translate_clause(Input, (Head :- BodyConj)) :-
-        ( nonvar(Input), Input = [Eq, H0, _], Eq == (=), nonvar(H0), H0 = [F0|_], atom(F0)
-          -> F = F0 ; F = '$no_function' ),
-        with_ctor_snapshot(F, translate_clause(Input, (Head :- BodyConj), true)).
-translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
+%Flatten (= Head Body) MeTTa function into a Prolog clause.  The four-argument
+%boundary returns the dependencies observed by all nested analyses; assertion
+%sites attach them to the real clause reference with
+%record_compiled_dependencies/3.  The established two/three-argument entries
+%remain thin compatibility views.
+translate_clause(Input, Clause) :-
+        translate_clause(Input, Clause, true, _).
+translate_clause(Input, Clause, ConstrainArgs) :-
+        translate_clause(Input, Clause, ConstrainArgs, _).
+translate_clause(Input, Clause, ConstrainArgs, Dependencies) :-
+        Input = [=, [F|Args], BodyExpr],
+        atom(F),
+        length(Args, N),
+        copy_term_nat(BodyExpr, SourceBody),
+        analysis_collect(
+            translate_clause_core(Input, Clause, ConstrainArgs),
+            Events),
+        analysis_term_dependencies(SourceBody, TermDependencies),
+        analysis_function_decl_dependencies(F, DeclDependencies),
+        append([[decl(F/N), clause_set(F/N)],
+                TermDependencies, DeclDependencies],
+               ExtraDependencies),
+        analysis_make_proof(compiled_clause(F/N), translated, Events,
+                            ExtraDependencies, Proof),
+        analysis_proof_dependencies(Proof, Dependencies),
+        analysis_reemit_proof(Proof).
+translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                Input = [=, [F|Args0], BodyExpr],
+                                               length(Args0, SourceArity),
+                                               %The clause-set memo for the
+                                               %function being built is stale
+                                               %before validation of this very
+                                               %clause.  Consumer propagation
+                                               %happens later through
+                                               %notify_mutation/1.
+                                               analysis_cache_invalidate_event(
+                                                   clause_changed(F/SourceArity,
+                                                                  compiling)),
                                                ( ConstrainArgs -> maplist(constrain_args, Args0, Args1, GoalsA),
                                                                   flatten(GoalsA,GoalsPrefix)
                                                                 ; Args1 = Args0, GoalsPrefix = [] ),
                                                catch(nb_getval(F, Prev), _, Prev = []),
                                                nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
-                                               analysis_cache_invalidate_clause_change, %all analysis memos depend on clause sets
-                                               %clause set changed: the output-certificate memos (proper_list,
-                                               %bound_bool) depend on clause sets transitively, so they reset
-                                               %alongside the det caches above (see output_cert/3):
-                                               reset_output_certs(F),
                                                clause_param_types(F, Args1, DeclOut),
                                                %Snapshot the declared arg positions that stay bare type variables after
                                                %head binding; checked below to enforce their claimed universality:
@@ -161,40 +182,26 @@ clause_commit_cut(F, Args) :- \+ suppress_det_cut(true),
                               length(Args, N),
                               catch(( fn_determinism(F, N, D), committed_det(D) ), _, fail).
 
-%%% Late binding across files. A call to a declared function whose definition
-%%% has not arrived yet compiles as data (which is also what keeps declared
-%%% constructors literal). Clauses embedding such a symbol are recorded, and
-%%% when the definition arrives they are retranslated - now as real calls.
-:- dynamic late_symbol_use/3.   % late_symbol_use(F, ClauseRef, SourceTerm)
-
-note_late_symbol_uses(Term, Ref) :- Term = [=, _, Body],
-                                    forall(( declared_undefined_atom(Body, F),
-                                             \+ late_symbol_use(F, Ref, _) ),
-                                           assertz(late_symbol_use(F, Ref, Term))).
-
-declared_undefined_atom(T, F) :- ( atom(T) -> F = T, \+ fun(F), fn_decl_arity(F, _, _, _)
-                                 ; is_list(T), member(E, T), declared_undefined_atom(E, F) ).
-
-%The definition of F arrived: retranslate every clause that saw F as data.
-%The stale fun_meta entry is dropped first so the clause is not re-validated
-%against itself; its specializations are invalidated like any redefinition.
-recompile_late_uses(F) :- ( late_symbol_use(F, _, _)
-                            -> findall(Ref-Term, late_symbol_use(F, Ref, Term), Us),
-                               retractall(late_symbol_use(F, _, _)),
-                               forall(member(Ref-Term, Us), recompile_clause(Ref, Term))
-                             ; true ).
-
 recompile_clause(Ref, Term) :- ( clause(_, _, Ref)
-                                 -> erase(Ref),
+                                 -> compiled_dependency_origin(Ref, OriginFile),
+                                    erase(Ref),
                                     retractall(translated_from(Ref, _)),
+                                    forget_compiled_dependencies(Ref),
                                     Term = [=, [G|_], Body],
                                     drop_stale_fun_meta(G, Body),
-                                    translate_clause(Term, Clause),
+                                    ( ho_specialization(_, G)
+                                      -> ConstrainArgs = false
+                                    ; ConstrainArgs = true ),
+                                    translate_clause(Term, Clause, ConstrainArgs, Dependencies),
                                     assertz(Clause, NewRef),
                                     assertz(translated_from(NewRef, Term)),
-                                    note_late_symbol_uses(Term, NewRef),
+                                    length_of_source_args(Term, N),
+                                    record_compiled_dependencies(NewRef, G/N, OriginFile,
+                                                                 Dependencies),
                                     invalidate_specializations(G)
                                   ; true ).
+
+length_of_source_args([=, [_|Args], _], N) :- length(Args, N).
 
 drop_stale_fun_meta(G, Body) :- catch(nb_getval(G, Metas), _, fail),
                                 select(fun_meta(_, B), Metas, Rest),
@@ -202,32 +209,16 @@ drop_stale_fun_meta(G, Body) :- catch(nb_getval(G, Metas), _, fail),
                                 nb_setval(G, Rest).
 drop_stale_fun_meta(_, _).
 
-%%% Recompiling a whole function, for knowledge that arrived AFTER its clauses
-%%% were compiled. Two things can do that, and both used to be believed and
-%%% never enforced:
+%%% Recompile one graph node.  Clauses are redone TOGETHER and IN SOURCE
+%%% ORDER: overlap validation compares each clause with its predecessors, so
+%%% the meta list must be rebuilt from empty.  Dependency publication is
+%%% replaced clause-ref by clause-ref in recompile_clause/2.
 %%%
-%%%   - a type/determinism DECLARATION in a later file than the definition it
-%%%     constrains (typecheck.pl, maybe_cache_type_decl/2). The clauses were
-%%%     validated and emitted with no declaration in sight, so they carry no
-%%%     determinism commit and no argument/output certification.
-%%%   - a CONSTRUCTOR declared in a later file than a clause whose compilation
-%%%     read that type's constructor set (typecheck.pl, ctor_snapshot_use/3).
-%%%
-%%% Unlike recompile_late_uses/1 - which revisits clauses one at a time, each
-%%% independent of the others - a function's clauses must be redone TOGETHER
-%%% and IN SOURCE ORDER: the determinism overlap check compares each clause
-%%% against the ones before it, so the meta list has to be rebuilt from empty
-%%% in the original order or the check sees the wrong predecessors. That is
-%%% the only difference; the per-clause work is recompile_clause/2 as usual.
-%%%
-%%% Errors are not swallowed. A late -[det]-> over clauses that genuinely
-%%% overlap throws exactly the error the declaration would have caused had it
-%%% arrived first - which is the whole point: enforced, or rejected.
+%%% Errors are not swallowed; graph revalidation therefore throws exactly the
+%%% error a fresh compilation would.
 recompile_function_clauses(F) :- function_source_clauses(F, Us),
-                                 analysis_cache_invalidate(effect(F)),
                                  ( Us == [] -> true
                                  ; retractall(det_bound_proviso(F, _, _, _)),  %re-derive the boundness union from scratch
-                                   reset_output_certs(F),  %withdraw the output certificates for re-derivation
                                    nb_setval(F, []),
                                    forall(member(Ref-Term, Us), recompile_clause(Ref, Term)) ).
 
@@ -238,64 +229,6 @@ function_source_clauses(F, Us) :- findall(Ref-Term,
                                             Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F,
                                             clause(_, _, Ref) ),
                                           Us).
-
-%%% A runtime clause change invalidates transitive determinism proofs already
-%%% baked into callers. Walk recorded source terms to find named call sites,
-%%% recompile each caller with the changed callee visible, and continue only
-%%% when the caller's compiled form actually changed. The visited set breaks
-%%% recursion; recompile_function_clauses/1 supplies validation, cache reset,
-%%% and specialization invalidation. Errors deliberately propagate exactly as
-%%% they would during a fresh compilation.
-metta_on_function_changed(F) :- recompile_changed_callers([F], F).
-
-recompile_changed_callers(_, F) :-
-    direct_compiled_callers(F, Callers),
-    Callers == [], !.
-recompile_changed_callers(Visited, F) :-
-    direct_compiled_callers(F, Callers),
-    recompile_changed_caller_list(Callers, Visited).
-
-recompile_changed_caller_list([], _).
-recompile_changed_caller_list([G|Gs], Visited) :-
-    ( memberchk(G, Visited)
-      -> Visited1 = Visited
-    ; compiled_function_snapshot_proof(G, BeforeProof),
-      recompile_function_clauses(G),
-      compiled_function_snapshot_proof(G, AfterProof),
-      analysis_proof_verdict(BeforeProof, snapshot(Before)),
-      analysis_proof_verdict(AfterProof, snapshot(After)),
-      ( attribute_free_variant(Before, After)
-        -> Visited1 = [G|Visited]
-      ; recompile_changed_callers([G|Visited], G),
-        Visited1 = [G|Visited] ) ),
-    recompile_changed_caller_list(Gs, Visited1).
-
-direct_compiled_callers(F, Callers) :-
-    findall(G,
-            ( translated_from(Ref, Term), clause(_, _, Ref),
-              Term = [=, Head, Body], nonvar(Head), Head = [G|_],
-              G \== F, source_calls_named(Body, F) ),
-            Gs0),
-    sort(Gs0, Callers).
-
-source_calls_named(E, F) :-
-    nonvar(E), is_list(E), E = [H|Args],
-    ( atom(H), H == F
-    ; member(A, Args), source_calls_named(A, F) ).
-
-compiled_function_snapshot(F, Snapshot) :-
-    compiled_function_snapshot_proof(F, Proof),
-    analysis_proof_verdict(Proof, snapshot(Snapshot)).
-
-compiled_function_snapshot_proof(F, Proof) :-
-    findall((H :- B),
-            ( translated_from(Ref, Term), clause(H, B, Ref),
-              Term = [=, Head, _], nonvar(Head), Head = [F0|_], F0 == F ),
-            Clauses),
-    copy_term_nat(Clauses, Snapshot),
-    numbervars(Snapshot, 0, _, [singletons(true)]),
-    analysis_term_dependencies(Clauses, Dependencies),
-    analysis_snapshot_proof(compiled(F), Snapshot, Dependencies, Proof).
 
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.
@@ -851,12 +784,15 @@ translate_expr([H0|T0], Goals, Out) :-
                                            exclude({ArgVars}/[V]>>memberchk_eq(V, ArgVars), AllVars, FreeVars),
                                            append(FreeVars, Args, FullArgs),
                                            % compile clause with all bound + free vars
-                                           translate_clause([=, [F|FullArgs], Body], Clause),
+                                           LambdaSource = [=, [F|FullArgs], Body],
+                                           translate_clause(LambdaSource, Clause, true, LambdaDependencies),
                                            register_fun(F),
-                                           assertz(Clause),
+                                           assertz(Clause, LambdaRef),
+                                           assertz(translated_from(LambdaRef, LambdaSource)),
+                                           length(FullArgs, N),
+                                           record_compiled_dependencies(LambdaRef, F/N, LambdaDependencies),
                                            format(atom(Label), "metta lambda (~w)", [F]),
                                            maybe_print_compiled_clause(Label, ['|->', Args, Body], Clause),
-                                           length(FullArgs, N),
                                            Arity is N + 1,
                                            (arity(F, Arity) -> true ; assertz(arity(F, Arity))),
                                            % emit closure capturing the environment (free vars)
