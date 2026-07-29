@@ -275,8 +275,12 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
 agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
 
 %Combined expr translation to goals list
-translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),
-                                            goals_list_to_conj(Goals, Conj).
+translate_expr_to_conj(Input, Conj, Out) :-
+        translate_expr(Input, none, Goals, Out),
+        goals_list_to_conj(Goals, Conj).
+translate_expr_to_conj(Input, Expectation, Conj, Out) :-
+        translate_expr(Input, Expectation, Goals, Out),
+        goals_list_to_conj(Goals, Conj).
 
 %%% Narrow bidirectional typing for declared product/list results.
 %
@@ -292,8 +296,9 @@ translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),
 %bottom-up path; `data` itself remains product-only.
 translate_declared_body(out(OT, _), Expr, Goals, Out) :-
         contextual_expected_type(OT), !,
-        translate_expected_product(Expr, OT, Goals, Out).
-translate_declared_body(_, Expr, Goals, Out) :- translate_expr(Expr, Goals, Out).
+        translate_expr(Expr, expected(OT), Goals, Out).
+translate_declared_body(_, Expr, Goals, Out) :-
+        translate_expr(Expr, none, Goals, Out).
 
 contextual_product_type(T) :- nonvar(T), is_list(T),
                               \+ special_compound_type(T),
@@ -304,107 +309,14 @@ contextual_product_type(T) :- nonvar(T), is_list(T),
 contextual_expected_type(T) :- ( contextual_product_type(T)
                                ; nonvar(T), list_type(T, _) ).
 
-%Do not let an expression variable unify with one of the syntax patterns
-%below. Besides changing the source term, that fabricated a `(data ...)`
-%construction around nested product parameters and forced checks on phantom
-%fields. Variables and atoms have no result-position structure to descend.
-%Likewise, a compound with a variable head is DATA whose head is unbound, not
-%a syntax form: letting a literal clause head bind it turned the real
-%`($proof)` singleton into `(make-list)` under an expected (List Proof).
-translate_expected_product(Expr, Expected, [], Out) :-
-        nonvar(Expr), Expr == [],
-        list_type(Expected, _), !,
-        Out = [],
-        set_out_type(Out, Expected).
-translate_expected_product(Expr, _, Goals, Out) :-
-        ( var(Expr) ; atomic(Expr) ; Expr = partial(_, _) ), !,
-        translate_expr(Expr, Goals, Out).
-translate_expected_product(Expr, _, Goals, Out) :-
-        nonvar(Expr), Expr = [H|_], \+ atom(H), !,
-        translate_expr(Expr, Goals, Out).
-translate_expected_product([match, Space, Pattern, Body], Expected, Goals, Out) :- !,
-        translate_expr(Space, G1, S),
-        type_match_pattern(Pattern),
-        bind_typed_space_pattern(Space, Pattern),
-        translate_expected_product(Body, Expected, GsB, Out),
-        append(G1, [match(S, Pattern, Out, Out)], G2),
-        append(G2, GsB, Goals).
-translate_expected_product([data|Fields], Expected, Goals, Out) :-
+explicit_data_expectation(expected(Expected), Fields, expected(Expected)) :-
         contextual_product_type(Expected),
-        same_length(Fields, Expected), !,
-        translate_explicit_data(Fields, expected(Expected), Goals, Out).
-translate_expected_product([Cons, H, Tl], Expected, Goals, Out) :-
-        list_type(Expected, ET),
-        ( Cons == cons ; Cons == 'cons-atom' ), !,
-        translate_expected_list_element(H, ET, Cons, GsH, HV),
-        translate_expected_product(Tl, Expected, GsT, TV),
-        check_call_arg(declared, Cons, TV, Expected, TailChecks),
-        append([GsH, GsT, TailChecks], Inner),
-        build_direct_call(Cons, [HV, TV], Out, Inner, [], Goals),
-        set_out_type(Out, Expected).
-translate_expected_product(['make-list'|Elements], Expected, Goals, Out) :-
-        list_type(Expected, ET), !,
-        translate_explicit_list(Elements, expected(ET), Goals, Out).
-translate_expected_product([if, Cond, Then], Expected, Goals, Out) :- !,
-        translate_if_cond(Cond, ConC, CondGoal),
-        translate_expected_product(Then, Expected, GsT, Tv),
-        goals_list_to_conj(GsT, ConT),
-        build_branch(ConT, Tv, Out, BT),
-        ( ConC == true -> Goals = [(CondGoal -> BT)]
-                        ; Goals = [(ConC, (CondGoal -> BT))] ).
-translate_expected_product([if, Cond, Then, Else], Expected, Goals, Out) :- !,
-        translate_if_cond(Cond, ConC, CondGoal),
-        translate_expected_product(Then, Expected, GsT, Tv),
-        translate_expected_product(Else, Expected, GsE, Ev),
-        goals_list_to_conj(GsT, ConT),
-        goals_list_to_conj(GsE, ConE),
-        build_branch(ConT, Tv, Out, BT),
-        build_branch(ConE, Ev, Out, BE),
-        ( ConC == true -> Goals = [(CondGoal -> BT ; BE)]
-                        ; Goals = [(ConC, (CondGoal -> BT ; BE))] ).
-translate_expected_product([case, KeyExpr, Pairs], Expected, Goals, Out) :-
-        is_list(Pairs),
-        forall(member(Pair, Pairs), (is_list(Pair), length(Pair, 2))), !,
-        ( select(Found0, Pairs, Rest0), subsumes_term(['Empty', _], Found0),
-          Found0 = ['Empty', DefaultExpr]
-          -> translate_expr_to_conj(KeyExpr, KeyConj, Kv),
-             translate_case_expected(Rest0, Kv, Expected, Out, CaseGoal, KeyGoal),
-             translate_expected_product(DefaultExpr, Expected, GsD, DOut),
-             goals_list_to_conj(GsD, ConD),
-             build_branch(ConD, DOut, Out, DefaultThen),
-             Combined = ((KeyConj, CaseGoal) ; \+ KeyConj, DefaultThen),
-             append(KeyGoal, [Combined], Goals)
-           ; translate_expr(KeyExpr, Gk, Kv),
-             translate_case_expected(Pairs, Kv, Expected, Out, IfGoal, KeyGoal),
-             append([Gk, KeyGoal, [IfGoal]], Goals) ).
-translate_expected_product([Kind, Pat, Val, In], Expected, Goals, Out) :-
-        (Kind == let ; Kind == chain), !,
-        translate_expr(Pat, Gp, Pv),
-        translate_let_value(Pat, Val, In, Gv, V),
-        note_candidates(Pv, V),
-        bind_pattern_from(Pat, V),
-        translate_expected_product(In, Expected, Gi, Out),
-        append([[(Pv=V)], Gp, Gv, Gi], Goals).
-translate_expected_product(['let*', Binds, Body], Expected, Goals, Out) :- !,
-        letstar_to_rec_let(Binds, Body, RecLet),
-        translate_expected_product(RecLet, Expected, Goals, Out).
-translate_expected_product(Expr, _, Goals, Out) :- translate_expr(Expr, Goals, Out).
+        same_length(Fields, Expected), !.
+explicit_data_expectation(_, _, none).
 
-translate_case_expected(Pairs, Kv, Expected, Out, Goal, KGo) :-
-        translate_case_expected(Pairs, Kv, Expected, Out, Goal, KGo, []).
-
-translate_case_expected([[K,VExpr]|Rs], Kv, Expected, Out, Goal, KGo, Prior) :-
-        ( var(Kv), known_singleton(Kv, KT), nonvar(KT)
-          -> bind_pattern_typed(K, KT, Prior)
-           ; ctor_pattern_field_types(K) ),
-        translate_expected_product(VExpr, Expected, GsV, VOut),
-        goals_list_to_conj(GsV, ConV),
-        constrain_args(K, Kc, Gc),
-        build_branch(ConV, VOut, Out, Then),
-        ( Rs == [] -> Goal = ((Kv = Kc) -> Then), KGi = []
-        ; translate_case_expected(Rs, Kv, Expected, Out, Next, KGi, [K|Prior]),
-          Goal = ((Kv = Kc) -> Then ; Next) ),
-        append([Gc, KGi], KGo).
+explicit_list_expectation(expected(Expected), expected(ET)) :-
+        list_type(Expected, ET), !.
+explicit_list_expectation(_, none).
 
 %`data` is an erased, explicitly non-callable expression constructor. With an
 %expected positional shape, every field is checked as a declared obligation
@@ -444,18 +356,18 @@ translate_expected_list_elements([E|Es], ET, Goals, [V|Vs]) :-
 
 translate_expected_list_element(E, T, Context, Goals, V) :-
         ( contextual_expected_type(T)
-          -> translate_expected_product(E, T, G0, V)
-           ; translate_expr(E, G0, V) ),
+          -> translate_expr(E, expected(T), G0, V)
+           ; translate_expr(E, none, G0, V) ),
         check_call_arg(declared, Context, V, T, Checks),
         append(G0, Checks, Goals).
 
 translate_expected_fields([], [], [], []).
 translate_expected_fields([E|Es], [T|Ts], Goals, [V|Vs]) :-
         ( contextual_expected_type(T)
-          -> translate_expected_product(E, T, G0, V),
+          -> translate_expr(E, expected(T), G0, V),
              check_call_arg(declared, data, V, T, Checks),
              append(G0, Checks, G1)
-           ; translate_expr(E, G0, V),
+           ; translate_expr(E, none, G0, V),
              check_call_arg(declared, data, V, T, Checks),
              append(G0, Checks, G1) ),
         translate_expected_fields(Es, Ts, G2, Vs),
@@ -561,11 +473,32 @@ builtin_codegen_rule_defined(typed_space_match).
 builtin_codegen_rule_defined(typed_space_update).
 builtin_codegen_rule_defined(with_mutex).
 
-%Turn MeTTa code S-expression into goals list:
-translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
-translate_expr([H0|T0], Goals, Out) :-
+%Turn a MeTTa S-expression into goals.  The four-argument traversal is the
+%single syntax walk; the established three-argument entry is its bottom-up
+%view.  Only the handful of result positions documented above pass expected(T)
+%on recursively.
+translate_expr(Expr, Goals, Out) :-
+        translate_expr(Expr, none, Goals, Out).
+
+%An empty runtime list is the one atomic value whose contextual list type must
+%be retained.
+translate_expr(X, expected(Expected), [], X) :-
+        nonvar(X), X == [],
+        list_type(Expected, _), !,
+        set_out_type(X, Expected).
+translate_expr(X, _, [], X) :-
+        ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
+
+%Do not let an expectation turn a compound with a source-variable head into a
+%syntax form.  It is data whose head is unbound.  This guard is the
+%($proof)/(make-list) invariant: only literal atom heads enter special-form
+%dispatch under an expectation.
+translate_expr(Expr, expected(_), Goals, Out) :-
+        nonvar(Expr), Expr = [H|_], \+ atom(H), !,
+        translate_expr(Expr, none, Goals, Out).
+translate_expr([H0|T0], Expectation, Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
-        translate_expr(H, GsH, HV),
+        translate_expr(H, none, GsH, HV),
         %--- Translator rules ---:
         ( nonvar(HV), translator_rule(HV) -> length(T, NHook),
                                              ( once(fn_decl_arity(HV, NHook, ArgTypes, _))
@@ -580,13 +513,27 @@ translate_expr([H0|T0], Goals, Out) :-
         %arguments become the fields of the resulting expression, and its
         %first field is never interpreted as a function/closure to call.
         ; special_builtin_form(HV, T, explicit_data)
-          -> translate_explicit_data(T, none, GsD, Out),
+          -> explicit_data_expectation(Expectation, T, DataExpectation),
+             translate_explicit_data(T, DataExpectation, GsD, Out),
                         append(GsH, GsD, Goals)
         %--- Explicit runtime-list construction. Like `data`, `make-list`
         %erases and never dispatches its first element as a callable head.
         ; special_builtin_form(HV, T, explicit_list)
-          -> translate_explicit_list(T, none, GsL, Out),
+          -> explicit_list_expectation(Expectation, ListExpectation),
+             translate_explicit_list(T, ListExpectation, GsL, Out),
                                append(GsH, GsL, Goals)
+        %The explicit cons constructors receive list expectations at their
+        %element and tail positions.  All other calls remain bottom-up.
+        ; Expectation = expected(Expected),
+          list_type(Expected, ET),
+          ( HV == cons ; HV == 'cons-atom' ),
+          T = [HeadExpr, TailExpr]
+          -> translate_expected_list_element(HeadExpr, ET, HV, GsHead, Head),
+             translate_expr(TailExpr, expected(Expected), GsTail, Tail),
+             check_call_arg(declared, HV, Tail, Expected, TailChecks),
+             append([GsH, GsHead, GsTail, TailChecks], Inner),
+             build_direct_call(HV, [Head, Tail], Out, Inner, [], Goals),
+             set_out_type(Out, Expected)
         %--- Non-determinism ---:
         ; special_builtin_form(HV, T, superpose_literal),
           T = [Args], is_list(Args) -> build_superpose_branches(Args, Out, Branches),
@@ -649,14 +596,14 @@ translate_expr([H0|T0], Goals, Out) :-
         %--- Conditionals ---:
         ; special_builtin_form(HV, T, if_then), T = [Cond, Then]
           -> translate_if_cond(Cond, ConC, CondGoal),
-                                        translate_expr_to_conj(Then, ConT, Tv),
+                                        translate_expr_to_conj(Then, Expectation, ConT, Tv),
                                         build_branch(ConT, Tv, Out, BT),
                                         ( ConC == true -> append(GsH, [ ( CondGoal -> BT ) ], Goals)
                                                         ; append(GsH, [ ( ConC, ( CondGoal -> BT ) ) ], Goals) )
         ; special_builtin_form(HV, T, if_then_else), T = [Cond, Then, Else]
           -> translate_if_cond(Cond, ConC, CondGoal),
-                                              translate_expr_to_conj(Then, ConT, Tv),
-                                              translate_expr_to_conj(Else, ConE, Ev),
+                                              translate_expr_to_conj(Then, Expectation, ConT, Tv),
+                                              translate_expr_to_conj(Else, Expectation, ConE, Ev),
                                               build_branch(ConT, Tv, Out, BT),
                                               build_branch(ConE, Ev, Out, BE),
                                               ( ConC == true -> append(GsH, [ (CondGoal -> BT ; BE) ], Goals)
@@ -675,14 +622,14 @@ translate_expr([H0|T0], Goals, Out) :-
                                                     Found0 = ['Empty', DefaultExpr],
                                                     NormalCases = Rest0
                                                     -> translate_expr_to_conj(KeyExpr, GkConj, Kv),
-                                                       translate_case(NormalCases, Kv, Out, CaseGoal, KeyGoal),
-                                                       translate_expr_to_conj(DefaultExpr, ConD, DOut),
+                                                       translate_case(NormalCases, Kv, Expectation, Out, CaseGoal, KeyGoal),
+                                                       translate_expr_to_conj(DefaultExpr, Expectation, ConD, DOut),
                                                        build_branch(ConD, DOut, Out, DefaultThen),
                                                        Combined = ( (GkConj, CaseGoal) ;
                                                                     \+ GkConj, DefaultThen ),
                                                        append([GsH, KeyGoal, [Combined]], Goals)
                                                      ; translate_expr(KeyExpr, Gk, Kv),
-                                                       translate_case(PairsExpr, Kv, Out, IfGoal, KeyGoal),
+                                                       translate_case(PairsExpr, Kv, Expectation, Out, IfGoal, KeyGoal),
                                                        append([GsH, Gk, KeyGoal, [IfGoal]], Goals) )
         %--- Short-circuit boolean operators ---:
         ; special_builtin_form(HV, T, and_then), T = [A, B]
@@ -707,11 +654,11 @@ translate_expr([H0|T0], Goals, Out) :-
                                                            translate_let_value(Pat, Val, In, Gv, V),
                                                            note_candidates(Pv, V),        %the bound variable gets the value's type
                                                            bind_pattern_from(Pat, V),     %destructuring patterns type their fields
-                                                           translate_expr(In,  Gi, Out),
+                                                           translate_expr(In, Expectation, Gi, Out),
                                                            append([GsH,[(Pv=V)],Gp,Gv,Gi], Goals)
         ; special_builtin_form(HV, T, let_star), T = [Binds, Body]
           -> letstar_to_rec_let(Binds,Body,RecLet),
-                                             translate_expr(RecLet,  Goals, Out)
+                                             translate_expr(RecLet, Expectation, Goals, Out)
         ; special_builtin_form(HV, T, sealed), T = [Vars, Expr]
           -> translate_expr_to_conj(Expr, Con, Val),
                                             note_candidates(Out, Val),
@@ -809,7 +756,7 @@ translate_expr([H0|T0], Goals, Out) :-
           T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      type_match_pattern(Pattern),
                                                      bind_typed_space_pattern(Space, Pattern),
-                                                     translate_expr(Body, GsB, Out),
+                                                     translate_expr(Body, Expectation, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
         %--- Predicate to compiled goal ---:
@@ -1104,7 +1051,7 @@ translate_contextual_args([translated(G, V)|Ss], [G|Gs], [V|Vs]) :-
         translate_contextual_args(Ss, Gs, Vs).
 translate_contextual_args([pending(A, ET, DT)|Ss], [G|Gs], [V|Vs]) :-
         ( contextual_expected_type(DT), \+ expression_typed(ET)
-          -> translate_expected_product(A, DT, G, V)
+          -> translate_expr(A, expected(DT), G, V)
         ; expression_typed(ET)
           -> expression_arg_value(A, V), G = []
            ; translate_expr(A, G, V) ),
@@ -1122,7 +1069,7 @@ translate_let_value(Pat, Val, In, Goals, V) :-
         ( Ctor == data ; Ctor == 'make-list' ; Ctor == cons ),
         contextual_bound_initializer_type(Pat, In, Expected),
         contextual_expected_type(Expected), !,
-        translate_expected_product(Val, Expected, Goals, V).
+        translate_expr(Val, expected(Expected), Goals, V).
 translate_let_value(_, Val, _, Goals, V) :- translate_expr(Val, Goals, V).
 
 contextual_bound_initializer_type(Pat, In, Expected) :-
@@ -1348,17 +1295,18 @@ build_branch(Con, Val, Out, Goal) :- var(Val) -> ( known_candidates(Val, _) -> t
 %matched by an earlier branch never reaches a later one. Prior carries the
 %earlier branches' patterns (source order) so the typechecker may use that
 %exclusion when narrowing a union - see narrowing_sound/4.
-translate_case(Pairs, Kv, Out, Goal, KGo) :- translate_case(Pairs, Kv, Out, Goal, KGo, []).
+translate_case(Pairs, Kv, Expectation, Out, Goal, KGo) :-
+        translate_case(Pairs, Kv, Expectation, Out, Goal, KGo, []).
 
-translate_case([[K,VExpr]|Rs], Kv, Out, Goal, KGo, Prior) :-
+translate_case([[K,VExpr]|Rs], Kv, Expectation, Out, Goal, KGo, Prior) :-
                                                       ( var(Kv), known_singleton(Kv, KT), nonvar(KT)
                                                         -> bind_pattern_typed(K, KT, Prior)
                                                          ; ctor_pattern_field_types(K) ),
-                                                      translate_expr_to_conj(VExpr, ConV, VOut),
+                                                      translate_expr_to_conj(VExpr, Expectation, ConV, VOut),
                                                       constrain_args(K, Kc, Gc),
                                                       build_branch(ConV, VOut, Out, Then),
                                                       ( Rs == [] -> Goal = ((Kv = Kc) -> Then), KGi=[]
-                                                                  ; translate_case(Rs, Kv, Out, Next, KGi, [K|Prior]),
+                                                                  ; translate_case(Rs, Kv, Expectation, Out, Next, KGi, [K|Prior]),
                                                                     Goal = ((Kv = Kc) -> Then ; Next) ),
                                                       append([Gc,KGi], KGo).
 
