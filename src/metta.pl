@@ -330,9 +330,6 @@ python_import_file(File) :- import_file_string(File, SFile),
 resolve_existing_import_path(Base, RequestedPath, CanonPath) :-
     absolute_file_name(RequestedPath, CanonPath,
                        [relative_to(Base), access(read), file_errors(fail)]), !.
-resolve_existing_import_path(_, RequestedPath, CanonPath) :-
-    absolute_file_name(RequestedPath, CanonPath,
-                       [access(read), file_errors(fail)]), !.
 
 throw_missing_import(File) :-
     throw(error(existence_error(source_sink, File), context('import!', File))).
@@ -356,10 +353,12 @@ resolve_python_import_path(File, CanonPath) :-
 
 :- dynamic metta_import_state/3.
 
-% A loading entry breaks cycles; a loaded entry makes later imports no-ops.
-% Failed loads remove their entry so callers can repair the source and retry.
+% A loading or active entry breaks cycles; a loaded entry makes later imports no-ops.
+% Failed loads remove their loading entry, but may leave partial state; retrying a
+% failed import in the same runtime is unsupported.
 claim_import(Space, CanonPath, skip) :- metta_import_state(Space, CanonPath, loaded), !.
 claim_import(Space, CanonPath, skip) :- metta_import_state(Space, CanonPath, loading), !.
+claim_import(Space, CanonPath, skip) :- active_metta_load(Space, CanonPath), !.
 claim_import(Space, CanonPath, load) :- assertz(metta_import_state(Space, CanonPath, loading)).
 
 clear_import_state(Space, CanonPath) :- retractall(metta_import_state(Space, CanonPath, _)).

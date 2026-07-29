@@ -90,10 +90,10 @@ replace_all(P, R, S, O) :- split_string(S, P, "", Parts),
                                                    ( exists_directory(LocalDir) -> true
                                                                                  ; clone_repo(GitPath, LocalDir),
                                                                                    run_build_step(LocalDir, BuildCmd) ),
-                                                   register_git_library_path(LocalDir).
+                                                   register_library_path(LocalDir).
 
-register_git_library_path(LocalDir) :- absolute_file_name(LocalDir, CanonDir, [file_type(directory), file_errors(fail)]),
-                                       ( library_path(CanonDir) -> true ; asserta(library_path(CanonDir)) ).
+register_library_path(Path0) :- absolute_file_name(Path0, Path, [file_type(directory), file_errors(fail)]),
+                                ( library_path(Path) -> true ; asserta(library_path(Path)) ).
 
 % Reproducible import: URL, build command, base directory, full commit SHA.
 'git-import!'(GitPath, BuildCmd, BaseDir, CommitSHA, true) :-
@@ -105,7 +105,7 @@ register_git_library_path(LocalDir) :- absolute_file_name(LocalDir, CanonDir, [f
     setup_call_cleanup(open(LockFile, append, Lock, [lock(write)]),
                        pinned_import_locked(GitPath, BuildCmd, BaseDir, Name, LocalDir, Commit),
                        close(Lock)),
-    asserta(library_path(LocalDir)).
+    register_library_path(LocalDir).
 
 validate_commit_sha(CommitSHA, Commit) :-
     atom_string(CommitSHA, CommitString),
