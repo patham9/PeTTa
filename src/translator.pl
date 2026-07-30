@@ -466,24 +466,27 @@ rewrite_streamops([unique, Arg],
                   [call, [superpose, ['unique-atom', [collapse, Arg]]]]).
 rewrite_streamops(['alpha-unique', Arg],
                   [call, [superpose, ['alpha-unique-atom', [collapse, Arg]]]]).
-%For a variable with a known union type, unification against literal case
-%structure is exactly a two-branch committed pattern match: successful
-%bindings are visible in Then, while failed bindings are undone before Else.
+%For a variable with a known union or positional-product type, unification
+%against inert case structure is exactly a two-branch committed pattern match:
+%successful bindings are visible in Then, while failed bindings are undone
+%before Else.
 %Lower that narrowing-bearing source shape to case so its existing
 %constructor/field and fallthrough-union logic applies in both branches.
-%Outside a known union there is no narrowing to gain, so the established eager
-%equality path stays untouched. A fun-headed or compiler-form subterm also
-%stays eager: case elaboration would be a different operation from evaluating
-%it as an equality operand. `==` is deliberately absent because it tests
-%identity without binding.
+%A positional product matters after a preceding case subtraction: the reduced
+%union may now be one product member, and a variable-headed tuple is inert data
+%whose fields can be typed by position. Outside either known shape there is no
+%narrowing to gain, so the established eager equality path stays untouched. A
+%fun-headed or compiler-form subterm also stays eager: case elaboration would
+%be a different operation from evaluating it as an equality operand. `==` is
+%deliberately absent because it tests identity without binding.
 rewrite_streamops([If, [Eq, V, Pattern], Then, Else],
                   [case, V, [[Pattern, Then], [Fallthrough, NarrowElse]]]) :-
     If == if,
     Eq == (=),
     var(V),
     nonvar(Pattern),
-    known_singleton(V, UnionT),
-    is_union(UnionT),
+    known_singleton(V, KnownT),
+    equality_case_shape(KnownT, Pattern),
     literal_case_unification_pattern(Pattern), !,
     substitute_source_var(Else, V, Fallthrough, NarrowElse).
 %Only the one-argument standard-library resolver is curated. Two-argument
@@ -501,6 +504,13 @@ rewrite_streamops([subtraction, [superpose|A], [superpose|B]],
                   [call, [superpose, ['subtraction-atom', [collapse, [superpose|A]],
                                                           [collapse, [superpose|B]]]]]).
 rewrite_streamops(X, X).
+
+equality_case_shape(T, _) :-
+    is_union(T), !.
+equality_case_shape(T, Pattern) :-
+    contextual_product_type(T),
+    is_list(Pattern),
+    same_length(T, Pattern).
 
 %Guarded stream ops rewrite rule application, successfully avoiding copy_term:
 safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewrite_streamops(In, Out)
@@ -1510,7 +1520,7 @@ translate_case(Pairs, Kv, Expectation, Out, Goal, KGo) :-
         translate_case(Pairs, Kv, Expectation, Out, Goal, KGo, []).
 
 translate_case([[K,VExpr]|Rs], Kv, Expectation, Out, Goal, KGo, Prior) :-
-                                                      ( var(Kv), known_singleton(Kv, KT), nonvar(KT)
+                                                      ( case_scrutinee_value_type(Kv, KT)
                                                         -> bind_pattern_typed(K, KT, Prior)
                                                          ; ctor_pattern_field_types(K) ),
                                                       translate_expr_to_conj(VExpr, Expectation, ConV, VOut),
@@ -1520,6 +1530,16 @@ translate_case([[K,VExpr]|Rs], Kv, Expectation, Out, Goal, KGo, Prior) :-
                                                                   ; translate_case(Rs, Kv, Expectation, Out, Next, KGi, [K|Prior]),
                                                                     Goal = ((Kv = Kc) -> Then ; Next) ),
                                                       append([Gc,KGi], KGo).
+
+%Case scrutinees are not limited to variables. A constructed positional tuple
+%whose fields carry known types has a structural product type through the same
+%value-typing relation used elsewhere; bind deep patterns against that product
+%rather than falling back to constructor-only field typing.
+case_scrutinee_value_type(Kv, KT) :-
+    ( var(Kv) -> known_singleton(Kv, KT0)
+              ; value_single_type(Kv, KT0) ),
+    nonvar(KT0),
+    KT = KT0.
 
 %Translate arguments recursively:
 translate_args([], [], []).

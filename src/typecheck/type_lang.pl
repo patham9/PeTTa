@@ -318,16 +318,71 @@ ascription_guard(V, T, Gs) :- ( ground(T) -> warn_residual_check('(the ...)', T)
 brand_type(V, T) :-
     ( \+ ( atom(T), declared_newtype(T, _) )
       -> throw(error(unknown_newtype(T), typecheck))
-    ; var(V) -> ( known_singleton(V, K)
-                  -> ( type_unify(K, T) -> true
-                     ; atom(K), declared_newtype(K, _)
-                       -> throw(error(type_conflict(existing(K), required(T)), typecheck))
-                     ; declared_newtype(T, R), \+ \+ type_unify(K, R)
-                       -> put_attr(V, tknown, [T])
-                     ; throw(error(type_conflict(existing(K), required(T)), typecheck)) )
-                   ; add_known_type(V, T) )
+    ; var(V) -> brand_variable_type(V, T)
     ; check_value(V, T, St),
       ( St == mismatch -> throw(error(literal_type_mismatch(V, T), typecheck)) ; true ) ).
+
+%An explicit brand is the point where an admissible representation acquires
+%its nominal type. Control-flow and case results can carry several candidate
+%types, not just one; when every candidate fits the representation, replace
+%the whole candidate set with the brand. Keeping the old singleton-only rule
+%left both the representation candidates and T on the variable, so the later
+%declared-output/consumer check still saw an apparent conflict with T.
+%
+%An unknown candidate can be discharged only by a wildcard representation
+%(Expression/Atom/%Undefined%), exactly where every runtime value is an
+%admissible payload. With a concrete representation it remains alongside the
+%brand and therefore preserves the established strict residual.
+brand_variable_type(V, T) :-
+    known_candidates(V, Cs), !,
+    ( member(K, Cs), candidate_is_other_brand(K, T)
+      -> throw(error(type_conflict(existing(K), required(T)), typecheck))
+    ; declared_newtype(T, R),
+      maplist(brand_candidate_fits_representation(R), Cs)
+      -> put_attr(V, tknown, [T])
+    ; declared_newtype(T, R),
+      member(C, Cs),
+      brand_candidate_conflict(R, C, Bad)
+      -> throw(error(type_conflict(existing(Bad), required(T)), typecheck))
+    ; Cs = [K]
+      -> ( type_unify(K, T) -> true
+         ; throw(error(type_conflict(existing(K), required(T)), typecheck)) )
+    ; add_known_type(V, T) ).
+brand_variable_type(V, T) :-
+    add_known_type(V, T).
+
+candidate_is_other_brand(K, T) :-
+    candidate_evidence(K, type(KT)),
+    atom(KT),
+    declared_newtype(KT, _),
+    KT \== T.
+
+brand_candidate_fits_representation(R, C) :-
+    candidate_evidence(C, Evidence),
+    brand_evidence_fits_representation(Evidence, R).
+
+brand_evidence_fits_representation(unknown, R) :-
+    wildcard_type_t(R).
+brand_evidence_fits_representation(literal(V), R) :-
+    check_value(V, R, St),
+    St == ok.
+brand_evidence_fits_representation(type(K), R) :-
+    \+ ( atom(K), declared_newtype(K, _) ),
+    type_compat_soft(K, R).
+
+%Concrete candidates at an explicit brand boundary must positively fit its
+%representation. In particular, a ground but otherwise untyped compound is
+%not silently admissible to a concrete representation merely because ordinary
+%value checking calls it "unknown"; the explicit brand has no runtime guard.
+%The genuine unknown/open-variable cases remain non-conflicts and retain the
+%established residual behavior for concrete representations.
+brand_candidate_conflict(R, C, Bad) :-
+    candidate_evidence(C, literal(V)), !,
+    \+ check_value(V, R, ok),
+    Bad = V.
+brand_candidate_conflict(R, C, K) :-
+    candidate_evidence(C, type(K)),
+    \+ type_compat_soft(K, R).
 
 %The Expression argument convention: an argument whose declared type is the
 %LITERAL Expression stays unevaluated data - that is what a code-taking
