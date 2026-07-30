@@ -43,6 +43,8 @@ bind_param_type(Arg, T) :- ( functional_pattern_application(Arg, _, _)
                              -> bind_pattern_typed(Arg, T)
                            ; structural_pattern_fields(Arg, T, Fields, FieldTs)
                              -> maplist(bind_param_type, Fields, FieldTs)
+                           ; atom(T), declared_newtype(T, R), \+ wildcard_type_t(R)
+                             -> bind_param_type(Arg, R)
                            ; is_list(Arg), is_list(T), same_length(Arg, T),
                              \+ is_arrow_type(T)                 %untagged tuple types: ($v Number)
                              -> maplist(bind_param_type, Arg, T)

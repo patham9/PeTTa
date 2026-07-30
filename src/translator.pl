@@ -385,6 +385,16 @@ contextual_product_type(T) :- nonvar(T), is_list(T),
 contextual_expected_type(T) :- ( contextual_product_type(T)
                                ; nonvar(T), list_type(T, _) ).
 
+%A brand is erased only after its payload has been checked. When the declared
+%representation is one of the existing contextual shapes, feed that shape
+%into the same expectation spine used by ordinary declared results. No other
+%representation gains a new propagation rule.
+brand_payload_expectation(T, expected(Rep)) :-
+    atom(T),
+    declared_newtype(T, Rep),
+    contextual_expected_type(Rep), !.
+brand_payload_expectation(_, none).
+
 explicit_data_expectation(expected(Expected), Fields, expected(Expected)) :-
         contextual_product_type(Expected),
         same_length(Fields, Expected), !.
@@ -456,6 +466,26 @@ rewrite_streamops([unique, Arg],
                   [call, [superpose, ['unique-atom', [collapse, Arg]]]]).
 rewrite_streamops(['alpha-unique', Arg],
                   [call, [superpose, ['alpha-unique-atom', [collapse, Arg]]]]).
+%For a variable with a known union type, unification against literal case
+%structure is exactly a two-branch committed pattern match: successful
+%bindings are visible in Then, while failed bindings are undone before Else.
+%Lower that narrowing-bearing source shape to case so its existing
+%constructor/field and fallthrough-union logic applies in both branches.
+%Outside a known union there is no narrowing to gain, so the established eager
+%equality path stays untouched. A fun-headed or compiler-form subterm also
+%stays eager: case elaboration would be a different operation from evaluating
+%it as an equality operand. `==` is deliberately absent because it tests
+%identity without binding.
+rewrite_streamops([If, [Eq, V, Pattern], Then, Else],
+                  [case, V, [[Pattern, Then], [Fallthrough, NarrowElse]]]) :-
+    If == if,
+    Eq == (=),
+    var(V),
+    nonvar(Pattern),
+    known_singleton(V, UnionT),
+    is_union(UnionT),
+    literal_case_unification_pattern(Pattern), !,
+    substitute_source_var(Else, V, Fallthrough, NarrowElse).
 %Only the one-argument standard-library resolver is curated. Two-argument
 %library paths can come from git-import!, and ordinary file imports remain
 %user-origin.
@@ -475,6 +505,33 @@ rewrite_streamops(X, X).
 %Guarded stream ops rewrite rule application, successfully avoiding copy_term:
 safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewrite_streamops(In, Out)
                                                                           ; Out = In).
+
+literal_case_unification_pattern(Pattern) :-
+    ( var(Pattern) ; atomic(Pattern) ), !.
+literal_case_unification_pattern([C, H, T]) :-
+    C == cons, !,
+    literal_case_unification_pattern(H),
+    literal_case_unification_pattern(T).
+literal_case_unification_pattern(Pattern) :-
+    Pattern = [H|T],
+    \+ ( atom(H), special_builtin_form(H, T, _) ),
+    \+ functional_pattern_application(Pattern, _, _),
+    maplist(literal_case_unification_pattern, Pattern).
+
+%Identity-preserving substitution for the equality-if fallthrough. The fresh
+%case binder denotes the same runtime value as V, but unlike V it can carry
+%the case branch's reduced union without retaining V's whole-union attribute.
+substitute_source_var(Term, Old, New, Out) :-
+    ( var(Term)
+      -> ( Term == Old -> Out = New ; Out = Term )
+    ; atomic(Term)
+      -> Out = Term
+    ; compound_name_arguments(Term, F, Args),
+      maplist(substitute_source_var_(Old, New), Args, OutArgs),
+      compound_name_arguments(Out, F, OutArgs) ).
+
+substitute_source_var_(Old, New, Term, Out) :-
+    substitute_source_var(Term, Old, New, Out).
 
 %Only literal, declared source-space names opt in. Raw space payloads and
 %patterns are never evaluated here: reject a definite contradiction, trust
@@ -950,8 +1007,9 @@ translate_expr([H0|T0], Expectation, Goals, Out) :-
                                       ; append(GsH, [eval(Arg, Out)], Goals) )
         %Erased branding of a semantic role: knowledge only, no runtime goal:
         ; special_builtin_form(HV, T, brand), T = [TypeExpr, Expr]
-          -> translate_expr(Expr, GsE, Out0),
-                                               normalize_type(TypeExpr, TN),
+          -> normalize_type(TypeExpr, TN),
+                                               brand_payload_expectation(TN, PayloadExpectation),
+                                               translate_expr(Expr, PayloadExpectation, GsE, Out0),
                                                brand_type(Out0, TN),
                                                ( nonvar(Out0)               %a branded literal keeps its brand
                                                  -> add_known_type(Out, TN),
