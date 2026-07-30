@@ -27,9 +27,10 @@ head_arg_soft(A, T) :- ( var(A) -> true
                        ; check_value(A, T, St) -> St \== mismatch
                        ; true ).
 
-bind_param_type(Arg, T) :- ( nonvar(Arg), Arg = [At, Whole, Inner], At == '@'
-                           -> bind_param_type(Whole, T),
-                              bind_param_type(Inner, T)
+bind_param_type(Arg, T) :- ( functional_pattern_application(Arg, _, _)
+                           -> ( functional_pattern_signature(Arg, T, PatternArgs, ArgTypes)
+                                -> maplist(bind_param_type, PatternArgs, ArgTypes)
+                              ; true )
                            ; var(Arg) -> ( nonvar(T) -> ( \+ wildcard_type_t(T) -> add_known_type(Arg, T)
                                                                                   ; true )
                                            %a variable type is the declaration instance: recording it
@@ -48,6 +49,62 @@ bind_param_type(Arg, T) :- ( nonvar(Arg), Arg = [At, Whole, Inner], At == '@'
                            ; check_value(Arg, T, St),
                              ( St == mismatch -> throw(error(literal_type_mismatch(Arg, T), typecheck))
                                                ; true ) ).
+
+%Resolve a registered function-headed pattern from one fresh declaration
+%instance.  Its result is the value occupying the surrounding pattern slot;
+%unifying that result with the slot type instantiates any shared declaration
+%variables before its argument patterns are bound.
+functional_pattern_signature(Pattern, Expected, Args, ArgTypes) :-
+    functional_pattern_application(Pattern, F, Args),
+    length(Args, N),
+    findall(sig(ATs0, OT0), fn_decl_arity(F, N, ATs0, OT0),
+            [sig(ArgTypes, OutType)]),
+    type_unify(OutType, Expected),
+    refine_functional_pattern_aliases(F, N, Expected, ArgTypes).
+
+%A relational function may make an otherwise independent input equal to its
+%result on every successful clause.  This is ordinary source semantics, not a
+%named as-pattern rule: a direct returned parameter and variable-to-variable
+%let/chain unifications form a small alias graph.  Intersecting the positions
+%over every clause is conservative; an unrecognized body contributes no
+%aliases.  The clause-set dependency keeps later function mutation honest.
+refine_functional_pattern_aliases(F, N, Expected, ArgTypes) :-
+    functional_output_alias_positions(F, N, Positions),
+    Positions \== [], !,
+    analysis_emit(dependency(clause_set(F/N))),
+    refine_alias_arg_types(Positions, ArgTypes, Expected).
+refine_functional_pattern_aliases(_, _, _, _).
+
+refine_alias_arg_types([], _, _).
+refine_alias_arg_types([I|Is], ArgTypes, Expected) :-
+    nth0(I, ArgTypes, ArgType),
+    type_unify(ArgType, Expected),
+    refine_alias_arg_types(Is, ArgTypes, Expected).
+
+functional_output_alias_positions(F, N, Positions) :-
+    findall(source(Args, Body),
+            ( translated_from(_, [=, [F|Args], Body]),
+              length(Args, N) ),
+            Sources),
+    Sources \== [],
+    maplist(source_clause_output_aliases, Sources, PerClause),
+    PerClause = [First|Rest],
+    foldl(intersection, Rest, First, Positions).
+
+source_clause_output_aliases(source(Args0, Body0), Positions) :-
+    copy_term_nat(Args0-Body0, Args-Body),
+    ( source_success_result_alias(Body, Result)
+      -> findall(I,
+                 ( nth0(I, Args, Arg), var(Arg), Arg == Result ),
+                 Positions)
+    ; Positions = [] ).
+
+source_success_result_alias(Body, Body) :- var(Body), !.
+source_success_result_alias([Kind, Pattern, Value, In], Result) :-
+    ( Kind == let ; Kind == chain ),
+    var(Pattern), var(Value), !,
+    Pattern = Value,
+    source_success_result_alias(In, Result).
 
 %Which union member does a pattern's shape select?
 pattern_selects_member(P, M) :- nonvar(M), nonvar(P),
@@ -211,9 +268,10 @@ bind_pattern_typed(P, T) :- bind_pattern_typed(P, T, []).
 %patterns recurse with [], since what an earlier branch matched at the top says
 %nothing about a nested field.
 bind_pattern_typed(P, T, Prior) :-
-                            ( nonvar(P), P = [At, Whole, Inner], At == '@'
-                              -> bind_pattern_typed(Whole, T, Prior),
-                                 bind_pattern_typed(Inner, T, Prior)
+                            ( functional_pattern_application(P, _, _)
+                              -> ( functional_pattern_signature(P, T, PatternArgs, ArgTypes)
+                                   -> maplist(bind_pattern_typed, PatternArgs, ArgTypes)
+                                 ; true )
                             ; var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
                             ; is_union(T), T = ['|'|Ms]        %a pattern narrows to the member it selects
                               -> ( findall(M, ( member(M, Ms), pattern_selects_member(P, M) ), [M1]),
@@ -467,10 +525,10 @@ quoted_param_pairs([Arg|Args], [Type|Types], Pairs) :-
 quoted_pattern_param_pairs(Arg, Type, [param(Arg, Type)]) :-
     var(Arg), !.
 quoted_pattern_param_pairs(Arg, Type, Pairs) :-
-    nonvar(Arg), Arg = [At, Whole, Inner], At == '@', !,
-    quoted_pattern_param_pairs(Whole, Type, A),
-    quoted_pattern_param_pairs(Inner, Type, B),
-    append(A, B, Pairs).
+    functional_pattern_application(Arg, _, _), !,
+    ( functional_pattern_signature(Arg, Type, PatternArgs, ArgTypes)
+      -> quoted_param_pairs(PatternArgs, ArgTypes, Pairs)
+    ; Pairs = [] ).
 quoted_pattern_param_pairs(Arg, Type, Pairs) :-
     list_type(Type, ET), transformed_cons_pattern(Arg, Head, Tail), !,
     quoted_pattern_param_pairs(Head, ET, A),

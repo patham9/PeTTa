@@ -570,10 +570,9 @@ scoped_proper_list_var(V) :-
 %read off Val's declared tuple output type. Non-arrow, non-wildcard only: an
 %arrow or Atom field could legitimately carry a function, so it stays unknown.
 bind_destructured_field_types(Pat, Val) :-
-    nonvar(Pat), Pat = [At, Whole, Inner], At == '@', !,
+    functional_pattern_application(Pat, _, _), !,
     call_output_type(Val, OT),
-    bind_det_pattern_type(Whole, OT),
-    bind_det_pattern_type(Inner, OT).
+    bind_pattern_typed(Pat, OT).
 bind_destructured_field_types(Pat, Val) :-
     is_list(Pat), Pat = [_|_],
     call_output_type(Val, OT),
@@ -582,9 +581,8 @@ bind_destructured_field_types(Pat, Val) :-
 
 bind_det_pattern_type(P, T) :- ( var(P), nonvar(T), \+ is_arrow_type(T), \+ wildcard_type_t(T)
                                  -> add_known_type(P, T)
-                                ; nonvar(P), P = [At, Whole, Inner], At == '@'
-                                  -> bind_det_pattern_type(Whole, T),
-                                     bind_det_pattern_type(Inner, T)
+                                ; functional_pattern_application(P, _, _)
+                                  -> bind_pattern_typed(P, T)
                                 ; is_list(P), is_list(T), same_length(P, T),
                                   \+ is_arrow_type(T)
                                   -> bind_pat_field_types(P, T)

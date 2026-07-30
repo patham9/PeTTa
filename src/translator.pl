@@ -18,12 +18,19 @@ constrain_args([F, A, B], Out, Goals) :- nonvar(F),
                                          constrain_args(B, B1, G2),
                                          Out = [A1|B1],
                                          append(G1, G2, Goals), !.
-constrain_args([F|Args], Var, Goals) :- atom(F),
-                                        fun(F), !,
+constrain_args(Pattern, Var, Goals) :-
+                                        functional_pattern_application(Pattern, F, Args), !,
                                         translate_expr([F|Args], GoalsExpr, Var),
                                         flatten(GoalsExpr, Goals).
 constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsList),
                                   flatten(NestedGoalsList, Goals), !.
+
+%The single definition of a functional pattern position.  It deliberately
+%matches constrain_args/3's dispatch boundary: registered functions elaborate
+%to calls, while source cons and declaration-only constructors remain literal
+%pattern structure.
+functional_pattern_application([F|Args], F, Args) :-
+    atom(F), F \== cons, fun(F).
 
 %Flatten (= Head Body) MeTTa function into a Prolog clause.  The four-argument
 %boundary returns the dependencies observed by all nested analyses; assertion
@@ -492,17 +499,66 @@ bind_typed_space_pattern(Space, Pattern) :-
          ; bind_pattern_typed(Pattern, RowT, []) )
     ; true ).
 
+%Functional elaboration belongs to schema-aware space patterns.  Untyped
+%spaces (especially &self) are also used to inspect source atoms such as
+%(= (f ...) ...); interpreting their registered heads as calls would destroy
+%that quoted-data behavior.
+elaborate_typed_space_pattern(Space, Pattern, RuntimePattern, Goals) :-
+    atom(Space), declared_space_type(Space, _), !,
+    constrain_typed_space_args(Pattern, RuntimePattern, Goals).
+elaborate_typed_space_pattern(_, Pattern, Pattern, []).
+
+%A schema-backed functional pattern is an exact-one inverse constraint.
+%Registered nondet functions can also occur as literal payload tags (the
+%chainer's cpu-call truth-value marker is the motivating real program), and
+%executing them here would change data inspection into enumeration.  Require
+%one unique declared det arrow; the rule is effect-generic and gives @ no
+%privilege over any other det relation.
+constrain_typed_space_args(X, X, []) :- (var(X); atomic(X)), !.
+constrain_typed_space_args([F, A, B], Out, Goals) :-
+    nonvar(F), F == cons, !,
+    constrain_typed_space_args(A, A1, G1),
+    constrain_typed_space_args(B, B1, G2),
+    Out = [A1|B1],
+    append(G1, G2, Goals).
+constrain_typed_space_args(Pattern, Var, Goals) :-
+    functional_pattern_application(Pattern, F, Args),
+    length(Args, N),
+    findall(Det,
+            ( declared_fn_type(F, ArgTypes, _, Det),
+              length(ArgTypes, N) ),
+            [det]), !,
+    translate_expr([F|Args], GoalsExpr, Var),
+    flatten(GoalsExpr, Goals).
+constrain_typed_space_args(In, Out, Goals) :-
+    maplist(constrain_typed_space_args, In, Out, NestedGoalsList),
+    flatten(NestedGoalsList, Goals), !.
+
 %Pattern-only wrappers are not literal row structure. Strip them (recursively,
 %so annotated fields remain unknown) before asking the ordinary value checker
 %whether the remaining tags, arities, and literals make a match impossible.
 typed_space_pattern_mismatch(Pattern, RowT) :-
+    functional_pattern_application(Pattern, _, _), !,
+    ( functional_pattern_signature(Pattern, RowT, PatternArgs, ArgTypes)
+      -> typed_space_function_args_mismatch(PatternArgs, ArgTypes)
+    ; fail ).
+typed_space_pattern_mismatch(Pattern, RowT) :-
     pattern_value_shape(Pattern, Shape),
     value_definitely_mismatch(Shape, RowT).
 
+typed_space_function_args_mismatch([Arg|Args], [Type|Types]) :-
+    ( typed_space_pattern_mismatch(Arg, Type)
+    ; typed_space_function_args_mismatch(Args, Types) ).
+
 pattern_value_shape(P, P) :- var(P), !.
-pattern_value_shape([At, _Whole, Inner], Shape) :- At == '@', !,
-                                                   pattern_value_shape(Inner, Shape).
 pattern_value_shape([C, V, _Ty], V) :- C == (:), !.
+pattern_value_shape([C, H, T], [C, HS, TS]) :- C == cons, !,
+                                               pattern_value_shape(H, HS),
+                                               pattern_value_shape(T, TS).
+%A function application does not survive as literal runtime pattern
+%structure: constrain_args/3 replaces the whole position by its output
+%variable.  Prevalidation therefore treats that position as unknown.
+pattern_value_shape(P, _) :- functional_pattern_application(P, _, _), !.
 pattern_value_shape(P, Shape) :- is_list(P), !, maplist(pattern_value_shape, P, Shape).
 pattern_value_shape(P, P).
 
@@ -831,9 +887,22 @@ translate_expr([H0|T0], Expectation, Goals, Out) :-
           T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      type_match_pattern(Pattern),
                                                      bind_typed_space_pattern(Space, Pattern),
+                                                     elaborate_typed_space_pattern(
+                                                         Space, Pattern,
+                                                         RuntimePattern,
+                                                         PatternGoals),
                                                      translate_expr(Body, Expectation, GsB, Out),
-                                                     append(G1, [match(S, Pattern, Out, Out)], G2),
-                                                     append(G2, GsB, Goals)
+                                                     %The match binds every
+                                                     %elaborated output first;
+                                                     %functional constraints
+                                                     %then run on those bound
+                                                     %values before the body.
+                                                     append([GsH, G1,
+                                                             [match(S, RuntimePattern,
+                                                                    Out, Out)],
+                                                             PatternGoals,
+                                                             GsB],
+                                                            Goals)
         %--- Predicate to compiled goal ---:
         ; special_builtin_form(HV, T, translate_predicate), T = [Expr]
           -> Expr = [S|Args],
