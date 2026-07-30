@@ -41,10 +41,14 @@ fn_decl_locations(F, N, Locations) :-
             Locations0),
     sort(Locations0, Locations).
 
-validate_function_determinism(F, Args, BodyExpr, PrevClauses) :-
+validate_function_determinism(F, Args, BodyExpr, PrevClauses, HeadForm) :-
     length(Args, N),
     fn_determinism(F, N, Det),
-    ( committed_det(Det) -> det_enforced_flag(F, N, Enf),
+    ( committed_det(Det) -> ( HeadForm == head_goals
+                              -> throw(error(det_functional_head_commitment(F, Args),
+                                             determinism))
+                            ; true ),
+                            det_enforced_flag(F, N, Enf),
                             with_det_enforced(Enf,
                                 with_det_head_vars(Args, BodyExpr, ensure_deterministic_expr(Det, BodyExpr, F))),
                             ensure_non_overlapping_clause_heads(F, Args, PrevClauses)

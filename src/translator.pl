@@ -102,7 +102,8 @@ translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %Determinism runs after param binding so closure params carry their
                                                %declared arrow types into the body analysis.
                                                ( ConstrainArgs == false -> true
-                                                                         ; validate_function_determinism(F, Args1, BodyExpr, Prev) ),
+                                                                         ; validate_function_determinism(F, Args1, BodyExpr,
+                                                                                                         Prev, HeadForm) ),
                                                %A function whose declaration carries an EXPLICIT -[det]->/-[semidet]->
                                                %arrow promises, in EVERY mode, that it is called with bound arguments -
                                                %but only for the parameters its determinism proof CONSUMED. Emit those
@@ -133,7 +134,8 @@ translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                  %clause. Skipping it let the specializer DROP a guard the
                                                  %general clause was compiled with, which is the one outcome
                                                  %that is not sound:
-                                                 clause_output_goals(F, DeclOut, ExpOut, BodyExpr, OutChecks0),
+                                                 clause_output_goals(F, DeclOut, Args1, ExpOut,
+                                                                     BodyExpr, OutChecks0),
                                                  oracle_output_check(DeclOut, Out, OutChecks0, OutChecks) ),
                                                ( ConstrainArgs == false -> true
                                                                          ; strict_check_function_typed(F, Args1) ),

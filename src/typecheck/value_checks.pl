@@ -370,7 +370,9 @@ type_guard(Fun, AV, T, Gs) :- ( nonvar(T), \+ wildcard_type_t(T)
                                      -> throw(error(determinism_conflict(Fun, unproven_closure(AV, T)), determinism))
                                    ; strict_mode(true),
                                      open_nominal_intersection_obligation(AV, T)
-                                     -> guard_goal(AV, T, G), Gs = [G]
+                                     -> open_nominal_intersection_types(AV, Types),
+                                        throw(error(strict_nominal_intersection(Fun, Types),
+                                                    typecheck))
                                    ; strict_mode(true)
                                      -> throw(error(strict_runtime_typecheck(Fun, typecheck_or_error(AV, T)), typecheck))
                                    ; trusted_guard_waiver(Fun)
@@ -442,6 +444,11 @@ open_nominal_intersection_obligation(V, T) :-
     catch(b_getval('$open_nominal_intersections', Obligations), _, fail),
     member(obligation(V0, T0), Obligations),
     V0 == V, T0 == T, !.
+
+open_nominal_intersection_types(V, Types) :-
+    catch(b_getval('$open_nominal_intersections', Obligations), _, fail),
+    findall(T, (member(obligation(V0, T), Obligations), V0 == V), Ts0),
+    sort(Ts0, Types).
 
 %The ordinary interface remains goal-only. The status-bearing form is used by
 %trusted library calls: suppressing a guard is allowed there, but it is not
@@ -552,11 +559,8 @@ runtime_tuple_ok([F|Fs], [T|Ts]) :- ( var(F) -> constrain_var_type(F, T) ; runti
                                     runtime_tuple_ok(Fs, Ts).
 
 constrain_var_type(V, T) :- ( get_attr(V, mreq, Rs)
-                              -> ( member(R, Rs), \+ type_compat_soft(R, T) -> fail
-                                 %ground duplicates add nothing; nonground variants are NOT
-                                 %duplicates - their type vars can be bound independently:
-                                 ; ground(T), memberchk(T, Rs) -> true
-                                 ; put_attr(V, mreq, [T|Rs]) )
+                              -> variant_union([T], Rs, U),
+                                 put_attr(V, mreq, U)
                                ; put_attr(V, mreq, [T]) ).
 
 value_definitely_mismatch(V, T) :- copy_term(T, T2), check_value(V, T2, St), !, St == mismatch.

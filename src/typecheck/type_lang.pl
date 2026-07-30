@@ -111,9 +111,7 @@ tknown:attr_unify_hook(Cs, Other) :-
                   ; true ).
 
 mreq:attr_unify_hook(Rs, Other) :-
-    ( var(Other) -> ( get_attr(Other, mreq, R2) -> forall(member(A, Rs),
-                                                          forall(member(B, R2), type_compat_soft(A, B))),
-                                                   variant_union(Rs, R2, U),
+    ( var(Other) -> ( get_attr(Other, mreq, R2) -> variant_union(Rs, R2, U),
                                                    put_attr(Other, mreq, U)
                                                  ; put_attr(Other, mreq, Rs) )
                   ; forall(member(R, Rs), typecheck_or_error(Other, R)) ).

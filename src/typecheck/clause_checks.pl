@@ -330,13 +330,23 @@ prior_consumed_ctor(Prior, Ctor, K) :-
     !.
 
 %Check the clause body's inferred output type against the declared output type:
-clause_output_goals(_, none, _, _, []) :- !.
-clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
+clause_output_goals(_, none, _, _, _, []) :- !.
+clause_output_goals(F, out(OT, ATs), Args, ExpOut, BodyExpr, Gs) :-
         ( var(OT) -> ( term_variables(ATs, Vs), \+ memberchk_eq(OT, Vs)
                        -> parametric_output_check(F, ExpOut) ; true ),
                      Gs = []
         ; wildcard_type_t(OT) -> Gs = []
-        ; nonvar(BodyExpr), BodyExpr = [Q, QV], Q == quote, \+ atomic(QV) -> Gs = []
+        ; nonvar(BodyExpr), BodyExpr = [Q, QV], Q == quote, \+ atomic(QV)
+          -> with_quoted_declared_params(
+                 Args, ATs,
+                 quoted_compound_output_status(QV, OT, QuoteStatus)),
+             ( QuoteStatus == ok
+               -> Gs = []
+             ; QuoteStatus == unknown
+               -> type_guard(F, ExpOut, OT, Gs)
+             ; quoted_structural_type(QV, Structural),
+               throw(error(type_conflict(existing(Structural), required(OT)),
+                           typecheck)) )
         ; var(ExpOut) ->
             ( known_candidates(ExpOut, Cs) ->
                 ( member(C, Cs), output_candidate_conflict(C, OT, Bad)
@@ -349,6 +359,131 @@ clause_output_goals(F, out(OT, ATs), ExpOut, BodyExpr, Gs) :-
           ( St == mismatch -> throw(error(literal_type_mismatch(ExpOut, OT), typecheck))
           ; St == unknown -> type_guard(F, ExpOut, OT, Gs)
           ; Gs = [] ) ).
+
+%A quoted compound is unevaluated, but its runtime value still has structural
+%shape. Check that shape directly instead of asking value_candidate_types/2,
+%which would interpret an atom-headed term such as (+ 1 2) as a CALL and
+%inherit Number from +. Expression remains the unconstrained supertype.
+quoted_compound_output_status(Value, Required, Status) :-
+    quoted_structural_value_status(Value, Required, Status).
+
+quoted_structural_value_status(Value, T, Status) :-
+    var(Value), !,
+    ( ( known_singleton(Value, Known)
+      ; quoted_declared_var_type(Value, Known) )
+      -> ( type_compat_soft(Known, T) -> Status = ok
+         ; Status = mismatch )
+    ; Status = unknown ).
+quoted_structural_value_status(_, T, ok) :-
+    wildcard_type_t(T), !.
+quoted_structural_value_status(Value, T, Status) :-
+    is_union(T), !, T = ['|'|Members],
+    quoted_union_status(Value, Members, Status).
+quoted_structural_value_status(Value, T, Status) :-
+    tagged_tuple_type(T, Tag, FieldTs), !,
+    ( is_list(Value), Value = [ValueTag|Fields],
+      ValueTag == Tag, same_length(Fields, FieldTs)
+      -> quoted_fields_status(Fields, FieldTs, Status)
+    ; Status = mismatch ).
+quoted_structural_value_status(Value, T, Status) :-
+    contextual_product_type(T), !,
+    ( is_list(Value), same_length(Value, T)
+      -> quoted_fields_status(Value, T, Status)
+    ; Status = mismatch ).
+quoted_structural_value_status(Value, T, Status) :-
+    atom(T), declared_newtype(T, Representation), !,
+    quoted_structural_value_status(Value, Representation, Status).
+quoted_structural_value_status(Value, T, Status) :-
+    atom(T), \+ primitive_type(T), \+ wildcard_type_t(T),
+    structural_pattern_fields(Value, T, Fields, FieldTs), !,
+    quoted_fields_status(Fields, FieldTs, Status).
+quoted_structural_value_status(Value, T, Status) :-
+    ( var(Value) -> elem_status(Value, T, Status)
+    ; atomic(Value) -> check_value(Value, T, Status)
+    ; Status = mismatch ).
+
+quoted_union_status(_, [], mismatch).
+quoted_union_status(Value, [Member|Members], Status) :-
+    quoted_structural_value_status(Value, Member, First),
+    ( First == ok -> Status = ok
+    ; quoted_union_status(Value, Members, Rest),
+      ( Rest == ok -> Status = ok
+      ; First == unknown -> Status = unknown
+      ; Status = Rest ) ).
+
+quoted_fields_status([], [], ok).
+quoted_fields_status([Value|Values], [Type|Types], Status) :-
+    quoted_structural_value_status(Value, Type, First),
+    ( First == mismatch -> Status = mismatch
+    ; quoted_fields_status(Values, Types, Rest),
+      ( Rest == mismatch -> Status = mismatch
+      ; First == unknown -> Status = unknown
+      ; Status = Rest ) ).
+
+%Diagnostic-only structural type. Unknown fields stay visibly unknown rather
+%than becoming unification variables that could look like positive evidence.
+quoted_structural_type(Value, Type) :-
+    var(Value), !,
+    ( known_singleton(Value, Known) -> Type = Known
+    ; Type = '$unknown' ).
+quoted_structural_type(Value, 'Number') :- number(Value), !.
+quoted_structural_type(Value, 'String') :- string(Value), !.
+quoted_structural_type(true, 'Bool') :- !.
+quoted_structural_type(false, 'Bool') :- !.
+quoted_structural_type(Value, Type) :-
+    atom(Value), !,
+    findall(T, declared_value_type(Value, T), Types),
+    ( Types = [Only] -> Type = Only ; Type = 'Atom' ).
+quoted_structural_type(Value, Type) :-
+    is_list(Value), !,
+    maplist(quoted_structural_type, Value, Type).
+quoted_structural_type(_, 'Expression').
+
+%Atom/Expression parameters intentionally carry no tknown attribute because
+%they are checker wildcards. Inside a quote, however, the declaration is
+%positive structural information: the runtime slot contains that parameter
+%value literally. Publish the declaration mapping only for this output check,
+%without changing the variables' ordinary checker attributes.
+with_quoted_declared_params(Args, Types, Goal) :-
+    quoted_param_pairs(Args, Types, Pairs),
+    ( catch(b_getval('$quoted_declared_params', Saved), _, fail) -> true
+    ; Saved = [] ),
+    setup_call_cleanup(
+        b_setval('$quoted_declared_params', Pairs),
+        Goal,
+        b_setval('$quoted_declared_params', Saved)).
+
+quoted_declared_var_type(Value, Type) :-
+    catch(b_getval('$quoted_declared_params', Pairs), _, fail),
+    member(param(Param, Type), Pairs),
+    Param == Value, !.
+
+quoted_param_pairs([], [], []).
+quoted_param_pairs([Arg|Args], [Type|Types], Pairs) :-
+    quoted_pattern_param_pairs(Arg, Type, Here),
+    quoted_param_pairs(Args, Types, Rest),
+    append(Here, Rest, Pairs).
+
+quoted_pattern_param_pairs(Arg, Type, [param(Arg, Type)]) :-
+    var(Arg), !.
+quoted_pattern_param_pairs(Arg, Type, Pairs) :-
+    nonvar(Arg), Arg = [At, Whole, Inner], At == '@', !,
+    quoted_pattern_param_pairs(Whole, Type, A),
+    quoted_pattern_param_pairs(Inner, Type, B),
+    append(A, B, Pairs).
+quoted_pattern_param_pairs(Arg, Type, Pairs) :-
+    list_type(Type, ET), transformed_cons_pattern(Arg, Head, Tail), !,
+    quoted_pattern_param_pairs(Head, ET, A),
+    quoted_pattern_param_pairs(Tail, ['List', ET], B),
+    append(A, B, Pairs).
+quoted_pattern_param_pairs(Arg, Type, Pairs) :-
+    structural_pattern_fields(Arg, Type, Fields, FieldTypes), !,
+    quoted_param_pairs(Fields, FieldTypes, Pairs).
+quoted_pattern_param_pairs(Arg, Type, Pairs) :-
+    is_list(Arg), is_list(Type), same_length(Arg, Type),
+    \+ is_arrow_type(Type), !,
+    quoted_param_pairs(Arg, Type, Pairs).
+quoted_pattern_param_pairs(_, _, []).
 
 output_candidate_fits(C, OT) :-
     candidate_evidence(C, literal(V)), !,

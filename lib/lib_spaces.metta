@@ -12,7 +12,9 @@
           (Empty False))))
 
 ;Check whether a predicate succeeds
-(: succeedsPredicate (-[det]-> Expression Bool))
+; This is a translator hook: its executable clause returns quoted source code.
+; Calls are expanded and receive the expansion's Bool result type.
+(: succeedsPredicate (-[det]-> Expression Expression))
 (= (succeedsPredicate $pattern)
    (quote (case (translatePredicate (catch (Predicate $pattern) $_ fail))
                 (($item True)

@@ -450,8 +450,106 @@ let_determinism(Pat, Val, In, Result) :-
         with_scoped_proper_list_var(
             ProperListVar,
             deterministic_expr_core(InC, RIn)),
+        let_pattern_match_result(Pat, Val, RMatch),
         combine_det_results(RVal, RIn, RVI),
-        combine_det_results(R0, RVI, Result) ) ).
+        combine_det_results(RMatch, RVI, RVIM),
+        combine_det_results(R0, RVIM, Result) ) ).
+
+%Translation places Pattern = Value before the value's goals.  That generated
+%unification is a real zero-result path unless the source value or its declared
+%product shape entails the pattern.  Fresh-variable destructuring of a
+%matching product is the important positive case; literals and constructor
+%tests remain fallible unless the value is visibly the same structure.
+let_pattern_match_result(Pat, Val, ok) :-
+    let_pattern_entailed(Pat, Val), !.
+%A cut in the value position has an established conditional-selection proof:
+%the generated unification either fails before the cut (so later clauses stay
+%reachable), or succeeds and the cut commits before producing a result.
+%body_conditionally_commits/1 is the matching clause-set side of this rule;
+%this is deliberately not a general exemption for let patterns.
+let_pattern_match_result(_, Val, ok) :-
+    nonvar(Val), Val = [Cut], Cut == cut, !.
+let_pattern_match_result(Pat, _, may_fail(let_pattern(Pat))).
+
+let_pattern_entailed(Pat, _) :- var(Pat), !.
+let_pattern_entailed(Pat, Val) :-
+    manifest_pattern_match(Pat, Val), !.
+%A higher-order call can instantiate a parametric result through its closure
+%argument before translation assigns the call output.  Consume that same
+%closure-first declaration resolution here, but only for the failure-free
+%case: a nonempty positional product destructured into distinct variables.
+%Literal/constructor fields and repeated variables still add a real
+%unification-failure path and therefore use the ordinary entailment rules.
+let_pattern_entailed(Pat, Val) :-
+    resolved_call_output_type(Val, T),
+    fresh_variable_product_pattern(Pat, T), !.
+let_pattern_entailed(Pat, Val) :-
+    call_output_type(Val, T),
+    pattern_entailed_by_type(Pat, T).
+
+resolved_call_output_type([F|Args], OT) :-
+    atom(F), length(Args, N),
+    findall(call(ATs0, OT0),
+            fn_decl_arity(F, N, ATs0, OT0),
+            [call(ATs, OT)]),
+    %The translator processes closure positions before contextual/product
+    %positions so shared declaration variables acquire their call-specific
+    %instantiation.  -1 means no argument is being skipped as a staged binder.
+    resolve_source_arrow_args(Args, ATs, -1),
+    nonvar(OT).
+
+fresh_variable_product_pattern(Pat, T) :-
+    is_list(Pat), Pat = [_|_],
+    contextual_product_type(T),
+    same_length(Pat, T),
+    maplist(var, Pat),
+    pairwise_distinct_vars(Pat).
+
+pairwise_distinct_vars([]).
+pairwise_distinct_vars([V|Vs]) :-
+    \+ ( member(W, Vs), V == W ),
+    pairwise_distinct_vars(Vs).
+
+manifest_pattern_match(Pat, Val) :-
+    atomic(Pat), atomic(Val), Pat == Val, !.
+manifest_pattern_match(Pat, Val) :-
+    is_list(Pat), is_list(Val),
+    same_length(Pat, Val),
+    maplist(manifest_pattern_field, Pat, Val).
+
+manifest_pattern_field(P, _) :- var(P), !.
+manifest_pattern_field(P, V) :- manifest_pattern_match(P, V).
+
+pattern_entailed_by_type(Pat, _) :- var(Pat), !.
+pattern_entailed_by_type(Pat, T) :-
+    tagged_tuple_type(T, Tag, FieldTypes), !,
+    is_list(Pat), Pat = [PatternTag|Fields],
+    PatternTag == Tag,
+    same_length(Fields, FieldTypes),
+    maplist(pattern_entailed_by_type, Fields, FieldTypes).
+pattern_entailed_by_type(Pat, T) :-
+    is_list(Pat), contextual_product_type(T),
+    same_length(Pat, T),
+    maplist(pattern_entailed_by_type, Pat, T).
+%A nominal value is guaranteed to match a constructor pattern only while that
+%constructor is the type's sole inhabitant shape and there are no declared
+%bare constants. The ctor_set dependency makes this snapshot honest when a
+%later declaration adds another constructor.
+pattern_entailed_by_type(Pat, T) :-
+    atom(T), \+ primitive_type(T), \+ wildcard_type_t(T),
+    analysis_emit(dependency(ctor_set(T))),
+    findall(Ctor-Arity, member_ctor(T, Arity, Ctor), Keys0),
+    sort(Keys0, [Ctor-Arity]),
+    \+ ( declared_value_type(Value, ValueType),
+         atom(Value), \+ fun(Value), ValueType == T ),
+    is_list(Pat), Pat = [PatternCtor|Fields],
+    PatternCtor == Ctor,
+    length(Fields, Arity),
+    findall(FieldTypes,
+            ( fn_decl_arity(Ctor, Arity, FieldTypes, OutType),
+              type_compat_soft(OutType, T) ),
+            [OnlyFieldTypes]),
+    maplist(pattern_entailed_by_type, Fields, OnlyFieldTypes).
 
 with_scoped_proper_list_var(none, Goal) :- !, call(Goal).
 with_scoped_proper_list_var(proper(V), Goal) :-

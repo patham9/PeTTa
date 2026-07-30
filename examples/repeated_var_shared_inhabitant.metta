@@ -1,3 +1,5 @@
+; Open nominal types can overlap. In default mode the repeated argument keeps
+; both deferred requirements, and the shared inhabitant satisfies both.
 (: shared A)
 (: shared B)
 

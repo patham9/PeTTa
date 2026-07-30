@@ -17,6 +17,7 @@
 :- dynamic declared_type_alias/2.   % declared_type_alias(Name, Representation)
 :- dynamic declared_foreign_type/2. % declared_foreign_type(Name, Arity)
 :- dynamic declared_space_type/2.   % declared_space_type(Name, RowType)
+:- discontiguous maybe_cache_type_decl/2.
 
 %%% Canonical function-declaration record.
 %
@@ -135,7 +136,11 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %runtime; the brand lives purely in the checker.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [NT, R]],
                                       C == (:), atom(Name), NT == 'Newtype', !,
+                                      with_decl_transaction(Name,
+                                          cache_newtype_decl(Name, R)).
+cache_newtype_decl(Name, R) :-
                                       prepare_decl_origin(Name, [NT, R], _),
+                                      NT = 'Newtype',
                                       normalize_type(R, RN),
                                       ( declared_newtype(Name, R2)
                                         -> ( R2 =@= RN -> true
@@ -164,7 +169,11 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %declarations below.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [A, R]],
                                       C == (:), atom(Name), A == 'Alias', !,
+                                      with_decl_transaction(Name,
+                                          cache_alias_decl(Name, R)).
+cache_alias_decl(Name, R) :-
                                       prepare_decl_origin(Name, [A, R], _),
+                                      A = 'Alias',
                                       normalize_type(R, RN),
                                       ( declared_type_alias(Name, R2)
                                         -> ( R2 =@= RN -> true
@@ -193,7 +202,11 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [F|Spec]],
                                       C == (:), atom(Name), F == 'Foreign',
                                       ( Spec == [] -> Arity = 0
-                                      ; Spec = [Arity], integer(Arity), Arity > 0 ), !,
+                                       ; Spec = [Arity], integer(Arity), Arity > 0 ), !,
+                                      with_decl_transaction(Name,
+                                          cache_foreign_decl(Name, Spec, Arity)).
+cache_foreign_decl(Name, Spec, Arity) :-
+                                      F = 'Foreign',
                                       prepare_decl_origin(Name, [F|Spec], _),
                                       ( declared_foreign_type(Name, A2)
                                         -> ( A2 == Arity -> true
@@ -220,6 +233,10 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
 %like Newtype/Alias/Foreign, this declaration is source-ordered, not hoisted.
 maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C, Name, [SO, R]],
                                       C == (:), atom(Name), SO == 'SpaceOf', !,
+                                      with_decl_transaction(Name,
+                                          cache_space_decl(Name, R)).
+cache_space_decl(Name, R) :-
+                                      SO = 'SpaceOf',
                                       prepare_decl_origin(Name, [SO, R], _),
                                       normalize_type(R, RN),
                                       ( declared_space_type(Name, R2)
@@ -239,7 +256,8 @@ maybe_cache_type_decl(Space, Term) :- Space == '&self', is_list(Term), Term = [C
                                         -> format(user_error,
                                                   "Warning: space type declaration for ~w ignored: name is already a Foreign type~n",
                                                   [Name])
-                                      ; assertz(declared_space_type(Name, RN)),
+                                      ; validate_existing_space_rows(Name, RN),
+                                        assertz(declared_space_type(Name, RN)),
                                         decl_notify(declaration_changed(space, Name,
                                                                          added)) ).
 maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = [C, Name, Type],
@@ -253,15 +271,36 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
                                                        current_fn_decl_provenance(Type, Provenance),
                                                        cache_fn_type_decl(Name, Type, ATs, OT, Det,
                                                                           Origin, Provenance) ))
-                                              ; prepare_decl_origin(Name, Type, Origin),
-                                                ground(Origin),
-                                                normalize_type(Type, TN),
-                                                ( declared_value_type(Name, T2), T2 =@= TN -> true
-                                                ; assertz(declared_value_type(Name, TN)),
-                                                  decl_notify(declaration_changed(value, Name,
-                                                                                   added)),
-                                                  notify_symbol_constructor_sets(Name) ) )
+                                              ; with_decl_transaction(
+                                                    Name,
+                                                    cache_value_decl(Name, Type)) )
                                         ; true ).
+
+cache_value_decl(Name, Type) :-
+    prepare_decl_origin(Name, Type, Origin),
+    ground(Origin),
+    normalize_type(Type, TN),
+    ( declared_value_type(Name, T2), T2 =@= TN -> true
+    ; assertz(declared_value_type(Name, TN)),
+      decl_notify(declaration_changed(value, Name, added)),
+      notify_symbol_constructor_sets(Name) ).
+
+%A SpaceOf declaration is a checked schema for the rows already in the named
+%space. As at update time, open fields are accepted and only a definite
+%contradiction rejects. The declaration transaction removes any staged origin
+%or store state if this validation throws.
+validate_existing_space_rows(Name, Schema) :-
+    forall(existing_space_row(Name, Row),
+           ( value_definitely_mismatch(Row, Schema)
+             -> throw(error(space_schema_row_mismatch(Name, Row, Schema),
+                            typecheck))
+           ; true )).
+
+existing_space_row(Name, Row) :-
+    current_predicate(Name/Arity),
+    functor(Head, Name, Arity),
+    catch(clause(Head, true), _, fail),
+    Head =.. [Name|Row].
 
 %A declaration-driven graph revalidation is transactional with respect to the
 %canonical declaration state.  The raw source atom inserted by runtime
@@ -269,21 +308,34 @@ maybe_cache_type_decl(Space, Term) :- ( Space == '&self', is_list(Term), Term = 
 %mutation exception boundary yet), but executable clauses, declarations,
 %origins and inferred types are restored together.
 with_fn_decl_transaction(Name, Goal) :-
-    snapshot_fn_decl_transaction(Name, Snapshot),
-    catch(Goal, Error,
-          ( restore_fn_decl_transaction(Name, Snapshot),
+    with_decl_transaction(Name, Goal).
+
+with_decl_transaction(Name, Goal) :-
+    snapshot_decl_transaction(Name, Snapshot),
+    catch(( Goal -> true
+          ; restore_decl_transaction(Name, Snapshot),
+            fail ),
+          Error,
+          ( restore_decl_transaction(Name, Snapshot),
             throw(Error) )).
 
-snapshot_fn_decl_transaction(Name,
-        fn_decl_transaction(Records, Origins, Inferred)) :-
+snapshot_decl_transaction(Name,
+        decl_transaction(Records, Origins, Inferred, Values, Newtypes,
+                         Aliases, Foreigns, Spaces)) :-
     findall(fn_decl(Name, N, Scheme, Effect, Origin, Provenance),
             fn_decl_copy(Name, N, Scheme, Effect, Origin, Provenance),
             Records),
     findall(Origin, nonfn_decl_origin(Name, Origin), Origins),
-    findall(inferred(ATs, OT), inferred_fn_type(Name, ATs, OT), Inferred).
+    findall(inferred(ATs, OT), inferred_fn_type(Name, ATs, OT), Inferred),
+    findall(T, declared_value_type(Name, T), Values),
+    findall(T, declared_newtype(Name, T), Newtypes),
+    findall(T, declared_type_alias(Name, T), Aliases),
+    findall(A, declared_foreign_type(Name, A), Foreigns),
+    findall(T, declared_space_type(Name, T), Spaces).
 
-restore_fn_decl_transaction(Name,
-        fn_decl_transaction(Records, Origins, Inferred)) :-
+restore_decl_transaction(Name,
+        decl_transaction(Records, Origins, Inferred, Values, Newtypes,
+                         Aliases, Foreigns, Spaces)) :-
     findall(N, fn_decl(Name, N, _, _, _, _), CurrentArities0),
     findall(N, member(fn_decl(Name, N, _, _, _, _), Records), PriorArities0),
     append(CurrentArities0, PriorArities0, Arities0),
@@ -296,14 +348,26 @@ restore_fn_decl_transaction(Name,
                  assertz(nonfn_decl_origin(Name, Origin))),
           retractall(inferred_fn_type(Name, _, _)),
           forall(member(inferred(ATs, OT), Inferred),
-                 assertz(inferred_fn_type(Name, ATs, OT))) )),
+                 assertz(inferred_fn_type(Name, ATs, OT))),
+          retractall(declared_value_type(Name, _)),
+          forall(member(T, Values), assertz(declared_value_type(Name, T))),
+          retractall(declared_newtype(Name, _)),
+          forall(member(T, Newtypes), assertz(declared_newtype(Name, T))),
+          retractall(declared_type_alias(Name, _)),
+          forall(member(T, Aliases), assertz(declared_type_alias(Name, T))),
+          retractall(declared_foreign_type(Name, _)),
+          forall(member(A, Foreigns), assertz(declared_foreign_type(Name, A))),
+          retractall(declared_space_type(Name, _)),
+          forall(member(T, Spaces), assertz(declared_space_type(Name, T))) )),
     %Consumers may already have reacted to an origin flip before the staged
     %declaration failed. Re-run those exact graph edges under the restored
     %state; retain the original validation error if rollback revalidation
     %itself reports anything.
     catch(decl_notify(declaration_changed(origin, Name, changed)), _, true),
     forall(member(N, Arities),
-           catch(decl_notify(declaration_changed(Name/N, changed)), _, true)).
+           catch(decl_notify(declaration_changed(Name/N, changed)), _, true)),
+    forall(member(Kind, [value, newtype, alias, foreign, space]),
+           catch(decl_notify(declaration_changed(Kind, Name, changed)), _, true)).
 
 cache_fn_type_decl(Name, Type, ATs, OT, Det, Origin, Provenance) :-
     validate_effect_variable_decl(Name, Type),

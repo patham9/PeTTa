@@ -92,7 +92,8 @@ inferred_selection_statuses(F, N, Args, Metas, Statuses, Det) :-
       -> ( YN =:= 1 -> Det = det
          ; YN =:= 0 -> Det = semidet
          ; Det = nondet )
-    ; YN =:= 0, PN =:= 1
+    ; YN =:= 0, PN =:= 1,
+      single_possible_domain_covered(Args, Metas, Statuses)
       -> Det = det
     ; keyed_selection_position(Args, Metas, Idx, Keys),
       nth0(Idx, Args, Arg),
@@ -100,7 +101,31 @@ inferred_selection_statuses(F, N, Args, Metas, Statuses, Det) :-
       -> ( selection_column_covers(F, N, Args, Idx, Keys, BoundKind)
            -> Det = det
          ; Det = semidet )
+    ; YN =:= 0, PN =:= 1
+      -> Det = semidet
     ; Det = nondet ).
+
+%A merely possible clause becomes positively applicable only on a domain that
+%the current path has actually narrowed. The v1 narrowing carried by the
+%analyzer is nonempty-list evidence; require the selected clause to cover all
+%such lists and every other head position to be already decidable.
+single_possible_domain_covered(Args, Metas, Statuses) :-
+    nth0(MetaIndex, Statuses, possible),
+    nth0(MetaIndex, Metas, Meta),
+    fun_meta_parts(Meta, HeadArgs, _, _),
+    nth0(Idx, Args, Arg),
+    var(Arg), nonempty_var(Arg),
+    known_singleton(Arg, T), nonvar(T), list_type(T, _),
+    nth0(Idx, HeadArgs, Pattern),
+    covers_all_nonempty_lists(Pattern),
+    call_other_positions_yes(Args, HeadArgs, Idx, 0).
+
+call_other_positions_yes([], [], _, _).
+call_other_positions_yes([A|As], [P|Ps], Skip, I) :-
+    ( I =:= Skip -> true
+    ; call_pattern_status(A, P, yes) ),
+    I2 is I + 1,
+    call_other_positions_yes(As, Ps, Skip, I2).
 
 %Argument-independent selection is exactly-one only when the normalized heads
 %are mutually exclusive and visibly cover the entire input domain.  This is
@@ -239,7 +264,8 @@ keyed_selection_position(Args, Metas, Idx, Keys) :-
     Col \== [],
     maplist(selection_pattern_key, Col, Keys),
     sort(Keys, Unique),
-    same_length(Keys, Unique).
+    same_length(Keys, Unique),
+    maplist(selection_pattern_covers_key, Col).
 
 selection_argument_bound(A, proper_list) :-
     var(A), scoped_proper_list_var(A), !.
@@ -305,19 +331,18 @@ emit_selection_certificate_dependencies([Dependency|Dependencies]) :-
 %the argument-sensitive builtin rules:
 %  * a direct parameter of the enclosing committed clause, where consuming
 %    the evidence publishes the appropriate runtime boundary proviso; or
-%  * a local value, whose declared producer/call-site check already enforces
-%    the known type before this call is reached.
+%A local variable's type constraint is not shape evidence: an unbound value
+%can carry List/Bool metadata without yet being a proper list or a bound
+%selector. Locals qualify through the scoped producer-certificate paths above.
 %A variable nested in the source head is neither.  Merely constraining such a
 %field to List/Bool does not bind it, so it must still be justified by the
 %recursive-tail/scoped-certificate paths above.
 typed_selection_evidence(A, proper_list) :-
-    ( det_direct_param(A) -> enforced_proper_list_param(A)
-    ; det_head_var(A) -> fail
-    ; true ).
+    det_direct_param(A),
+    enforced_proper_list_param(A).
 typed_selection_evidence(A, nonvar) :-
-    ( det_direct_param(A) -> enforced_bound_param(A)
-    ; det_head_var(A) -> fail
-    ; true ).
+    det_direct_param(A),
+    enforced_bound_param(A).
 
 selection_column_covers(_, _, _, _, Keys, proper_list) :-
     sort([list_empty, list_cons], Domain),

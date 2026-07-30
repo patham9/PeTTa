@@ -1,8 +1,9 @@
-%Runtime function add-atom is intentionally not fully transactional: the raw
-%source atom and fun_meta built before a validation exception can survive a
-%failed addition. Dependency/declaration-driven recompilation is
-%stage-then-swap; closing this earlier raw-mutation window requires a separate
-%transactional add-atom design.
+%Runtime function add-atom cleans up its own staged raw atom, registration,
+%metadata and compiled-dependency state on failure or exception. This remains
+%a bounded transaction: an embedder observing concurrent mutation can still
+%see the short interval between staging and cleanup, and a multi-function
+%dependency cascade is not atomically rolled back as one unit.
+:- discontiguous 'add-atom'/3.
 %
 %Since both normal add-attom call and function additions needs to add the S-expression:
 add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
@@ -16,18 +17,55 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 
 %Add a function atom:
 'add-atom'(Space, Term, true) :- Term = [=,[FAtom|W],_], !,
-                                 add_sexp(Space, Term),
-                                 register_fun(FAtom),
-                                 length(W, N),
-                                 Arity is N + 1,
-                                 assertz(arity(FAtom,Arity)),
-                                 once(translate_clause(Term, Clause, true, Dependencies)),
-                                 assertz(Clause, Ref),
-                                 assertz(translated_from(Ref, Term)),
-                                 record_compiled_dependencies(Ref, FAtom/N, Dependencies),
-                                 invalidate_specializations(FAtom),
-                                 notify_mutation(clause_changed(FAtom/N, runtime)),
-                                 maybe_print_compiled_clause("added function", Term, Clause).
+                                 snapshot_runtime_function_add(FAtom, Snapshot),
+                                 catch(
+                                     ( runtime_add_function(Space, Term, FAtom, W,
+                                                            RawRef, ClauseRef)
+                                       -> true
+                                     ; cleanup_runtime_function_add(
+                                           FAtom, RawRef, ClauseRef, Snapshot),
+                                       fail ),
+                                     Error,
+                                     ( cleanup_runtime_function_add(
+                                           FAtom, RawRef, ClauseRef, Snapshot),
+                                       throw(Error) )).
+
+runtime_add_function(Space, Term, FAtom, W, RawRef, ClauseRef) :-
+    Term = [=, [FAtom|W], TermBody],
+    RawTerm =.. [Space, '=', [FAtom|W], TermBody],
+    assertz(RawTerm, RawRef),
+    maybe_cache_type_decl(Space, Term),
+    register_fun(FAtom),
+    length(W, N),
+    Arity is N + 1,
+    assertz(arity(FAtom, Arity)),
+    once(translate_clause(Term, Clause, true, Dependencies)),
+    assertz(Clause, ClauseRef),
+    assertz(translated_from(ClauseRef, Term)),
+    record_compiled_dependencies(ClauseRef, FAtom/N, Dependencies),
+    notify_mutation(clause_changed(FAtom/N, runtime)),
+    invalidate_specializations(FAtom),
+    maybe_print_compiled_clause("added function", Term, Clause).
+
+snapshot_runtime_function_add(F,
+        runtime_add_snapshot(FunFacts, Arities, Recompile)) :-
+    findall(true, fun(F), FunFacts),
+    findall(A, arity(F, A), Arities),
+    snapshot_recompile_state(F, Recompile).
+
+cleanup_runtime_function_add(F, RawRef, ClauseRef,
+        runtime_add_snapshot(FunFacts, Arities, Recompile)) :-
+    ( nonvar(ClauseRef)
+      -> forget_compiled_dependencies(ClauseRef),
+         retractall(translated_from(ClauseRef, _)),
+         ( clause(_, _, ClauseRef) -> erase(ClauseRef) ; true )
+    ; true ),
+    ( nonvar(RawRef), clause(_, _, RawRef) -> erase(RawRef) ; true ),
+    restore_recompile_state(F, Recompile),
+    retractall(fun(F)),
+    forall(member(true, FunFacts), assertz(fun(F))),
+    retractall(arity(F, _)),
+    forall(member(A, Arities), assertz(arity(F, A))).
 
 %Add an atom to the space:
 'add-atom'(Space, Term, true) :-

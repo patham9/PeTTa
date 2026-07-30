@@ -12,6 +12,8 @@ prolog:error_message(type_conflict(existing(Existing), required(Required))) -->
     [ 'Type conflict: value is constrained as ~p but also required as ~p'-[Existing, Required] ].
 prolog:error_message(determinism_conflict(Fun, Reason)) -->
     [ 'Determinism check failed for ~p: ~p'-[Fun, Reason] ].
+prolog:error_message(det_functional_head_commitment(Fun, HeadArgs)) -->
+    [ 'Determinism check failed for ~p: functional head ~p generates fallible head goals; explicit det/semidet validation cannot certify it'-[Fun, [Fun|HeadArgs]] ].
 prolog:error_message(conflicting_determinism_declarations(Fun)) -->
     [ 'Conflicting determinism declarations for ~p'-[Fun] ].
 prolog:error_message(conflicting_determinism_declarations(Fun, Locations)) -->
@@ -43,6 +45,10 @@ prolog:error_message(effect_variable_uninstantiable(Name, Var)) -->
     [ 'Effect variable $~w on the top-level arrow of ~p is never instantiated by a closure argument'-[Var, Name] ].
 prolog:error_message(strict_runtime_typecheck(Context, Goal)) -->
     [ 'Strict mode rejected residual runtime type goal in ~p: ~p'-[Context, Goal] ].
+prolog:error_message(strict_nominal_intersection(Context, Types)) -->
+    [ 'Strict mode cannot express the unresolved nominal intersection ~p in ~p; use an explicit (the ...) cast or redesign the declaration'-[Types, Context] ].
+prolog:error_message(space_schema_row_mismatch(Space, Row, Schema)) -->
+    [ 'SpaceOf declaration for ~p rejects existing row ~p: it definitely contradicts schema ~p'-[Space, Row, Schema] ].
 prolog:error_message(determinism_cardinality(Fun, Det, N)) -->
     [ 'Determinism cardinality violated: ~p is declared -[~w]-> but this call produced ~w solutions'-[Fun, Det, N] ].
 prolog:error_message(strict_missing_function_type(Fun, Arity)) -->

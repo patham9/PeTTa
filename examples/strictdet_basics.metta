@@ -46,7 +46,8 @@
 !(test (select-tail (a b)) b)
 !(test (select-tail x) x)
 
-(: second (-[det]-> Expression %Undefined%))
+; Expression admits non-pairs, so destructuring may fail.
+(: second (-[semidet]-> Expression %Undefined%))
 (= (second $pair) (let ($a $b) $pair $b))
 
 !(test (second (1 2)) 2)

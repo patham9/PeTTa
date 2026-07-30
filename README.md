@@ -336,11 +336,13 @@ or structurally inspected. Unlike a bare type variable such as `$heap`, a
 foreign type does not unify with unrelated types.
 
 **Typed spaces.** `(: &jobs (SpaceOf (job-row Number String)))` declares the
-row type of a statically named space. Its `match` patterns receive the row's
-field types, including narrowing when the schema is a union of row shapes;
-definitely ill-typed `add-atom` and `remove-atom` payloads are compile-time
-errors. Payloads whose fields are filled dynamically are trusted, and spaces
-without a `SpaceOf` declaration retain their existing untyped behavior.
+row type of a statically named space. Declaring the schema validates rows
+already present in the space and rejects any definite contradiction. Its
+`match` patterns receive the row's field types, including narrowing when the
+schema is a union of row shapes; updates through `add-atom` and `remove-atom`
+are likewise prevalidated for definite mismatches. Open rows and patterns
+whose fields are filled dynamically remain trusted, and spaces without a
+`SpaceOf` declaration retain their existing untyped behavior.
 
 **Determinism arrows.** `(: f (-[det]-> A B C))` — prefix, like `->` and
 every other MeTTa form — declares a deterministic function: the compiler validates

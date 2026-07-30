@@ -8,5 +8,6 @@
 !(test (same-type "x" "y") True)
 !(test (num-str 1 "x") True)
 
-; The same variable cannot satisfy both Number and String in one call.
-!(test (collapse (num-str $x $x)) ())
+; Deferred requirements are conjunctive. With no binding forced here, both
+; remain attached to the shared variable and the call itself can return.
+!(test (collapse (num-str $x $x)) (True))
