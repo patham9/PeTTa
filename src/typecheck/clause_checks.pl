@@ -272,7 +272,10 @@ bind_pattern_typed(P, T, Prior) :-
                               -> ( functional_pattern_signature(P, T, PatternArgs, ArgTypes)
                                    -> maplist(bind_pattern_typed, PatternArgs, ArgTypes)
                                  ; true )
-                            ; var(P) -> ( nonvar(T), \+ wildcard_type_t(T) -> add_known_type(P, T) ; true )
+                            ; var(P) -> ( nonvar(T), \+ wildcard_type_t(T)
+                                         -> variable_fallthrough_type(T, Prior, PT),
+                                            add_known_type(P, PT)
+                                          ; true )
                             ; is_union(T), T = ['|'|Ms]        %a pattern narrows to the member it selects
                               -> ( findall(M, ( member(M, Ms), pattern_selects_member(P, M) ), [M1]),
                                    narrowing_sound(P, Ms, M1, Prior)
@@ -293,6 +296,63 @@ bind_pattern_typed(P, T, Prior) :-
                               \+ is_arrow_type(T)
                               -> maplist(bind_pattern_typed, P, T)
                             ; true ).
+
+%A variable case branch is the committed fallthrough: values wholly consumed
+%by earlier branches cannot reach it.  Subtract only union members for which
+%that statement has a positive, closed proof.  In particular, primitive,
+%wildcard, list, arrow, newtype/open-representation and otherwise structural
+%members stay in the union.  Other bind_pattern_typed/3 callers pass Prior=[],
+%so their variable bindings retain the declared type unchanged.
+variable_fallthrough_type(T, Prior, NT) :-
+    nonempty_prior(Prior),
+    is_union(T),
+    T = ['|'|Ms],
+    subtract_consumed_union_members(Ms, Prior, Kept, Removed),
+    Removed == yes,
+    Kept \== [],
+    !,
+    ( Kept = [Only] -> NT = Only ; NT = ['|'|Kept] ).
+variable_fallthrough_type(T, _, T).
+
+nonempty_prior([_|_]).
+
+subtract_consumed_union_members([], _, [], no).
+subtract_consumed_union_members([M|Ms], Prior, Kept, Removed) :-
+    subtract_consumed_union_members(Ms, Prior, Rest, TailRemoved),
+    ( fallthrough_member_consumed(M, Prior)
+      -> Kept = Rest,
+         Removed = yes
+      ; Kept = [M|Rest],
+        Removed = TailRemoved ).
+
+%A tagged tuple denotes one exact constructor shape.  A nominal type is
+%subtractable only when its current, nonempty constructor set is completely
+%covered by earlier unconstrained constructor patterns.  Publishing ctor_set
+%after the proof succeeds makes that closed-world snapshot visible to the
+%dependency graph without retaining dependencies for members we did not
+%exclude.
+fallthrough_member_consumed(M, Prior) :-
+    nonvar(M),
+    is_list(M),
+    tagged_tuple_type(M, Tag, FieldTs),
+    !,
+    length(FieldTs, K),
+    prior_consumed_ctor(Prior, Tag, K).
+fallthrough_member_consumed(M, Prior) :-
+    atom(M),
+    \+ wildcard_type(M),
+    \+ primitive_type(M),
+    \+ declared_newtype(M, _),
+    findall(C-K, member_ctor(M, K, C), Keys0),
+    sort(Keys0, Keys),
+    Keys = [_|_],
+    prior_consumed_ctor_keys(Keys, Prior),
+    analysis_emit(dependency(ctor_set(M))).
+
+prior_consumed_ctor_keys([], _).
+prior_consumed_ctor_keys([Ctor-K|Keys], Prior) :-
+    prior_consumed_ctor(Prior, Ctor, K),
+    prior_consumed_ctor_keys(Keys, Prior).
 
 %%% Soundness gate on union narrowing by shape.
 %
