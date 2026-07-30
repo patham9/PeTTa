@@ -159,6 +159,17 @@ if [ $status -eq 0 ]; then
     fi
 fi
 
+if [ $status -eq 0 ]; then
+    echo ""
+    echo "Running examples/fuzz_matrix.sh"
+    if sh examples/fuzz_matrix.sh; then
+        echo "OK: fuzz_matrix.sh"
+    else
+        echo "FAILURE in fuzz_matrix.sh"
+        status=1
+    fi
+fi
+
 # Soundness oracles (2 extra runs per example; skip with SKIP_SOUNDNESS=1):
 if [ $status -eq 0 ] && [ "${SKIP_SOUNDNESS:-0}" != "1" ]; then
     echo ""
