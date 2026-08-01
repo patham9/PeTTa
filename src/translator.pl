@@ -28,9 +28,12 @@ constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsLi
 %The single definition of a functional pattern position.  It deliberately
 %matches constrain_args/3's dispatch boundary: registered functions elaborate
 %to calls, while source cons and declaration-only constructors remain literal
-%pattern structure.
+%pattern structure.  Args must be a proper source-expression list: specialization
+%may produce an open pattern [F|Tail], whose arity is not fixed and must not be
+%sent to callers that discover it with length/2.
 functional_pattern_application([F|Args], F, Args) :-
-    atom(F), F \== cons, fun(F).
+    atom(F), F \== cons, fun(F),
+    is_list(Args).
 
 %Flatten (= Head Body) MeTTa function into a Prolog clause.  The four-argument
 %boundary returns the dependencies observed by all nested analyses; assertion
