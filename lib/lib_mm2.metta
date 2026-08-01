@@ -1,20 +1,20 @@
 ;Add
-(: ＋ (-[semidet]-> Expression %Undefined%))
+(: ＋ (-[semidet]-> Atom %Undefined%))
 (= (＋ $x)
    (add-atom &mork $x))
 
 ;Remove
-(: － (-[semidet]-> Expression %Undefined%))
+(: － (-[semidet]-> Atom %Undefined%))
 (= (－ $x)
    (remove-atom &mork $x))
 
 ;Query
-(: ? (-[nondet]-> Expression Expression %Undefined%))
+(: ? (-[nondet]-> Atom Atom %Undefined%))
 (= (? $x $y)
    (match &mork $x $y))
 
 ;Transform
-(: ~> (-[nondet]-> Expression Expression %Undefined%))
+(: ~> (-[nondet]-> Atom Atom %Undefined%))
 (= (~> $head $body)
    ((add-atom &mork (exec 0 $head $body))
     (mm2-exec &mork 1)))

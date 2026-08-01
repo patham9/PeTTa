@@ -393,7 +393,8 @@ brand_candidate_conflict(R, C, K) :-
 %value at all - (expected-role? (holder-role $h)) passed the literal call.
 %For constructor-built data evaluation is identity, so nothing is lost; a
 %genuinely raw fun-headed payload still has quote.
-expression_typed(Ty) :- Ty == 'Expression'.
+expression_typed(Ty) :- Ty == 'Expression', !.
+expression_typed(Ty) :- Ty == 'Atom'.
 
 %Derive match-pattern variable types from declared relation schemas: atoms
 %matched by (F ...) conform to F's declared argument types, and a pattern

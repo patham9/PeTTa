@@ -44,6 +44,7 @@ runtime_add_function(Space, Term, FAtom, W, RawRef, ClauseRef) :-
     assertz(translated_from(ClauseRef, Term)),
     record_compiled_dependencies(ClauseRef, FAtom/N, Dependencies),
     notify_mutation(clause_changed(FAtom/N, runtime)),
+    metta_on_function_changed(FAtom),
     invalidate_specializations(FAtom),
     maybe_print_compiled_clause("added function", Term, Clause).
 

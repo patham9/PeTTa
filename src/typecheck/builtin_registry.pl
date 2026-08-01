@@ -265,6 +265,9 @@ builtin_implementation_exemption(alpha_list_to_set_assoc/3, alpha_unique_helper)
 builtin_implementation_exemption(attribute_free_variant/2, identity_helper).
 builtin_implementation_exemption(bool/1, boolean_domain_helper).
 builtin_implementation_exemption(call_goals/1, evaluator_helper).
+builtin_implementation_exemption(claim_import/3, import_helper).
+builtin_implementation_exemption(clear_import_state/2, import_helper).
+builtin_implementation_exemption(current_working_dir/1, import_helper).
 builtin_implementation_exemption(ensure_metta_ext/2, import_helper).
 builtin_implementation_exemption(fun/1, registry_runtime_state).
 builtin_implementation_exemption(arity/2, registry_runtime_state).
@@ -272,11 +275,27 @@ builtin_implementation_exemption(translator_rule/1, translator_runtime_state).
 builtin_implementation_exemption(get_function_type/2, legacy_type_helper).
 builtin_implementation_exemption(get_type_candidate/2, legacy_type_helper).
 builtin_implementation_exemption(import_error_propagates/1, import_helper).
+builtin_implementation_exemption(import_file_string/2, import_helper).
+builtin_implementation_exemption(import_once/3, import_helper).
 builtin_implementation_exemption(importer_helper/2, import_helper).
+builtin_implementation_exemption(library_path/1, import_runtime_state).
+builtin_implementation_exemption(library_path_candidate/2, import_helper).
+builtin_implementation_exemption(library_path_candidate/3, import_helper).
+builtin_implementation_exemption(library_source_exists/1, import_helper).
+builtin_implementation_exemption(mark_import_loaded/2, import_helper).
+builtin_implementation_exemption(metta_import_state/3, import_runtime_state).
 builtin_implementation_exemption(member_alpha/2, alpha_membership_helper).
 builtin_implementation_exemption(non_list/1, list_guard_helper).
 builtin_implementation_exemption(py_bool_norm/2, python_interop_helper).
+builtin_implementation_exemption(python_import_file/1, import_helper).
 builtin_implementation_exemption(register_fun/1, registration_helper).
+builtin_implementation_exemption(resolve_library_path/2, import_helper).
+builtin_implementation_exemption(resolve_existing_import_path/3, import_helper).
+builtin_implementation_exemption(resolve_metta_import_path/2, import_helper).
+builtin_implementation_exemption(resolve_python_import_path/2, import_helper).
+builtin_implementation_exemption(run_new_import/3, import_helper).
+builtin_implementation_exemption(standard_library_path/1, import_runtime_state).
+builtin_implementation_exemption(throw_missing_import/1, import_helper).
 
 %%% Consumer views.
 

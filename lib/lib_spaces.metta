@@ -1,11 +1,11 @@
 ;Migrate atoms to another space:
-(: migrateAtoms (-[nondet]-> %Undefined% %Undefined% Expression %Undefined%))
+(: migrateAtoms (-[nondet]-> %Undefined% %Undefined% Atom %Undefined%))
 (= (migrateAtoms $FromSpace $ToSpace $Pattern)
    (match $FromSpace $Pattern ((add-atom $FromSpace $Pattern)
                                (remove-atom $FromSpace $Pattern))))
 
 ;Like unify-space case of Minimal MeTTa:
-(: find (-[nondet]-> %Undefined% Expression Bool))
+(: find (-[nondet]-> %Undefined% Atom Bool))
 (= (find $space $pattern)
    (case (match $space $pattern True)
          ((True True)
@@ -26,6 +26,6 @@
    (collapse (match $space $x (remove-atom $space $x))))
 
 ;Efficiently count the amount of particular items in the space without listifying the items:
-(: match-count (-[det]-> %Undefined% Expression Number))
+(: match-count (-[det]-> %Undefined% Atom Number))
 (= (match-count $space $pattern)
    (foldall + (match $space $pattern 1) 0))

@@ -1,5 +1,5 @@
 ;General function composition:
-(: compose (-[nondet]-> Expression Atom Atom))
+(: compose (-[nondet]-> Expression Atom %Undefined%))
 (= (compose (cons $f $rest) $args)
    (if (== $rest ())
        (if (== (length $args) 1) ;optimization for single arg, avoids

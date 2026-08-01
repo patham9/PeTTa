@@ -4,6 +4,8 @@ python/HE/__pycache__
 python/tests/__pycache__
 python/petta/__pycache__
 lib/__pycache__
+__pycache__/
+*.py[cod]
 
 # Python build artifacts
 build/

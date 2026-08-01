@@ -119,7 +119,7 @@ translate_clause_core(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                %spliced in before the commit cut below (goal-term position unchanged).
                                                det_boundness_checks(F, Args1, DetChecks),
                                                begin_clause_inference(F, Args1, Assume, SavedInf),
-                                               translate_declared_body(DeclOut, BodyExpr, GoalsBody, ExpOut),
+                                               translate_declared_body(F, DeclOut, BodyExpr, GoalsBody, ExpOut),
                                                %A body that forced a declared parametric parameter to a concrete type
                                                %broke the universality its declaration claims (skip for specialized copies):
                                                ( ConstrainArgs == false -> true
@@ -306,6 +306,11 @@ function_source_clauses(F, Us) :- findall(Ref-Term,
                                             clause(_, _, Ref) ),
                                           Us).
 
+%Record atoms compiled as plain symbol heads, so late function registrations can be flagged:
+:- dynamic symbol_head/1.
+note_symbol_head(HV) :- atom(HV), \+ symbol_head(HV), !, assertz(symbol_head(HV)).
+note_symbol_head(_).
+
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.
 maybe_print_compiled_clause(Label, FormTerm, Clause) :-
@@ -319,6 +324,12 @@ goals_list_to_conj([], true)      :- !.
 goals_list_to_conj([G], G)        :- !.
 goals_list_to_conj([G|Gs], (G,R)) :- goals_list_to_conj(Gs, R).
 
+resolve_memoization(Fun, Args, Out, Goal) :-
+    ( metta_memoized_dispatch_call(Fun, Args, Out, Goal)
+    -> true
+    ; append(Args, [Out], DirectArgs),
+      Goal =.. [Fun|DirectArgs]
+    ).
 incomplete_application_kind(Fun, Arity, partial) :- ( arity(Fun, KnownArity), KnownArity >= Arity
                                                      ; \+ arity(Fun, _) ), !.
 incomplete_application_kind(_, _, overapplied).
@@ -334,12 +345,11 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                             length(Args, N),
                             Arity is N + 1,
                             ( current_predicate(F/Arity) , \+ (current_op(_, _, F), Arity =< 2)
-                              -> append(Args,[Out],CallArgs),
-                                 Goal =.. [F|CallArgs],
-                                 catch(call(Goal),_,fail)
+                              -> resolve_memoization(F, Args, Out, Goal),
+                                 catch(call(Goal), _, fail)
                             ; incomplete_application_kind(F, Arity, partial)
                               -> Out = partial(F,Args)
-                               ; throw_function_overapplication(F, N) )
+                            ; throw_function_overapplication(F, N) )
                           ; % --- Case 2: partial closure ---
                             compound(F), F = partial(Base, Bound) -> append(Bound, Args, NewArgs),
                                                                      reduce([Base|NewArgs], Out)
@@ -370,10 +380,14 @@ translate_expr_to_conj(Input, Expectation, Conj, Out) :-
 %Only POSITIONAL products and (List T) participate. A tagged structural type
 %has a literal runtime tag and remains constructor-checked by the ordinary
 %bottom-up path; `data` itself remains product-only.
-translate_declared_body(out(OT, _), Expr, Goals, Out) :-
+%The target branch's Atom convention means a function declared to return Atom
+%returns its body as source data rather than evaluating it.
+translate_declared_body(F, out('Atom', _), Expr, [], Expr) :-
+        declared_output_type(F, 'Atom'), !.
+translate_declared_body(_, out(OT, _), Expr, Goals, Out) :-
         contextual_expected_type(OT), !,
         translate_expr(Expr, expected(OT), Goals, Out).
-translate_declared_body(_, Expr, Goals, Out) :-
+translate_declared_body(_, _, Expr, Goals, Out) :-
         translate_expr(Expr, none, Goals, Out).
 
 contextual_product_type(T) :- nonvar(T), is_list(T),
@@ -1456,8 +1470,7 @@ build_direct_call(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                          Arity is N + 1,
                                                          ( ( current_predicate(Fun/Arity) ; catch(arity(Fun, Arity), _, fail) ),
                                                            \+ ( current_op(_, _, Fun), Arity =< 2 )
-                                                           -> append(AVs, [Out], CallArgs),
-                                                              Goal0 =.. [Fun|CallArgs],
+                                                           -> resolve_memoization(Fun, AVs, Out, Goal0),
                                                               %--oracle-det: count this call's solutions
                                                               oracle_det_wrap(Fun, AVs, Out, Goal0, Goal),
                                                               append(Inner, [Goal|Extra], Goals)
