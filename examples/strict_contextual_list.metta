@@ -39,8 +39,8 @@
 
 !(test (wrap-three 1 2 3) ((1 2 3) "triple"))
 
-; Expression elements stay as unevaluated source terms.
-(: exprs (-> (List Expression)))
+; Atom elements stay as unevaluated source terms.
+(: exprs (-> (List Atom)))
 (= (exprs)
    (make-list (+ 1 2) foo ($x bar)))
 

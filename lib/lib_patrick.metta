@@ -1,5 +1,5 @@
 ;General function composition:
-(: compose (-[nondet]-> Expression Atom %Undefined%))
+(: compose (-[nondet]-> Atom Atom %Undefined%))
 (= (compose (cons $f $rest) $args)
    (if (== $rest ())
        (if (== (length $args) 1) ;optimization for single arg, avoids
@@ -12,7 +12,7 @@
 (= (@ $a $b) (let $a $b $a))
 
 ;For loop
-(: for (-[det]-> Expression Atom Expression Expression))
+(: for (-[det]-> Atom Atom Atom Atom))
 (= (for $var $collection $body)
    (quote (let $var (superpose $collection)
                     $body)))

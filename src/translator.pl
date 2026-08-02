@@ -452,7 +452,7 @@ translate_explicit_list(Elements, none, Goals, Out) :-
 translate_expected_list_elements([], _, [], []).
 translate_expected_list_elements([E|Es], ET, Goals, [V|Vs]) :-
         ( expression_typed(ET)
-          -> translate_expression_arg(E, G1, V)
+          -> expression_arg_value(E, V), G1 = []
         ; translate_expected_list_element(E, ET, 'make-list', G1, V) ),
         translate_expected_list_elements(Es, ET, G2, Vs),
         append(G1, G2, Goals).
@@ -1291,7 +1291,7 @@ translate_contextual_args([pending(A, ET, DT)|Ss], [G|Gs], [V|Vs]) :-
         ( contextual_expected_type(DT), \+ expression_typed(ET)
           -> translate_expr(A, expected(DT), G, V)
         ; expression_typed(ET)
-          -> translate_expression_arg(A, G, V)
+          -> expression_arg_value(A, V), G = []
            ; translate_expr(A, G, V) ),
         translate_contextual_args(Ss, Gs, Vs).
 
@@ -1365,16 +1365,16 @@ source_callable_arrow(Source, Arrow) :-
 
 %A provided arg position stays untranslated data iff every declaration types it
 %Expression; the effective type feeds translate_args_by_type, which only ever
-%distinguishes 'Expression' from everything else:
+%distinguishes unevaluated Atom positions from everything else:
 eff_arg_types(FullDecls, NB, NProv, Ts) :- NEnd is NB + NProv - 1,
                                            ( NProv =:= 0 -> Ts = []
                                            ; numlist(NB, NEnd, Is),
                                              maplist(eff_arg_type(FullDecls), Is, Ts) ).
 eff_arg_type(FullDecls, I, T) :- ( forall(member(ft(ATs, _), FullDecls),
                                           ( nth0(I, ATs, Ty), expression_typed(Ty) ))
-                                   -> T = 'Expression' ; true ).
+                                   -> T = 'Atom' ; true ).
 
-%Expression-typed args stay unevaluated data, except underapplied callable
+%Atom-typed args stay unevaluated data, except underapplied callable
 %expressions representable as a goal-free closure. Only expressions that can
 %actually become a closure are translated, so plain data is never re-translated:
 %brand is a checker construct, not data - it erases here too, branding the
@@ -1482,31 +1482,13 @@ build_direct_call(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                               append(Inner, Extra, Goals)
                                                             ; append(Inner, [throw_function_overapplication(Fun, N)|Extra], Goals) ).
 
-%Selectively apply translate_args for non-Expression args while Expression args stay as data input:
+%Selectively translate non-Atom args while Atom args stay as data input:
 translate_args_by_type([], _, [], []) :- !.
 translate_args_by_type([A|As], [T|Ts], GsOut, [AV|AVs]) :-
-                      ( expression_typed(T) -> translate_expression_arg(A, GsA, AV)
+                      ( expression_typed(T) -> expression_arg_value(A, AV), GsA = []
                                            ; translate_expr(A, GsA, AV) ),
                       translate_args_by_type(As, Ts, GsRest, AVs),
                       append(GsA, GsRest, GsOut).
-
-%Atom/Expression parameters normally receive their source syntax unchanged.
-%A uniquely declared Atom/Expression producer is different: its call denotes
-%the data value to pass, while quote remains the explicit way to pass that
-%producer call itself as syntax.  This preserves Atom's source-data convention
-%for ordinary calls without stranding structural producer pipelines such as
-%(walk (cdr-atom $term)).
-translate_expression_arg(A, Goals, Value) :-
-        data_producer_call(A), !,
-        translate_expr(A, Goals, Value).
-translate_expression_arg(A, [], Value) :- expression_arg_value(A, Value).
-
-data_producer_call([F|Args]) :-
-        atom(F), is_list(Args), length(Args, N),
-        ( findall(OT, fn_decl_arity(F, N, _, OT), [OutType]),
-          expression_typed(OutType)
-        ; builtin_registry:builtin_spec(F/N, _, typing(contextual(_)),
-                                        evaluation(eager), _, _) ).
 
 %Handle data list:
 eval_data_term(X, [], X) :- (var(X); atomic(X)), !.

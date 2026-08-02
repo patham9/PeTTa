@@ -391,9 +391,8 @@ brand_candidate_conflict(R, C, K) :-
 %payload SHAPE is unconstrained, not that callers must quote, and inheriting
 %the convention made a brand-typed position unable to receive a computed
 %value at all - (expected-role? (holder-role $h)) passed the literal call.
-%For constructor-built data evaluation is identity, so nothing is lost; a
-%genuinely raw fun-headed payload still has quote.
-expression_typed(Ty) :- Ty == 'Expression', !.
+%Atom is the sole type marker for unevaluated source terms; Expression values
+%follow ordinary eager translation.
 expression_typed(Ty) :- Ty == 'Atom'.
 
 %Derive match-pattern variable types from declared relation schemas: atoms
