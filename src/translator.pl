@@ -1083,7 +1083,8 @@ translate_expr([H0|T0], Expectation, Goals, Out) :-
           -> translate_typed_call(Fun, Bound, T, GsH, Goals, Out)
         %Literals (numbers, strings, etc.), known non-function atom => data:
         ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) )
-          -> translate_args(T, GsT, AVs),
+          -> note_symbol_head(HV),
+             translate_args(T, GsT, AVs),
              append(GsH, GsT, Goals),
              Out = [HV|AVs]
         %Plain data list: evaluate inner fun-sublists
