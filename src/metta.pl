@@ -298,6 +298,7 @@ retractPredicate(G, true) :- retract(G), !.
 retractPredicate(_, false).
 
 %%% Library / Import: %%%
+:- dynamic imported_file/1.
 ensure_metta_ext(Path, Path) :- file_name_extension(_, metta, Path), !.
 ensure_metta_ext(Path, PathWithExt) :- file_name_extension(Path, metta, PathWithExt).
 
@@ -311,10 +312,15 @@ importer_helper(Space, File) :- atom_string(File, SFile),
                                      py_call(sys:path:append(Dir), _),
                                      py_call(builtins:'__import__'(ModuleName), _)
                                    ; ( Path = SFile ; atomic_list_concat([Base, '/', SFile], Path) ),
-                                     ensure_metta_ext(Path, PathWithExt),
-                                     exists_file(PathWithExt), !,
-                                     load_metta_file(PathWithExt, _, Space) ).
-
+                                    ensure_metta_ext(Path, PathWithExt),
+                                    exists_file(PathWithExt),
+                                    absolute_file_name(PathWithExt, AbsolutePath),
+                                    ( imported_file(AbsolutePath)
+                                      -> true
+                                      ; assertz(imported_file(AbsolutePath)),
+                                        load_metta_file(AbsolutePath, _, Space)
+                                    )
+                    ).
 :- dynamic translator_rule/1.
 'add-translator-rule!'(HV, true) :- ( translator_rule(HV)
                                       -> true ; assertz(translator_rule(HV)) ).

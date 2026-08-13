@@ -20,7 +20,19 @@ run_test() {
         return 0
     fi
 }
+run_duplicate_import_test() {
+    echo "Running duplicate import regression test"
+    output=$(sh run.sh python/tests/data/duplicate_import/main.metta)
+    echo "$output"
 
+    if ! echo "$output" | grep -q "is 42, should 42. ✅"; then
+        echo "FAILURE in duplicate import regression test"
+        return 1
+    fi
+
+    echo "OK: duplicate import regression test"
+}
+run_duplicate_import_test || exit 1
 pids=""
 pidfile="/tmp/metta_pid_map.$$"
 : > "$pidfile"
