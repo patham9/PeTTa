@@ -13,32 +13,41 @@ process_metta_string(S, Results) :- process_metta_string(S, Results, '&self').
 process_metta_string(S, Results, Space) :- string_codes(S, Cs),
                                            strip(Cs, 0, Codes),
                                            phrase(top_forms(Forms, 1), Codes),
-                                           maplist(parse_form, Forms, ParsedForms),
-                                           maplist(process_form(Space), ParsedForms, ResultsList), !,
+                                           maplist(parse_form(Space), Forms, ParsedForms),
+                                           findall(F-TypeChain,
+                                                   ( member(parsed(expression, _, Term), ParsedForms),
+                                                     function_type_annotation_term(Term, F, TypeChain) ),
+                                                   PredeclaredTypes),
+                                           with_predeclared_function_types(Space,
+                                               PredeclaredTypes,
+                                               with_translation_space(Space,
+                                                   maplist(process_form(Space), ParsedForms, ResultsList))), !,
                                            append(ResultsList, Results).
 
-%First pass to convert MeTTa to Prolog Terms and register functions:
-parse_form(form(S), parsed(T, S, Term)) :- sread(S, Term),
-                                           ( Term = [=, [F|W], _], atom(F) -> register_fun(F), length(W, N), Arity is N + 1, assertz(arity(F,Arity)), T=function
-                                                                            ; T=expression ).
-parse_form(runnable(S), parsed(runnable, S, Term)) :- sread(S, Term).
+%First pass to convert MeTTa to Prolog Terms and register owned functions:
+parse_form(Space, form(S), parsed(T, S, Term)) :- sread(S, Term),
+                                                  ( Term = [=, [F|W], _], atom(F)
+                                                    -> register_space_fun(Space, F, Pred),
+                                                       length(W, N), Arity is N + 1,
+                                                       assertz(arity(Pred, Arity)), T=function
+                                                    ; T=expression ).
+parse_form(_, runnable(S), parsed(runnable, S, Term)) :- sread(S, Term).
 
 %Second pass to compile / run / add the Terms:
 process_form(Space, parsed(expression, _, Term), []) :- 'add-atom'(Space, Term, true),
                                                         ( silent(true) -> true ; swrite(Term,STerm),
                                                                                  format("\e[33m--> metta sexpr -->~n\e[36m~w~n", [STerm]),
                                                                                  format("\e[33m^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
-process_form(_, parsed(runnable, FormStr, Term), Result) :- translate_expr([collapse, Term], Goals, Result),
+process_form(Space, parsed(runnable, FormStr, Term), Result) :- translate_expr_in_space(Space, [collapse, Term], Goals, Result),
                                                             ( silent(true) -> true ; format("\e[33m--> metta runnable  -->~n\e[36m!~w~n\e[33m-->  prolog goal  -->\e[35m ~n", [FormStr]),
                                                                                      forall(member(G, Goals), portray_clause((:- G))),
                                                                                      format("\e[33m^^^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ),
                                                             call_goals(Goals).
 process_form(Space, parsed(function, FormStr, Term), []) :- add_sexp(Space, Term),
                                                             Term = [=, [F|_], _],
-                                                            translate_clause(Term, Clause),
-                                                            assertz(Clause, Ref),
-                                                            assertz(translated_from(Ref, Term)),
-                                                            metta_on_function_changed(F),
+                                                            install_function_clause(Space, Term, Ref),
+                                                            space_pred(Space, F, Pred),
+                                                            metta_on_function_changed(Pred),
                                                             ( silent(true) -> true ; format("\e[33m--> metta function -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [FormStr]),
                                                                                      clause(Head, Body, Ref),
                                                                                      ( Body == true -> Show = Head; Show = (Head :- Body) ),

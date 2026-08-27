@@ -194,6 +194,25 @@ get_type_candidate(X, T) :- \+ get_function_type(X, _),
                             is_list(X),
                             maplist('get-type', X, T).
 get_type_candidate(X, T) :- match('&self', [':',X,T], T, _).
+
+'space-get-type'(Space, X, T) :-
+    ( space_get_type_candidate(Space, X, T) *-> true ; T = '%Undefined%' ).
+space_get_type_candidate(_, X, 'Number') :- number(X), !.
+space_get_type_candidate(_, X, _) :- var(X), !.
+space_get_type_candidate(_, X, 'String') :- string(X), !.
+space_get_type_candidate(_, true, 'Bool') :- !.
+space_get_type_candidate(_, false, 'Bool') :- !.
+space_get_type_candidate(Space, X, T) :- space_get_function_type(Space, X, T).
+space_get_type_candidate(Space, X, T) :-
+    \+ space_get_function_type(Space, X, _),
+    is_list(X),
+    maplist('space-get-type'(Space), X, T).
+space_get_type_candidate(Space, X, T) :- match(Space, [':',X,T], T, _).
+
+space_get_function_type(Space, [F|Args], T) :- nonvar(F),
+                                               match(Space, [':',F,[->|Types]], _, _),
+                                               append(ArgTypes, [T], Types),
+                                               maplist('space-get-type'(Space), Args, ArgTypes).
 'get-metatype'(X, 'Variable') :- var(X), !.
 'get-metatype'(X, 'Grounded') :- number(X), !.
 'get-metatype'(X, 'Grounded') :- string(X), !.
@@ -268,6 +287,9 @@ py_bool_norm(R, R).
 %%% Eval: %%%
 eval(C, Out) :- translate_expr(C, Goals, Out),
                 call_goals(Goals).
+
+eval(C, Space, Out) :- translate_expr_in_space(Space, C, Goals, Out),
+                       call_goals(Goals).
 
 call_goals([]).
 call_goals([G|Gs]) :- call(G), 

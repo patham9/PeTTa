@@ -7,6 +7,7 @@
 %higher-order argument, (= (evolve $r $g) (evolve (twice $r) $g)) - would otherwise diverge at compile time:
 maybe_specialize_call(HV, AVs, Out, Goal) :- catch(nb_getval('$spec_stack', Stack), _, Stack = []),
                                              \+ memberchk(HV, Stack),
+                                             \+ ( space_fun(Space, _, HV), Space \== '&self' ),
                                              setup_call_cleanup( (catch(nb_getval(specneeded,Prev),_,Prev = []), nb_setval(specneeded,false),
                                                                   nb_setval('$spec_stack', [HV|Stack])),
                                                                  specialize_call(HV, AVs, Out, Goal),
@@ -47,7 +48,7 @@ specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses s
                                              assertz(ho_specialization(HV, SpecName)),
                                              assertz(arity(SpecName, Arity)),
                                              ( %4.2. Re-use the type definition of the parent function for the specialization:
-                                               findall(TypeChain, catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
+                                               function_type_chains(HV, TypeChains),
                                                forall(member(TypeChain, TypeChains), add_sexp('&self', [':', SpecName, TypeChain])),
                                                %4.3 Translate specialized MeTTa clauseses to Prolog, keeping track of the function we are compiling through recursion:
                                                maplist({SpecName}/[fun_meta(ArgsNorm,BodyExpr),clause_info(Input,Clause)]>>
@@ -57,7 +58,7 @@ specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses s
                                                %4.5 Assert and print each of the created specializations:
                                                forall(member(clause_info(Input, Clause), ClauseInfos),
                                                ( asserta(Clause, Ref),
-                                                 assertz(translated_from(Ref, Input)),
+                                                 assertz(translated_from(Ref, '&self', Input)),
                                                  add_sexp('&self', Input),
                                                  format(atom(Label), "metta specialization (~w)", [SpecName]),
                                                  maybe_print_compiled_clause(Label, Input, Clause) ))
@@ -112,9 +113,11 @@ forget_symbol(Name) :- retractall('&self'(=, [Name|_], _)),
                        retractall('&self'(:, Name, _)),
                        findall(Ref, ( current_predicate(Name/A), functor(H, Name, A), clause(H, _, Ref) ), Refs),
                        forall(member(R, Refs), erase(R)),
+                       forget_function_provenance(Name),
                        metta_on_function_removed(Name),
                        retractall(arity(Name,_)),
                        retractall(fun(Name)),
+                       retractall(space_fun(_, _, Name)),
                        catch(nb_delete(Name), _, true),
                        retractall(ho_specialization(Name,_)).
 
