@@ -5,7 +5,5 @@
 
 (: tabled (-> Atom %Undefined%))
 (= (tabled $call)
-   (progn (translatePredicate (atom_string (car-atom $call) $strname))
-          (translatePredicate (atom_string (+ 1 (length (cdr-atom $call))) $strarity))
-          (translatePredicate (atomics_to_string (":- table " $strname "/" $strarity ".") $code))
+   (progn (translatePredicate (atomics_to_string (":- table '" (car-atom $call) "'/" (+ 1 (length (cdr-atom $call))) ".") $code))
           (injectPrologCode $code)))
