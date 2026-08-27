@@ -14,7 +14,14 @@ process_metta_string(S, Results, Space) :- string_codes(S, Cs),
                                            strip(Cs, 0, Codes),
                                            phrase(top_forms(Forms, 1), Codes),
                                            maplist(parse_form, Forms, ParsedForms),
-                                           maplist(process_form(Space), ParsedForms, ResultsList), !,
+                                           findall(F-TypeChain,
+                                                   ( Space == '&self',
+                                                     member(parsed(expression, _, Term), ParsedForms),
+                                                     function_type_annotation_term(Term, F, TypeChain) ),
+                                                   PredeclaredTypes),
+                                           with_predeclared_function_types(
+                                               PredeclaredTypes,
+                                               maplist(process_form(Space), ParsedForms, ResultsList)), !,
                                            append(ResultsList, Results).
 
 %First pass to convert MeTTa to Prolog Terms and register functions:

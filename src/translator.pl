@@ -39,6 +39,195 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                append(GoalsPrefix, FinalGoals, Goals),
                                                goals_list_to_conj(Goals, BodyConj).
 
+%%% Coherent function-type revisions %%%
+
+:- dynamic translated_from/2.
+:- thread_local predeclared_function_type/2.
+
+function_type_annotation_term([':', F, TypeChain], F, TypeChain) :-
+    atom(F),
+    TypeChain = ['->'|Types],
+    Types \= [].
+
+with_predeclared_function_types(Types, Goal) :-
+    setup_call_cleanup(
+        maplist(assert_predeclared_function_type, Types, Refs),
+        Goal,
+        maplist(erase_predeclared_function_type, Refs)).
+
+assert_predeclared_function_type(F-TypeChain, Ref) :-
+    assertz(predeclared_function_type(F, TypeChain), Ref).
+
+erase_predeclared_function_type(Ref) :- catch(erase(Ref), _, true).
+
+predeclared_function_type_variant(F, TypeChain) :-
+    predeclared_function_type(F, Existing),
+    TypeChain =@= Existing, !.
+
+function_type_chains(F, TypeChains) :-
+    findall(TypeChain,
+            catch(match('&self', [':', F, TypeChain], TypeChain, TypeChain),
+                  _, fail),
+            Live),
+    findall(TypeChain, predeclared_function_type(F, TypeChain), Predeclared),
+    append(Live, Predeclared, All),
+    variant_unique(All, TypeChains).
+
+variant_unique(Items, Unique) :- variant_unique(Items, [], Unique).
+
+variant_unique([], _, []).
+variant_unique([Item|Items], Seen, Unique) :-
+    member_variant(Item, Seen), !,
+    variant_unique(Items, Seen, Unique).
+variant_unique([Item|Items], Seen, [Item|Unique]) :-
+    variant_unique(Items, [Item|Seen], Unique).
+
+member_variant(Item, [Seen|_]) :- Item =@= Seen, !.
+member_variant(Item, [_|Seen]) :- member_variant(Item, Seen).
+
+% The compiled clause is the authority for which source definition is live.
+function_source_clauses(F, Clauses) :-
+    findall(Ref-Term,
+            ( translated_from(Ref, Term),
+              clause(_, _, Ref),
+              Term = [=, [SourceF|_], _],
+              SourceF == F,
+              \+ ho_specialization(_, F) ),
+            Clauses).
+
+source_mentions_atom(Term, Atom) :-
+    atom(Term), !,
+    Term == Atom.
+source_mentions_atom(Term, Atom) :-
+    nonvar(Term),
+    is_list(Term),
+    member(Part, Term),
+    source_mentions_atom(Part, Atom).
+
+direct_source_dependents(Callee, Functions) :-
+    findall(F,
+            ( translated_from(Ref, Term),
+              clause(_, _, Ref),
+              Term = [=, [F|_], _],
+              atom(F),
+              \+ ho_specialization(_, F),
+              source_mentions_atom(Term, Callee) ),
+            Functions0),
+    sort(Functions0, Functions).
+
+source_dependent_closure(Callee, Functions) :-
+    source_dependent_closure([Callee], [], [], Functions0),
+    sort(Functions0, Functions).
+
+source_dependent_closure([], _, Functions, Functions).
+source_dependent_closure([Current|Pending], Seen, Acc, Functions) :-
+    memberchk(Current, Seen), !,
+    source_dependent_closure(Pending, Seen, Acc, Functions).
+source_dependent_closure([Current|Pending], Seen, Acc, Functions) :-
+    direct_source_dependents(Current, Direct),
+    append(Pending, Direct, Next),
+    append(Direct, Acc, NextAcc),
+    source_dependent_closure(Next, [Current|Seen], NextAcc, Functions).
+
+function_metadata(F, present(Metadata)) :-
+    catch(nb_getval(F, Metadata), _, fail), !.
+function_metadata(_, absent).
+
+restore_function_metadata(F, present(Metadata)) :- !,
+    nb_setval(F, Metadata).
+restore_function_metadata(F, absent) :-
+    catch(nb_delete(F), _, true).
+
+snapshot_function_metadata([], []).
+snapshot_function_metadata([F|Functions], [F-State|States]) :-
+    function_metadata(F, State),
+    snapshot_function_metadata(Functions, States).
+
+restore_function_metadata_snapshot([]).
+restore_function_metadata_snapshot([F-State|States]) :-
+    restore_function_metadata(F, State),
+    restore_function_metadata_snapshot(States).
+
+type_revision_plan(Callee, Plan, MetadataSnapshot) :-
+    source_dependent_closure(Callee, Functions),
+    maplist(function_recompile_entry, Functions, Plan),
+    ( Plan == []
+      -> MetadataSnapshot = []
+      ;  findall(Specialization, ho_specialization(_, Specialization), Specs0),
+         append(Functions, Specs0, Symbols0),
+         sort(Symbols0, Symbols),
+         snapshot_function_metadata(Symbols, MetadataSnapshot) ).
+
+function_recompile_entry(F, function(F, Clauses)) :-
+    function_source_clauses(F, Clauses).
+
+erase_compiled_clauses([]).
+erase_compiled_clauses([Ref-_|Clauses]) :-
+    erase(Ref),
+    retractall(translated_from(Ref, _)),
+    erase_compiled_clauses(Clauses).
+
+compile_source_clauses([], _).
+compile_source_clauses([_-Term|Clauses], F) :-
+    copy_term(Term, Fresh),
+    once(translate_clause(Fresh, Clause)),
+    assertz(Clause, Ref),
+    assertz(translated_from(Ref, Fresh)),
+    compile_source_clauses(Clauses, F).
+
+recompile_function(function(F, Clauses)) :-
+    erase_compiled_clauses(Clauses),
+    nb_setval(F, []),
+    compile_source_clauses(Clauses, F),
+    metta_on_function_changed(F).
+
+specialization_stack(Stack) :-
+    catch(nb_getval('$spec_stack', Stack), _, Stack = []).
+
+with_specialization_suppressed(Goal) :-
+    specialization_stack(Prior),
+    findall(F, fun(F), Functions0),
+    sort(Functions0, Functions),
+    setup_call_cleanup(nb_setval('$spec_stack', Functions),
+                       Goal,
+                       nb_setval('$spec_stack', Prior)).
+
+invalidate_all_specializations :-
+    findall(F, ho_specialization(F, _), Functions0),
+    sort(Functions0, Functions),
+    forall(member(F, Functions), invalidate_specializations(F)).
+
+apply_type_revision([]).
+apply_type_revision(Plan) :-
+    Plan \= [],
+    with_specialization_suppressed(
+        ( invalidate_all_specializations,
+          maplist(recompile_function, Plan) )).
+
+restore_type_revision_state(state(snapshot(MetadataSnapshot))) :- !,
+    restore_function_metadata_snapshot(MetadataSnapshot).
+restore_type_revision_state(_).
+
+% Type mutation and dependent recompilation are one database transaction.
+% Non-backtrackable compiler metadata is restored explicitly on failure.
+revise_function_type(F, Mutation) :-
+    with_mutex(petta_type_revision,
+        ( State = state(none),
+          catch(
+              ( transaction(
+                    ( function_type_chains(F, Before),
+                      call(Mutation),
+                      function_type_chains(F, After),
+                      ( Before =@= After -> true
+                      ; type_revision_plan(F, Plan, MetadataSnapshot),
+                        nb_setarg(1, State, snapshot(MetadataSnapshot)),
+                        apply_type_revision(Plan) ) ))
+                -> true
+                ;  restore_type_revision_state(State), fail ),
+              Error,
+              ( restore_type_revision_state(State),
+                throw(Error) )) )).
+
 %Print compiled clause:
 maybe_print_compiled_clause(_, _, _) :- silent(true), !.
 maybe_print_compiled_clause(Label, FormTerm, Clause) :-
@@ -120,7 +309,7 @@ translate_expr([H0|T0], Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
         translate_expr(H, GsH, HV),
         %--- Translator rules ---:
-        ( nonvar(HV), translator_rule(HV) -> ( catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail)
+        ( nonvar(HV), translator_rule(HV) -> ( function_type_chains(HV, [TypeChain|_])
                                                -> TypeChain = [->|Xs],
                                                   append(ArgTypes, [_], Xs),
                                                   translate_args_by_type(T, ArgTypes, GsT, T1)
@@ -337,8 +526,7 @@ translate_expr([H0|T0], Goals, Out) :-
             ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
             ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
             ) % Check for type definition [:,HV,TypeChain]
-            -> findall(TypeChain, catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
-               list_to_set(TypeChains, UniqueTypeChains),
+            -> function_type_chains(Fun, UniqueTypeChains),
                ( UniqueTypeChains \= []
                  -> length(AllAVs, InputArity),
                     Arity is InputArity + 1,
@@ -469,7 +657,8 @@ next_lambda_name(Name) :- ( catch(nb_getval(lambda_counter, Prev), _, Prev = 0) 
 
 declared_output_type(F, OutType) :- atom(F),
 									nonvar(OutType),
-									catch(match('&self', [':', F, TypeChain], TypeChain, TypeChain), _, fail),
+									function_type_chains(F, TypeChains),
+									member(TypeChain, TypeChains),
 									TypeChain = [->|Types],
 									append(_, [DeclaredOutType], Types),
 									DeclaredOutType == OutType.

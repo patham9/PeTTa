@@ -6,6 +6,13 @@ add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                   retractall(Term).
 
+%Arrow declarations alter the code emitted for stored functions.
+'add-atom'(Space, Term, true) :- Space == '&self',
+                                 function_type_annotation_term(Term, F, TypeChain), !,
+                                 ( predeclared_function_type_variant(F, TypeChain)
+                                   -> add_sexp(Space, Term)
+                                   ;  revise_function_type(F, add_sexp(Space, Term)) ).
+
 %Add a function atom:
 'add-atom'(Space, Term, true) :- Term = [=,[FAtom|W],_], !,
                                  add_sexp(Space, Term),
@@ -22,6 +29,13 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 
 %Add an atom to the space:
 'add-atom'(Space, Term, true) :- add_sexp(Space, Term).
+
+'remove-atom'(Space, Term, true) :- Space == '&self',
+                                    function_type_annotation_term(Term, F, TypeChain), !,
+                                    revise_function_type(
+                                        F,
+                                        ( retractall(predeclared_function_type(F, TypeChain)),
+                                          remove_sexp(Space, Term) )).
 
 %%Remove a function atom:
 'remove-atom'(Space, Term, Removed) :- Term = [=,[F|Args],Body], !,
