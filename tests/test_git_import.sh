@@ -13,9 +13,11 @@ git -C "$source_repo" init -q
 git -C "$source_repo" config user.email test@example.invalid
 git -C "$source_repo" config user.name "PeTTa test"
 printf 'build artifact\n' > "$source_repo/payload.txt"
-printf '.build-count\n' > "$source_repo/.gitignore"
+printf '(= (fixture-core-result) core-git-ok)\n' > "$source_repo/module.metta"
+printf '.build-count\n.build-alt-count\n' > "$source_repo/.gitignore"
 printf '#!/bin/sh\ncount=0\ntest ! -f .build-count || count=$(cat .build-count)\necho $((count + 1)) > .build-count\n' > "$source_repo/build.sh"
-chmod +x "$source_repo/build.sh"
+printf '#!/bin/sh\ncount=0\ntest ! -f .build-alt-count || count=$(cat .build-alt-count)\necho $((count + 1)) > .build-alt-count\n' > "$source_repo/build-alt.sh"
+chmod +x "$source_repo/build.sh" "$source_repo/build-alt.sh"
 git -C "$source_repo" add .
 git -C "$source_repo" commit -qm first
 first=$(git -C "$source_repo" rev-parse HEAD)
@@ -29,7 +31,7 @@ run_import() {
     build=$2
     import_base=$3
     sha=$4
-    swipl -q -g "consult('$project_dir/lib/lib_import.pl'),'git-import!'('$url','$build','$import_base','$sha',true),halt"
+    swipl -q -g "consult('$project_dir/src/main.pl'),'git-import!'('$url','$build','$import_base','$sha',true),halt"
 }
 
 # Fresh non-tip checkout and build.
@@ -39,11 +41,28 @@ test "$(git -C "$target" rev-parse HEAD)" = "$first"
 test "$(git -C "$target" symbolic-ref -q HEAD || true)" = ""
 test "$(cat "$target/.build-count")" = 1
 
+# An exact-SHA checkout without a matching build stamp must still be built.
+missing_stamp_base="$fixture/missing-stamp"
+swipl -q -g "consult('$project_dir/src/main.pl'),'git-import!'('$remote','','$missing_stamp_base',true),halt"
+test ! -e "$missing_stamp_base/fixture/.build-count"
+run_import "$remote" build.sh "$missing_stamp_base" "$second"
+test "$(cat "$missing_stamp_base/fixture/.build-count")" = 1
+
+# Build identity includes the command, not just the checked-out commit.
+command_stamp_base="$fixture/command-stamp"
+run_import "$remote" build.sh "$command_stamp_base" "$first"
+run_import "$remote" build-alt.sh "$command_stamp_base" "$first"
+test "$(cat "$command_stamp_base/fixture/.build-count")" = 1
+test "$(cat "$command_stamp_base/fixture/.build-alt-count")" = 1
+
 # The four-input form dispatches through the public MeTTa import layer.
 metta_base="$fixture/metta-imports"
 metta_program="$fixture/pinned-import.metta"
-printf '!(import! &self (library lib_import))\n!(git-import! "%s" "" "%s" "%s")\n' "$remote" "$metta_base" "$first" > "$metta_program"
-(cd "$project_dir" && sh run.sh "$metta_program")
+printf '!(git-import! "%s" "" "%s" "%s")\n!(import! &self (library fixture module))\n!(test (fixture-core-result) core-git-ok)\n' \
+    "$remote" "$metta_base" "$first" > "$metta_program"
+metta_output=$(cd "$project_dir" && sh run.sh "$metta_program")
+printf '%s\n' "$metta_output"
+printf '%s\n' "$metta_output" | grep -q '✅'
 test "$(git -C "$metta_base/fixture" rev-parse HEAD)" = "$first"
 
 # Repeated invocation is idempotent and does not rerun the build.
@@ -111,9 +130,9 @@ wait "$pid1"
 wait "$pid2"
 test "$(git -C "$fixture/concurrent/fixture" rev-parse HEAD)" = "$first"
 
-# Legacy URL-only behavior still clones a local deterministic remote.
+# URL-only behavior clones a local deterministic remote without lib_import.
 mkdir -p "$fixture/legacy"
-(cd "$fixture/legacy" && swipl -q -g "consult('$project_dir/lib/lib_import.pl'),'git-import!'('$remote',true),halt")
+(cd "$fixture/legacy" && swipl -q -g "consult('$project_dir/src/main.pl'),'git-import!'('$remote',true),halt")
 test -d "$fixture/legacy/repos/fixture/.git"
 
 echo "commit-pinned git-import tests passed"

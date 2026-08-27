@@ -1,11 +1,14 @@
 %%%%%%%%%% Dependencies %%%%%%%%%%
-library(X, Path) :- standard_library_path(Base), atomic_list_concat([Base, '/', X], Path).
-library(X, Y, Path) :- library_path(Base), atom_concat(_, X, Base), atomic_list_concat([Base, '/', Y], Path).
+library(X, Path) :- standard_library_path(Base),
+                    directory_file_path(Base, X, Path).
+library(X, Y, Path) :- git_library_path(X, Base),
+                       directory_file_path(Base, Y, Path).
 :- prolog_load_context(directory, Source),
    directory_file_path(Source, '..', Parent),
    directory_file_path(Parent, 'lib', LibPath),
    asserta(standard_library_path(LibPath)).
 :- autoload(library(uuid)).
+:- use_module(library(crypto)).
 :- use_module(library(random)).
 :- use_module(library(janus)).
 :- use_module(library(error)).
@@ -19,8 +22,8 @@ library(X, Y, Path) :- library_path(Base), atom_concat(_, X, Base), atomic_list_
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
-  ( member(mork, Argv) -> ensure_loaded([ext_points, parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
-                        ; ensure_loaded([ext_points, parser, translator, specializer, filereader, spaces])).
+   ( member(mork, Argv) -> ensure_loaded([ext_points, parser, translator, specializer, filereader, '../lib/lib_gitimport', '../mork_ffi/morkspaces', spaces])
+                         ; ensure_loaded([ext_points, parser, translator, specializer, filereader, '../lib/lib_gitimport', spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -236,6 +239,26 @@ assert(Goal, true) :- ( call(Goal) -> true
 py_bool_norm('@'(true), true) :- !.
 py_bool_norm('@'(false), false) :- !.
 py_bool_norm(R, R).
+:- dynamic python_import_alias/2.
+python_call_module(Name, ModuleKey) :- python_import_alias(Name, ModuleKey), !.
+python_call_module(Name, Name).
+bind_python_calls(Term, Term) :- var(Term), !.
+bind_python_calls(Term, Term) :- atomic(Term), !.
+bind_python_calls([Call, [Spec|Args]], ['py-call', [BoundSpec|BoundArgs]]) :-
+    Call == 'py-call', !,
+    bind_python_call_spec(Spec, BoundSpec),
+    maplist(bind_python_calls, Args, BoundArgs).
+bind_python_calls(Terms, BoundTerms) :-
+    maplist(bind_python_calls, Terms, BoundTerms).
+
+bind_python_call_spec(Spec, BoundSpec) :-
+    atom(Spec),
+    atomic_list_concat([Module, Function], '.', Spec),
+    Module \== '',
+    python_import_alias(Module, ModuleKey), !,
+    atomic_list_concat([ModuleKey, Function], '.', BoundSpec).
+bind_python_call_spec(Spec, Spec).
+
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
 'py-call'([Spec|Args], Result, Opts) :- ( string(Spec) -> atom_string(A, Spec) ; A = Spec ),
                                         must_be(atom, A),
@@ -254,7 +277,8 @@ py_bool_norm(R, R).
                                              -> ( Args == []
                                                   -> compound_name_arguments(Call0, F, [])
                                                    ; Call0 =.. [F|Args] ),
-                                                py_call(M:Call0, R0, Opts), py_bool_norm(R0, Result)
+                                                python_call_module(M, PyModule),
+                                                py_call(PyModule:Call0, R0, Opts), py_bool_norm(R0, Result)
                                               ; ( Args == []                      % bare "fun"
                                                   -> compound_name_arguments(Call0, A, [])
                                                    ; Call0 =.. [A|Args] ),
@@ -266,7 +290,7 @@ py_bool_norm(R, R).
 'get-state'(Var, Value) :- nb_getval(Var, Value).
 
 %%% Eval: %%%
-eval(C, Out) :- translate_expr(C, Goals, Out),
+eval(C, Out) :- translate_runnable_expr(C, Goals, Out),
                 call_goals(Goals).
 
 call_goals([]).
@@ -301,19 +325,116 @@ retractPredicate(_, false).
 ensure_metta_ext(Path, Path) :- file_name_extension(_, metta, Path), !.
 ensure_metta_ext(Path, PathWithExt) :- file_name_extension(Path, metta, PathWithExt).
 
-'import!'(Space, File, true) :- catch(importer_helper(Space, File), _, fail).
-importer_helper(Space, File) :- atom_string(File, SFile),
-                                working_dir(Base),
-                                ( file_name_extension(ModPath, 'py', SFile)
-                                  -> absolute_file_name(SFile, Path, [relative_to(Base)]),
-                                     file_directory_name(Path, Dir),
-                                     file_base_name(ModPath, ModuleName),
-                                     py_call(sys:path:append(Dir), _),
-                                     py_call(builtins:'__import__'(ModuleName), _)
-                                   ; ( Path = SFile ; atomic_list_concat([Base, '/', SFile], Path) ),
-                                     ensure_metta_ext(Path, PathWithExt),
-                                     exists_file(PathWithExt), !,
-                                     load_metta_file(PathWithExt, _, Space) ).
+current_working_dir(Base) :- working_dir(Base), !.
+current_working_dir(Base) :- absolute_file_name('.', Base, [file_type(directory)]).
+
+import_file_string(File, SFile) :- string(File), !, SFile = File.
+import_file_string(File, SFile) :- atom_string(File, SFile).
+
+python_import_file(File) :- import_file_string(File, SFile),
+                            file_name_extension(_, py, SFile).
+
+resolve_existing_import_path(Base, RequestedPath, CanonPath) :-
+    ( is_absolute_file_name(RequestedPath)
+      -> absolute_file_name(RequestedPath, CanonPath,
+                            [access(read), file_errors(fail)])
+       ; absolute_file_name(RequestedPath, CanonPath,
+                            [relative_to(Base), access(read), file_errors(fail)]) ),
+    !.
+
+throw_missing_import(File) :-
+    throw(error(existence_error(source_sink, File), context('import!', File))).
+
+resolve_metta_import_path(File, CanonPath) :-
+    import_file_string(File, SFile),
+    \+ python_import_file(SFile),
+    current_working_dir(Base),
+    ensure_metta_ext(SFile, RequestedPath),
+    ( resolve_existing_import_path(Base, RequestedPath, CanonPath)
+      -> true
+       ; throw_missing_import(File) ).
+
+resolve_python_import_path(File, CanonPath) :-
+    import_file_string(File, SFile),
+    python_import_file(SFile),
+    current_working_dir(Base),
+    ( resolve_existing_import_path(Base, SFile, CanonPath)
+      -> true
+       ; throw_missing_import(File) ).
+
+:- dynamic imported_metta_source/2.
+
+% Assert before loading to break cycles; retain on success and retract on failure.
+% The recursive metta_loader mutex serializes the entire loader graph.
+import_once(Space, CanonPath, Goal) :-
+    ( imported_metta_source(Space, CanonPath)
+      -> true
+       ; run_with_loading_marker(
+             imported_metta_source(Space, CanonPath), Goal) ).
+
+python_module_names(CanonPath, ModuleKey, ModuleName) :-
+    crypto_data_hash(CanonPath, Hash, [algorithm(sha256)]),
+    atom_concat('_petta_import_', Hash, ModuleKey),
+    file_base_name(CanonPath, BaseName),
+    file_name_extension(ModuleName, _, BaseName).
+
+python_sibling_module_names(ParentDir, ModuleNames) :-
+    directory_files(ParentDir, Entries),
+    findall(ModuleName,
+            ( member(Entry, Entries),
+              file_name_extension(ModuleName, py, Entry) ),
+            Names),
+    sort(Names, ModuleNames).
+
+save_python_module(Name, module_state(Name, true, Module)) :-
+    py_call(sys:modules:'__contains__'(Name), @(true)), !,
+    py_call(sys:modules:get(Name), Module),
+    py_call(sys:modules:pop(Name), _).
+save_python_module(Name, module_state(Name, false, @(none))).
+
+restore_python_module(module_state(Name, true, Module)) :- !,
+    py_call(sys:modules:'__setitem__'(Name, Module), _).
+restore_python_module(module_state(Name, false, _)) :-
+    catch(py_call(sys:modules:pop(Name), _), _, true).
+
+load_python_source(CanonPath) :-
+    python_module_names(CanonPath, ModuleKey, ModuleName),
+    py_call(sys:path:copy(), PreviousPath),
+    file_directory_name(CanonPath, ParentDir),
+    python_sibling_module_names(ParentDir, SiblingNames),
+    maplist(save_python_module, SiblingNames, ModuleStates),
+    py_call(importlib:util:spec_from_file_location(ModuleKey, CanonPath), Spec),
+    py_call(importlib:util:module_from_spec(Spec), Module),
+    py_call(sys:modules:'__setitem__'(ModuleKey, Module), _),
+    py_call(sys:modules:'__setitem__'(ModuleName, Module), _),
+    py_call(sys:path:insert(0, ParentDir), _),
+    catch(setup_call_cleanup(
+              true,
+              py_call(Spec:loader:exec_module(Module), _),
+              restore_python_import_context(ModuleStates, PreviousPath)),
+          Error,
+          ( catch(py_call(sys:modules:pop(ModuleKey), _), _, true),
+            throw(Error) )),
+    retractall(python_import_alias(ModuleName, _)),
+    assertz(python_import_alias(ModuleName, ModuleKey)).
+
+restore_python_import_context(ModuleStates, PreviousPath) :-
+    catch(( py_call(sys:path:clear(), _),
+            py_call(sys:path:extend(PreviousPath), _) ),
+          _,
+          true),
+    maplist(restore_python_module, ModuleStates).
+
+'import!'(Space, File, true) :- importer_helper(Space, File).
+importer_helper(Space, File) :-
+    with_mutex(metta_loader, importer_helper_impl(Space, File)).
+importer_helper_impl(Space, File) :-
+    ( python_import_file(File)
+      -> resolve_python_import_path(File, CanonPath),
+         import_once('$python', CanonPath, load_python_source(CanonPath))
+       ; resolve_metta_import_path(File, CanonPath),
+         import_once(Space, CanonPath,
+                     load_imported_metta_file(CanonPath, _, Space)) ).
 
 :- dynamic translator_rule/1.
 'add-translator-rule!'(HV, true) :- ( translator_rule(HV)
@@ -326,12 +447,13 @@ importer_helper(Space, File) :- atom_string(File, SFile),
 register_fun(N) :- fun(N), !.
 register_fun(N) :- assertz(fun(N)),
                    forall((current_predicate(N/Arity), \+ (current_op(_, _, N), Arity =< 2)),
-                          (arity(N, Arity) -> true ; assertz(arity(N, Arity)))).
+                          (arity(N, Arity) -> true ; assertz(arity(N, Arity)))),
+                   repair_after_late_registration(N).
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
                           '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, implies, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom', 'alpha-unique-atom',
                           repr, repra, parse, 'println!', 'readln!', test, assert, 'mm2-exec', atom_concat, atom_chars, copy_term, term_hash,
-                          foldl, first, last, append, length, 'size-atom', sort, msort, member, 'is-member', 'is-alpha-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
+                          foldl, first, last, append, length, 'size-atom', sort, msort, member, 'is-member', 'is-alpha-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!', 'git-import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-ground', 'is-expr', 'is-space', 'get-mettatype',
                           decons, 'decons-atom', 'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=','set_hook',

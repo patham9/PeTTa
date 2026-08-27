@@ -1,0 +1,168 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+PATH="$ROOT/../../local/swipl-9.3.36/bin:$PATH"
+export PATH
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT HUP INT TERM
+
+# Two local repositories: b is a leaf, a declares b in deps.metta at its second commit.
+src_a="$fixture/src_a"
+src_b="$fixture/src_b"
+mkdir -p "$src_a" "$src_b"
+
+git -C "$src_b" init -q
+git -C "$src_b" config user.email test@example.invalid
+git -C "$src_b" config user.name "PeTTa test"
+printf '(= (transfn) trans-ok)\n' > "$src_b/translib.metta"
+git -C "$src_b" add .
+git -C "$src_b" commit -qm b1
+b1=$(git -C "$src_b" rev-parse HEAD)
+git clone -q --bare "$src_b" "$fixture/b.git"
+
+git -C "$src_a" init -q
+git -C "$src_a" config user.email test@example.invalid
+git -C "$src_a" config user.name "PeTTa test"
+printf '(= (libfn $x) (libok $x))\n' > "$src_a/mylib.metta"
+printf '.build-count\n' > "$src_a/.gitignore"
+printf '#!/bin/sh\ncount=0\ntest ! -f .build-count || count=$(cat .build-count)\necho $((count + 1)) > .build-count\n' > "$src_a/build.sh"
+chmod +x "$src_a/build.sh"
+git -C "$src_a" add .
+git -C "$src_a" commit -qm a1
+a1=$(git -C "$src_a" rev-parse HEAD)
+printf '(= (libfn $x) (libok2 $x))\n' > "$src_a/mylib.metta"
+printf '(git-dependency "file://%s" "%s")\n' "$fixture/b.git" "$b1" > "$src_a/deps.metta"
+git -C "$src_a" add .
+git -C "$src_a" commit -qm a2
+a2=$(git -C "$src_a" rev-parse HEAD)
+git clone -q --bare "$src_a" "$fixture/a.git"
+
+proj="$fixture/proj"
+mkdir -p "$proj"
+
+run_prog() {
+    prog="$1"
+    log="$2"
+    ( cd "$proj" && timeout 120s sh "$ROOT/run.sh" "$prog" --silent ) > "$log" 2>&1
+}
+
+# Pinned acquisition, transitive manifest, and definitions placed above their imports.
+printf '(git-dependency "file://%s" "%s" "build.sh")\n(= (uses) (libfn 1))\n!(import! &self (library a mylib))\n!(uses)\n(= (uses2) (transfn))\n!(import! &self (library b translib))\n!(uses2)\n' \
+    "$fixture/a.git" "$a2" > "$proj/prog.metta"
+run_prog "$proj/prog.metta" "$fixture/run1.log" ||
+    { echo "fresh run failed"; cat "$fixture/run1.log"; exit 1; }
+grep -q '(libok2 1)' "$fixture/run1.log" || { echo "fresh run: cross-repo call did not reduce"; cat "$fixture/run1.log"; exit 1; }
+grep -q 'trans-ok' "$fixture/run1.log" || { echo "fresh run: transitive dependency missing"; cat "$fixture/run1.log"; exit 1; }
+test "$(git -C "$proj/repos/a" rev-parse HEAD)" = "$a2"
+test "$(git -C "$proj/repos/b" rev-parse HEAD)" = "$b1"
+test "$(git -C "$proj/repos/a" symbolic-ref -q HEAD || true)" = ""
+test "$(cat "$proj/repos/a/.build-count")" = 1
+
+# A tracked modification is rejected even when HEAD already equals the pin and
+# the build stamp is otherwise valid.
+printf 'dirty exact head\n' >> "$proj/repos/a/mylib.metta"
+if run_prog "$proj/prog.metta" "$fixture/run2-dirty.log"; then
+    echo "dirty exact-SHA checkout unexpectedly succeeded"; cat "$fixture/run2-dirty.log"; exit 1
+fi
+grep -q dirty_git_checkout "$fixture/run2-dirty.log"
+git -C "$proj/repos/a" checkout -q -- mylib.metta
+
+# A second run in the same directory reuses the checkout and produces identical
+# program output; only acquisition progress lines differ between fresh and reuse.
+run_prog "$proj/prog.metta" "$fixture/run2.log" ||
+    { echo "reuse run failed"; cat "$fixture/run2.log"; exit 1; }
+grep -v '^Running build:' "$fixture/run1.log" > "$fixture/run1.stripped"
+grep -v '^Running build:' "$fixture/run2.log" > "$fixture/run2.stripped"
+diff "$fixture/run1.stripped" "$fixture/run2.stripped" || { echo "dirty rerun diverged from fresh run"; exit 1; }
+test "$(cat "$proj/repos/a/.build-count")" = 1
+
+# Pinning a different commit retargets the existing checkout and reruns the build.
+printf '(git-dependency "file://%s" "%s" "build.sh")\n!(import! &self (library a mylib))\n!(libfn 1)\n' \
+    "$fixture/a.git" "$a1" > "$proj/retarget.metta"
+run_prog "$proj/retarget.metta" "$fixture/run3.log" ||
+    { echo "retarget run failed"; cat "$fixture/run3.log"; exit 1; }
+grep -q '(libok 1)' "$fixture/run3.log" || { echo "retarget: old-revision definition not active"; cat "$fixture/run3.log"; exit 1; }
+test "$(git -C "$proj/repos/a" rev-parse HEAD)" = "$a1"
+test "$(cat "$proj/repos/a/.build-count")" = 2
+
+# A dirty checkout is refused rather than overwritten.
+printf 'dirty\n' >> "$proj/repos/a/mylib.metta"
+if run_prog "$proj/prog.metta" "$fixture/run4.log"; then
+    echo "dirty checkout transition unexpectedly succeeded"; cat "$fixture/run4.log"; exit 1
+fi
+grep -q dirty_git_checkout "$fixture/run4.log"
+git -C "$proj/repos/a" checkout -q -- mylib.metta
+
+# Declarations demand a full 40-character commit.
+printf '(git-dependency "file://%s" "deadbeef")\n' "$fixture/a.git" > "$proj/shortsha.metta"
+if run_prog "$proj/shortsha.metta" "$fixture/run5.log"; then
+    echo "abbreviated commit unexpectedly accepted"; cat "$fixture/run5.log"; exit 1
+fi
+grep -q '40 hexadecimal' "$fixture/run5.log"
+
+# The same url pinned to two revisions in one run is a conflict.
+printf '(git-dependency "file://%s" "%s")\n(git-dependency "file://%s" "%s")\n' \
+    "$fixture/a.git" "$a1" "$fixture/a.git" "$a2" > "$proj/conflict.metta"
+if run_prog "$proj/conflict.metta" "$fixture/run6.log"; then
+    echo "conflicting pins unexpectedly accepted"; cat "$fixture/run6.log"; exit 1
+fi
+grep -q conflicting_git_dependency "$fixture/run6.log"
+
+# URL spellings normalized to the same origin also share dependency identity.
+ln -s "$fixture/a.git" "$fixture/a"
+alias_base="$fixture/alias-base"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$alias_base'),(catch(acquire_git_dependency('file://$fixture/a','$a2','','$alias_base'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_url_alias_conflict,none))),halt"
+
+# Reusing one URL/revision with a different build command or base directory is
+# rejected explicitly instead of silently treating the second specification as
+# already satisfied.
+spec_build_base="$fixture/spec-build"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_build_base'),(catch(acquire_git_dependency('file://$fixture/a.git','$a1','build.sh','$spec_build_base'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_build_spec_conflict,none))),halt"
+
+spec_base_a="$fixture/spec-base-a"
+spec_base_b="$fixture/spec-base-b"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_a'),(catch(acquire_git_dependency('file://$fixture/a.git','$a1','','$spec_base_b'),E,true),nonvar(E),E=error(domain_error(conflicting_git_dependency,_),_)->true;throw(error(expected_base_spec_conflict,none))),halt"
+test ! -e "$spec_base_b/a"
+
+# Git metadata paths retain internal whitespace when locating the build stamp.
+space_base="$fixture/base  with  spaces"
+swipl -q -g "consult('$ROOT/src/main.pl'),acquire_git_dependency('file://$fixture/a.git','$a1','build.sh','$space_base'),halt"
+test "$(cat "$space_base/a/.build-count")" = 1
+test -f "$space_base/a/.git/petta-build-stamp"
+
+# A failed transitive acquisition must not mark its parent as loaded.  Make the
+# leaf remote available only after the first attempt, then retry in the same
+# Prolog process using a different parent base directory.
+retry_leaf_src="$fixture/retry_leaf_src"
+mkdir -p "$retry_leaf_src"
+git -C "$retry_leaf_src" init -q
+git -C "$retry_leaf_src" config user.email test@example.invalid
+git -C "$retry_leaf_src" config user.name "PeTTa test"
+printf '(= (retry-leaf-result) retry-ok)\n' > "$retry_leaf_src/retry.metta"
+git -C "$retry_leaf_src" add .
+git -C "$retry_leaf_src" commit -qm retry-leaf
+retry_leaf_sha=$(git -C "$retry_leaf_src" rev-parse HEAD)
+git clone -q --bare "$retry_leaf_src" "$fixture/retry-leaf.git.ready"
+
+retry_parent_src="$fixture/retry_parent_src"
+retry_leaf_base="$fixture/retry-leaf-imports"
+retry_parent_base_a="$fixture/retry-parent-a"
+retry_parent_base_b="$fixture/retry-parent-b"
+mkdir -p "$retry_parent_src"
+git -C "$retry_parent_src" init -q
+git -C "$retry_parent_src" config user.email test@example.invalid
+git -C "$retry_parent_src" config user.name "PeTTa test"
+printf '(git-dependency "file://%s" "%s" "" "%s")\n' \
+    "$fixture/retry-leaf.git" "$retry_leaf_sha" "$retry_leaf_base" \
+    > "$retry_parent_src/deps.metta"
+git -C "$retry_parent_src" add .
+git -C "$retry_parent_src" commit -qm retry-parent
+retry_parent_sha=$(git -C "$retry_parent_src" rev-parse HEAD)
+git clone -q --bare "$retry_parent_src" "$fixture/retry-parent.git"
+
+swipl -q -g "consult('$ROOT/src/main.pl'),(catch(acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_parent_base_a'),_,fail)->throw(error(expected_first_failure,none));true),(git_library_path('retry-parent',_)->throw(error(stale_parent_registration,none));true),rename_file('$fixture/retry-leaf.git.ready','$fixture/retry-leaf.git'),acquire_git_dependency('file://$fixture/retry-parent.git','$retry_parent_sha','','$retry_parent_base_b'),halt"
+test -d "$retry_parent_base_b/retry-parent/.git"
+test -d "$retry_leaf_base/retry-leaf/.git"
+
+printf 'git dependency checks passed\n'

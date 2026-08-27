@@ -1,6 +1,7 @@
 %Since both normal add-attom call and function additions needs to add the S-expression:
-add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                               assertz(Term).
+add_sexp(Space, Term) :- add_sexp(Space, Term, _).
+add_sexp(Space, [Rel|Args], Ref) :- Term =.. [Space, Rel | Args],
+                                    assertz(Term, Ref).
 
 %Same but for removal:
 remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
@@ -9,10 +10,9 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 %Add a function atom:
 'add-atom'(Space, Term, true) :- Term = [=,[FAtom|W],_], !,
                                  add_sexp(Space, Term),
-                                 register_fun(FAtom),
                                  length(W, N),
                                  Arity is N + 1,
-                                 assertz(arity(FAtom,Arity)),
+                                 register_function_signature(FAtom, Arity),
                                  once(translate_clause(Term, Clause)),
                                  assertz(Clause, Ref),
                                  assertz(translated_from(Ref, Term)),
