@@ -1,0 +1,1 @@
+(= (duplicate-test) 42)
