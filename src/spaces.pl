@@ -1,10 +1,12 @@
 %Since both normal add-attom call and function additions needs to add the S-expression:
-add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                               assertz(Term).
+add_sexp(Space, TermIn) :- ( is_list(TermIn), TermIn = [Rel|Args] -> Term =.. [Space, Rel | Args]
+                                                                  ; Term =.. [Space, '#primitive', TermIn] ),
+                           assertz(Term).
 
 %Same but for removal:
-remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                                  retractall(Term).
+remove_sexp(Space, TermIn) :- ( is_list(TermIn), TermIn = [Rel|Args] -> Term =.. [Space, Rel | Args]
+                                                                     ; Term =.. [Space, '#primitive', TermIn] ),
+                              retractall(Term).
 
 %Add a function atom:
 'add-atom'(Space, Term, true) :- Term = [=,[FAtom|W],_], !,
@@ -47,8 +49,8 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 match(_, LComma, OutPattern, Result) :- LComma == [','], !,
                                         Result = OutPattern.
 match(Space, [Comma|[Head|Tail]], OutPattern, Result) :- Comma == ',', !,
-                                                         append([Space], Head, List),
-                                                         Term =.. List,
+                                                         ( is_list(Head) -> append([Space], Head, List), Term =.. List
+                                                                          ; Term =.. [Space, '#primitive', Head] ),
                                                          catch(Term, _, fail),
                                                          \+ cyclic_term(OutPattern),
                                                          match(Space, [','|Tail], OutPattern, Result).
@@ -60,13 +62,15 @@ match(Space, PatternVar, OutPattern, Result) :- var(PatternVar), !,
                                                 Result = OutPattern.
 
 %Match for pattern:
-match(Space, [Rel|PatArgs], OutPattern, Result) :- Term =.. [Space, Rel | PatArgs],
-                                                   catch(Term, _, fail),
-                                                   \+ cyclic_term(OutPattern),
-                                                   Result = OutPattern.
+match(Space, Pattern, OutPattern, Result) :- ( is_list(Pattern), Pattern = [Rel|PatArgs] -> Term =.. [Space, Rel | PatArgs]
+                                                                                          ; Term =.. [Space, '#primitive', Pattern] ),
+                                             catch(Term, _, fail),
+                                             \+ cyclic_term(OutPattern),
+                                             Result = OutPattern.
 
 %Get all atoms in space, irregard of arity:
 'get-atoms'(Space, Pattern) :- current_predicate(Space/Arity),
                                functor(Head, Space, Arity),
                                clause(Head, true),
-                               Head =.. [Space | Pattern].
+                               Head =.. [Space | Args],
+                               ( Args = ['#primitive', P] -> Pattern = P ; Pattern = Args ).
