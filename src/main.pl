@@ -1,3 +1,18 @@
+% Default all stream I/O to UTF-8.
+%
+% MeTTa source files are UTF-8 by convention, but SWI-Prolog derives its
+% default `encoding` flag from the ambient locale. Where that locale is not
+% UTF-8 - Windows (cp1252), or any POSIX/C locale, which minimal container
+% images and CI runners commonly have - read_file_to_string/3 in
+% filereader.pl decodes .metta sources in the locale codepage instead, and
+% multi-byte characters in string literals or symbol names silently become
+% several wrong characters.
+%
+% Setting the flag here, before anything opens a stream, makes source loading
+% deterministic regardless of environment. It is a no-op where the locale is
+% already UTF-8.
+:- set_prolog_flag(encoding, utf8).
+
 :- ensure_loaded(metta).
 
 is_silent_flag(silent).
