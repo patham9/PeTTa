@@ -19,8 +19,8 @@ library(X, Y, Path) :- library_path(Base), atom_concat(_, X, Base), atomic_list_
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
-  ( member(mork, Argv) -> ensure_loaded([ext_points, parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
-                        ; ensure_loaded([ext_points, parser, translator, specializer, filereader, spaces])).
+  ( member(mork, Argv) -> ensure_loaded([ext_points, debugger, parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
+                        ; ensure_loaded([ext_points, debugger, parser, translator, specializer, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -267,11 +267,163 @@ py_bool_norm(R, R).
 
 %%% Eval: %%%
 eval(C, Out) :- translate_expr(C, Goals, Out),
-                call_goals(Goals).
+                call_goals(Goals, meta(eval, 0, eval)).
 
-call_goals([]).
-call_goals([G|Gs]) :- call(G), 
-                      call_goals(Gs).
+call_goals(Goals) :-
+    call_goals(Goals, meta(eval, 0, eval)).
+
+call_goals(Goals, Meta) :-
+    call_goals(Goals, Meta, 1).
+
+call_goals([], _, _).
+call_goals([G|Gs], Meta, GoalIndex) :-
+    % Only rewrite goals for instrumentation when tracing is actually on.
+    % Otherwise run the goal verbatim (as upstream does) so the rewriting
+    % cannot perturb semantics or solution counts on normal runs.
+    ( runtime_tracing_active
+      -> instrument_goal(G, Meta, GoalIndex, InstrumentedGoal)
+      ;  InstrumentedGoal = G
+    ),
+    call(InstrumentedGoal),
+    NextGoalIndex is GoalIndex + 1,
+    call_goals(Gs, Meta, NextGoalIndex).
+
+instrument_goal(Goal, _, _, Goal) :-
+    var(Goal),
+    !.
+instrument_goal((A,B), Meta, Path, (IA,IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal((A;B), Meta, Path, (IA;IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal((A->B), Meta, Path, (IA->IB)) :-
+    !,
+    child_goal_path(Path, 1, PathA),
+    child_goal_path(Path, 2, PathB),
+    instrument_goal(A, Meta, PathA, IA),
+    instrument_goal(B, Meta, PathB, IB).
+instrument_goal(findall(Template, Goal, Bag), Meta, Path, Instrumented) :-
+    !,
+    child_goal_path(Path, 1, InnerPath),
+    instrument_goal(Goal, Meta, InnerPath, InstrumentedGoal),
+    InstrumentedCall = findall(Template, InstrumentedGoal, Bag),
+    Instrumented = trace_goal_execution(Meta, Path, InstrumentedCall).
+instrument_goal(once(Goal), Meta, Path, Instrumented) :-
+    !,
+    child_goal_path(Path, 1, InnerPath),
+    instrument_goal(Goal, Meta, InnerPath, InstrumentedGoal),
+    Instrumented = trace_goal_execution(Meta, Path, once(InstrumentedGoal)).
+instrument_goal(Goal, Meta, Path, trace_goal_execution(Meta, Path, Goal)).
+
+child_goal_path(Path, Child, [Path,Child]) :-
+    integer(Path),
+    !.
+child_goal_path(Path, Child, NextPath) :-
+    append(Path, [Child], NextPath).
+
+:- dynamic debug_trace_success/1.
+
+% When no runtime tracing is requested this must be a transparent no-op:
+% rewriting it to anything other than call(Goal) (e.g. the call-stack
+% bookkeeping below) corrupts backtracking and collapses nondeterministic
+% MeTTa goals to their first solution.
+trace_goal_execution(_Meta, _GoalIndex, Goal) :-
+    \+ runtime_tracing_active,
+    !,
+    call(Goal).
+trace_goal_execution(Meta, GoalIndex, Goal) :-
+    % setup_call_cleanup pushes the frame once and pops it exactly once when
+    % Goal is finished (deterministic exit, failure, error, or cut), so the
+    % shared metta_call_stack is not re-popped on every backtrack.
+    setup_call_cleanup(
+        call_stack_push(Goal),
+        ( maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+          traced_goal_body(Meta, GoalIndex, Goal)
+        ),
+        call_stack_pop(Goal)
+    ).
+
+traced_goal_body(Meta, GoalIndex, Goal) :-
+    fresh_trace_id(TraceId),
+    retractall(debug_trace_success(TraceId)),
+    call_cleanup(
+        traced_goal_port(TraceId, Meta, GoalIndex, Goal),
+        cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal)
+    ).
+
+trace_compiled_goal(Index, Line, SourceExpr, Bindings, Goal) :-
+    runtime_tracing_active,
+    !,
+    Meta = meta(Index, Line, compiled(SourceExpr, Bindings)),
+    GoalIndex = compiled,
+    setup_call_cleanup(
+        call_stack_push(Goal),
+        ( maybe_debug_runtime(enter, Meta, GoalIndex, Goal),
+          traced_goal_body(Meta, GoalIndex, Goal)
+        ),
+        call_stack_pop(Goal)
+    ).
+trace_compiled_goal(_Index, _Line, _SourceExpr, _Bindings, Goal) :-
+    call(Goal).
+
+fresh_trace_id(TraceId) :-
+    flag(debug_trace_id, TraceId, TraceId + 1).
+
+traced_goal_port(TraceId, Meta, GoalIndex, Goal) :-
+    call(Goal),
+    % First solution: record the success. Every later solution is reached by
+    % backtracking into the goal, so emit a `redo` port before its success.
+    % This makes nondeterministic MeTTa goals (match, superpose, case, ...)
+    % render as ENTER → OK → REDO → OK → ... instead of collapsing to one OK.
+    ( debug_trace_success(TraceId)
+      -> maybe_debug_runtime(redo, Meta, GoalIndex, Goal)
+      ;  assertz(debug_trace_success(TraceId))
+    ),
+    maybe_debug_runtime(success, Meta, GoalIndex, Goal).
+
+cleanup_traced_goal(TraceId, Meta, GoalIndex, Goal) :-
+    ( retract(debug_trace_success(TraceId))
+      -> true
+      ; maybe_debug_runtime(fail, Meta, GoalIndex, Goal)
+    ).
+
+runtime_tracing_active :-
+    % While a breakpoint REPL evaluation is in progress, tracing is suspended so
+    % the evaluated expression does not recursively trigger instrumentation,
+    % breakpoints, or call-stack mutation.
+    debug_eval_suspended,
+    !,
+    fail.
+runtime_tracing_active :-
+    debug_enabled(runtime).
+runtime_tracing_active :-
+    debug_break_target(_).
+runtime_tracing_active :-
+    debug_break_condition(_, _, _).
+runtime_tracing_active :-
+    debug_break_line(_).
+runtime_tracing_active :-
+    debug_break_once.
+
+maybe_debug_runtime(_Stage, _Meta, _GoalIndex, _Goal) :-
+    \+ runtime_tracing_active,
+    !.
+maybe_debug_runtime(Stage, Meta, GoalIndex, Goal) :-
+    ( runtime_event_enabled(Stage, Goal),
+      ( runtime_goal_enabled(Goal)
+      ; breakpoint_goal_enabled(Goal)
+      ; breakpoint_condition_enabled(Stage, Goal)
+      )
+      -> debug_event(runtime, Meta, goal(Stage, GoalIndex, Goal))
+      ; true
+    ).
 
 %%% Higher-Order Functions: %%%
 'foldl-atom'([], Acc, _Func, Acc).
