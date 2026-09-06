@@ -22,15 +22,36 @@ prolog_interop_example :- register_fun(prologfunc),
 
 main :- current_prolog_flag(argv, RawArgs),
         strip_silent_flags(RawArgs, Args),
-        ( Args = [] -> prolog_interop_example
-        ; Args = [mork] -> prolog_interop_example,
-                           mork_test
-        ; Args = [File|_] -> file_directory_name(File, Dir),
-                             assertz(working_dir(Dir)),
-                             load_metta_file(File,Results),
-                             maplist(swrite,Results,ResultsR),
-                             maplist(format("~w~n"), ResultsR)
-        ),
+        catch(run_main(Args),
+              debug_break_abort,
+              format(user_error, "~n[debugger] aborted by user~n", [])),
         halt.
+
+run_main(Args) :-
+        ( debug_help_requested(Args) -> print_debug_help
+        ; Args == [mork] -> prolog_interop_example,
+                            mork_test
+        ; file_argument(Args, File) -> run_metta_file(File)
+        ; debug_args_present(Args) -> usage_error("no .metta file given")
+        ; mork_enabled(Args) -> prolog_interop_example,
+                                mork_test
+        ; prolog_interop_example
+        ).
+
+run_metta_file(File) :-
+        ( exists_file(File)
+          -> file_directory_name(File, Dir),
+             assertz(working_dir(Dir)),
+             load_metta_file(File,Results),
+             maplist(swrite,Results,ResultsR),
+             maplist(format("~w~n"), ResultsR)
+        ; format(atom(Msg), "file not found: ~w", [File]),
+          usage_error(Msg)
+        ).
+
+usage_error(Reason) :-
+        format(user_error, "PeTTa: ~w~n", [Reason]),
+        format(user_error, "Usage: sh debug.sh <file.metta> [options]   (run 'sh debug.sh --debug-help')~n", []),
+        halt(2).
 
 :- initialization(main, main).

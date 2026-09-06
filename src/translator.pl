@@ -40,7 +40,7 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                goals_list_to_conj(Goals, BodyConj).
 
 %Print compiled clause:
-maybe_print_compiled_clause(_, _, _) :- silent(true), !.
+maybe_print_compiled_clause(_, _, _) :- \+ legacy_verbose_enabled(compile), !.
 maybe_print_compiled_clause(Label, FormTerm, Clause) :-
     swrite(FormTerm, FormStr),
     format("\e[33m-->  ~w  -->~n\e[36m~w~n\e[33m--> prolog clause -->~n\e[32m", [Label, FormStr]),
@@ -348,7 +348,7 @@ translate_expr([H0|T0], Goals, Out) :-
                                  typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal)), UniqueTypeChains, Branches),
                          disj_list(Branches, Disj),
                          Goals = [Disj] )
-              ; build_call_or_partial(Fun, AllAVs, Out, Inner, [], Goals))
+              ; build_call_or_partial([HV|T], Fun, AllAVs, Out, Inner, [], Goals))
           %Literals (numbers, strings, etc.), known non-function atom => data:
           ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
@@ -360,17 +360,59 @@ translate_expr([H0|T0], Goals, Out) :-
           ; append(Inner, [reduce([HV|AVs], Out)], Goals) )).
 
 %Generate actual function call or partial if arity not complete:
-build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
+build_call_or_partial(SourceExpr, Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                              Arity is N + 1,
                                                              ( maybe_specialize_call(Fun, AVs, Out, Goal)
-                                                               -> append(Inner, [Goal|Extra], Goals)
+                                                               -> wrap_runtime_call(SourceExpr, Goal, WrappedGoal),
+                                                                  append(Inner, [WrappedGoal|Extra], Goals)
                                                                 ; arity(Fun, Arity)
                                                                   -> resolve_memoization(Fun, AVs, Out, Goal),
-                                                                     append(Inner, [Goal|Extra], Goals)
+                                                                     wrap_runtime_call(SourceExpr, Goal, WrappedGoal),
+                                                                     append(Inner, [WrappedGoal|Extra], Goals)
                                                                 ; incomplete_application_kind(Fun, Arity, partial)
                                                                   -> Out = partial(Fun, AVs),
                                                                      append(Inner, Extra, Goals)
                                                                    ; append(Inner, [throw_function_overapplication(Fun, N)], Goals) ).
+
+% Source location of the form currently being translated, set by process_form
+% (src/filereader.pl) around translate_clause/translate_expr so that the
+% compiled-call wrapper can bake the real form Index/Line (instead of the old
+% hard-coded line 0) into the runtime trace. Index/Line are ground, so a copying
+% assert is fine here.
+:- dynamic current_compile_form/2.
+
+% The form's variable-name environment (Name-Var pairs) is passed via the
+% backtrackable global current_compile_vars instead of a dynamic predicate:
+% assertz/nb_setval copy the term and would sever the variable identity we need,
+% whereas b_setval keeps the live variables shared with the clause being built.
+:- initialization(nb_setval(current_compile_vars, [])).
+
+wrap_runtime_call(SourceExpr, Goal, trace_compiled_goal(Index, Line, SourceExpr, Bindings, Goal)) :-
+    ( current_compile_form(Index, Line) -> true ; Index = compiled, Line = 0 ),
+    source_expr_bindings(SourceExpr, Bindings).
+
+% Select the Name-Var pairs from the current form's parse environment whose
+% variable actually occurs in this call's SourceExpr. The collected pairs must
+% reference the live SourceExpr variables (so they bind together with the goal at
+% runtime), which rules out findall/copy_term; collect_named_vars/3 walks the
+% list preserving identity. Falls back to [] when no environment is available.
+source_expr_bindings(SourceExpr, Bindings) :-
+    ( catch(b_getval(current_compile_vars, Env), _, fail), is_list(Env)
+      -> term_variables(SourceExpr, Vars),
+         collect_named_vars(Env, Vars, Bindings)
+      ; Bindings = []
+    ).
+
+collect_named_vars([], _, []).
+collect_named_vars([Name-Var|Rest], Vars, Out) :-
+    ( ident_member(Var, Vars)
+      -> Out = [Name-Var|Out1]
+      ;  Out = Out1
+    ),
+    collect_named_vars(Rest, Vars, Out1).
+
+ident_member(V, [X|_]) :- V == X, !.
+ident_member(V, [_|Xs]) :- ident_member(V, Xs).
 
 %Type function call generation, returns function call plus typechecks for input and output:
 typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal) :-
@@ -381,7 +423,7 @@ typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchG
     append(GsH, GsT2, InnerTmp),
     ( (OutType == '%Undefined%' ; OutType == '_' ; OutType == 'Atom')
        -> Extra = [] ; Extra = [('get-type'(Out, OutType) *-> true ; 'get-metatype'(Out, OutType))] ),
-    build_call_or_partial(Fun, AVsTmp, Out, InnerTmp, Extra, GoalsList),
+    build_call_or_partial([Fun|T], Fun, AVsTmp, Out, InnerTmp, Extra, GoalsList),
     goals_list_to_conj(GoalsList, BranchGoal).
 
 
